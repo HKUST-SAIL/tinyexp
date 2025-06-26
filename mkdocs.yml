@@ -1,0 +1,52 @@
+site_name: TinyExp
+repo_url: https://github.com/zengarden/TinyExp
+site_url: https://zengarden.github.io/TinyExp
+site_description: A minimalist Python project for deep learning experiment management. It uses Ray for core distributed environment and backend setup, and provides basic, no-frills tracking for models, optimizers, and LR schedulers.
+site_author: Zeming LI
+edit_uri: edit/main/docs/
+repo_name: zengarden/TinyExp
+copyright: Maintained by <a href="https://zengarden.com">zengarden</a>.
+
+nav:
+  - Home: index.md
+  - Modules: modules.md
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: ["tinyexp"]
+theme:
+  name: material
+  feature:
+    tabs: true
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: white
+      accent: deep orange
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: black
+      accent: deep orange
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  icon:
+    repo: fontawesome/brands/github
+
+extra:
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/zengarden/TinyExp
+    - icon: fontawesome/brands/python
+      link: https://pypi.org/project/TinyExp
+
+markdown_extensions:
+  - toc:
+      permalink: true
+  - pymdownx.arithmatex:
+      generic: true
