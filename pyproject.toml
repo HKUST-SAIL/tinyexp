@@ -25,6 +25,8 @@ dependencies = [
     "omegaconf",
     "ray",
     "tqdm"
+    "torch",
+    "torchvision",
 ]
 
 [project.urls]
@@ -46,6 +48,7 @@ dev = [
     "mkdocstrings[python]>=0.26.1",
 
     "loguru",
+    "wandb",
 
 ]
 
