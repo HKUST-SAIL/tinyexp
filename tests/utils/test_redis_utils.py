@@ -13,7 +13,7 @@ def test_redis_cluster_manager():
     ports = [7000, 7001, 7002]
     max_memory_per_port = 100 * 1024 * 1024  # 100 MB
 
-    remote_redis_cluster_manager = ray.remote(num_cpus=len(ports))(RedisClusterManager)
+    remote_redis_cluster_manager = ray.remote(num_cpus=1)(RedisClusterManager)
     redis_actor = remote_redis_cluster_manager.remote(ports=ports, max_memory_per_port=max_memory_per_port)
 
     success = ray.get(redis_actor.start_redis_cluster.remote())

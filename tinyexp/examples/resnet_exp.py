@@ -200,7 +200,7 @@ class RedisCachedImageFolder:
 @dataclass
 class ResNetConfig:
     # for exp actor
-    data_root: str = "./data/imagenet/"
+    data_root: str = os.environ.get("IMAGENET_HOME", "./data/imagenet/")
     accelerator: str = "ddp"  # "cpu", "ddp"
     train_data_worker_per_gpu: int = 11
     train_lr_per_img: float = 0.1 / 256.0  # single image learning rate
@@ -405,6 +405,7 @@ class ResNetExp(TinyExp):
 @hydra.main(version_base=None, config_name="cfg")
 def main(cfg: DictConfig) -> None:
     print(OmegaConf.to_yaml(cfg))
+    from IPython import embed; embed()
     if cfg.launch == "ray":
         ray.init()
         # ------------------- build redis server -------------------- #
