@@ -1,7 +1,20 @@
 repos:
+  - repo: https://github.com/psf/black.git
+    rev: 25.1.0
+    hooks:
+      - id: black
+        args: ["--line-length=120"]
+  - repo: https://github.com/pycqa/isort
+    rev: 6.0.1
+    hooks:
+      - id: isort
+        name: isort (python)
+        args: ["--line-length=120"]
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: "v5.0.0"
     hooks:
+      - id: check-added-large-files
+        args: ['--maxkb=2000']
       - id: check-case-conflict
       - id: check-merge-conflict
       - id: check-toml
@@ -10,13 +23,13 @@ repos:
         exclude: ^.devcontainer/devcontainer.json
       - id: pretty-format-json
         exclude: ^.devcontainer/devcontainer.json
-        args: [--autofix, --no-sort-keys]
+        args: [--autofix]
       - id: end-of-file-fixer
       - id: trailing-whitespace
 
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: "v0.11.5"
-    hooks:
-      - id: ruff
-        args: [--exit-non-zero-on-fix]
-      - id: ruff-format
+  # - repo: https://github.com/astral-sh/ruff-pre-commit
+  #   rev: "v0.11.5"
+  #   hooks:
+  #     - id: ruff
+  #       args: [--exit-non-zero-on-fix]
+  #     - id: ruff-format

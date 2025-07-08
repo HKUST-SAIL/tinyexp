@@ -1,24 +1,21 @@
-import hydra
-import ray
 import datetime
 from dataclasses import dataclass
-from functools import cached_property
 
+import hydra
+import ray
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import wandb
-
 from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, OmegaConf
-
 from torch.optim.lr_scheduler import StepLR
 from torchvision import datasets, transforms
 from tqdm import tqdm
 
-# from tinyexp.tiny_engine import CPU
 from tinyexp import TinyExp
+from tinyexp.utils.ray_utils import get_num_gpus_worker_options
 
 
 class Net(nn.Module):
@@ -54,23 +51,37 @@ class Net(nn.Module):
             return output
 
 
-@ray.remote
 class MnistExp(TinyExp):
     @dataclass
     class Config:
         data_root: str = "./data/"
-        accelerator: str = "cpu"  # "cpu", "gpu", "ddp"
+        accelerator: str = "ddp"  # "cpu", "ddp"
         train_lr_per_img: float = 1.0 / 64.0  # single image learning rate
         train_batch_size_per_device: int = 32
         train_max_epoch: int = 3
         train_enable_wandb: bool = False
+        launch: str = "ray"  # "ray", "local"
 
-    @cached_property
-    def module(self):
+    def __init__(self, cfg: DictConfig):
+        super().__init__(cfg)
+        self.train_dataloader = self._configure_train_dataloader()
+        self.val_dataloader = self._configure_val_dataloader()
+
+    def _configure_accelerator(self):
+        from tinyexp.tiny_engine.accelerator import CPUAccelerator, DDPAccelerator
+
+        if self.cfg.accelerator == "cpu":
+            accelerator = CPUAccelerator()
+        elif self.cfg.accelerator == "ddp":
+            accelerator = DDPAccelerator()
+        else:
+            raise ValueError(f"Unknown accelerator type: {self.cfg.accelerator}")
+        return accelerator
+
+    def _configure_module(self):
         return Net()
 
-    @cached_property
-    def train_dataloader(self):
+    def _configure_train_dataloader(self):
         transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
         ds_train = datasets.MNIST(self.cfg.data_root, train=True, download=True, transform=transform)
         sampler = torch.utils.data.distributed.DistributedSampler(
@@ -86,8 +97,7 @@ class MnistExp(TinyExp):
         )
         return dl_train
 
-    @cached_property
-    def val_dataloader(self):
+    def _configure_val_dataloader(self):
         transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
         ds_val = datasets.MNIST(self.cfg.data_root, train=False, download=True, transform=transform)
         sampler = torch.utils.data.distributed.DistributedSampler(
@@ -103,8 +113,7 @@ class MnistExp(TinyExp):
         )
         return dl_val
 
-    @cached_property
-    def optimizer(self):
+    def _configure_optimizer(self):
         cfg = self.cfg
         optimizer = optim.Adadelta(
             self.module.parameters(),
@@ -112,21 +121,8 @@ class MnistExp(TinyExp):
         )
         return optimizer
 
-    @cached_property
-    def lr_scheduler(self):
-        return StepLR(self.optimizer, step_size=1 * len(self.train_dataloader), gamma=0.7)
-
-    @cached_property
-    def accelerator(self):
-        from tinyexp.tiny_engine.accelerator import CPUAccelerator, DDPAccelerator
-        if self.cfg.accelerator == "cpu":
-            accelerator = CPUAccelerator()
-        elif self.cfg.accelerator == "ddp":
-            accelerator = DDPAccelerator()
-            accelerator._init_process_group()
-        else:
-            raise ValueError(f"Unknown accelerator type: {self.cfg.accelerator}")
-        return accelerator
+    def _configure_lr_scheduler(self):
+        return StepLR(self.optimizer, step_size=1, gamma=0.7)
 
     def run(self) -> None:
         accelerator = self.accelerator
@@ -136,9 +132,9 @@ class MnistExp(TinyExp):
         accelerator.print(f"device {accelerator.device!s} is used!")
 
         train_iter = iter(train_dataloader)
-        if self.cfg.train_enable_wandb and accelerator.is_main_process:
+        if self.cfg.train_enable_wandb and accelerator.rank == 0:
             wandb.init(config=self.cfg, project="Baselines", name=self.exp_name)
-    
+
         for epoch in range(self.cfg.train_max_epoch):
             module.train()
 
@@ -150,7 +146,7 @@ class MnistExp(TinyExp):
                 colour="blue",
                 ascii=" ·─",
                 unit="batch",
-                disable=not accelerator.is_local_main_process,
+                disable=accelerator.rank != 0,
             ):
                 try:
                     batch = next(train_iter)
@@ -170,92 +166,65 @@ class MnistExp(TinyExp):
                 optimizer.step()
                 if step % 20 == 0:
                     self.logger.info(
-                        f'epoch {epoch} loss: {loss.item(): .4f} lr: {optimizer.param_groups[0]["lr"]: .4f}'
+                        f"epoch {epoch} loss: {loss.item(): .4f} lr: {optimizer.param_groups[0]['lr']: .4f}"
                     )
-                    if self.cfg.train_enable_wandb and accelerator.is_main_process:
+                    if self.cfg.train_enable_wandb and accelerator.rank == 0:
                         wandb.log({"epoch": epoch, "loss": loss.item(), "lr": optimizer.param_groups[0]["lr"]})
-                lr_scheduler.step()
+            self.eval(module, val_dataloader)
+            lr_scheduler.step()
 
-            module.eval()
-            accurate = 0.0
+        # dump model
+        # state_dict = accelerator.dump_model_to_state_dict()
+        # if accelerator.rank == 0:
+        #     self.logger.info(f"Dumping model to {self.exp_name}.pth")
+        #     torch.save(state_dict, f"{self.exp_name}.pth")
 
-            for _, batch in enumerate(val_dataloader):
-                features, labels = (_.to(accelerator.device) for _ in batch)
-                with torch.no_grad():
-                    preds = module(features)
-                predictions = preds.argmax(dim=-1)
-                accurate_preds = predictions == labels
-                accurate_preds_sum = accelerator.reduce_sum(accurate_preds.sum())
-                accurate += accurate_preds_sum
+    def eval(self, module_or_module_path, val_dataloader=None):
+        if isinstance(module_or_module_path, str):
+            module = Net()
+            module.load_state_dict(torch.load(module_or_module_path))
+            module = self.accelerator.prepare(module)
+            val_dataloader = self.val_dataloader
+        else:
+            module = module_or_module_path
 
-            eval_metric = accurate.item() / len(val_dataloader.dataset)
+        module.eval()
+        accurate = 0.0
 
-            # ======================================================================
-            # print logs and save ckpt
-            accelerator.wait_for_everyone()
-            nowtime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            self.logger.info(f"epoch【{epoch}】@{nowtime} --> eval_metric= {100 * eval_metric:.2f}%")
+        for _, batch in enumerate(val_dataloader):
+            features, labels = (_.to(self.accelerator.device) for _ in batch)
+            with torch.no_grad():
+                preds = module(features)
+            predictions = preds.argmax(dim=-1)
+            accurate_preds = predictions == labels
+            accurate_preds_sum = self.accelerator.reduce_sum(accurate_preds.sum())
+            accurate += accurate_preds_sum
+        eval_metric = accurate.item() / len(val_dataloader.dataset)
 
-            if self.cfg.train_enable_wandb and accelerator.is_main_process:
-                wandb.log({"eval_metric": eval_metric})
+        print(f"======> data_shard_count: {len(val_dataloader.dataset)}")
+        # ======================================================================
+        self.accelerator.wait_for_everyone()
+        nowtime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.logger.info(f"{nowtime} --> eval_metric= {100 * eval_metric:.2f}%")
 
-from ray.util.placement_group import placement_group
-from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
-import socket
+        if self.cfg.train_enable_wandb and self.accelerator.is_main_process:
+            wandb.log({"val_metric": eval_metric})
 
-def create_placement_group(num_gpus):
-    """Create and return a placement group for GPU allocation."""
-    bundles = [{"CPU": 10, "GPU": 1} for _ in range(num_gpus)]
-    pg = placement_group(bundles=bundles, strategy="STRICT_PACK")
-    ray.get(pg.ready())
-    return pg
-
-def create_worker_options(pg, rank, local_rank, num_gpus, master_addr, master_port):
-    """Create options for Ray workers."""
-    return {
-        'runtime_env': {
-            'env_vars': {
-                'WORLD_SIZE': str(num_gpus),
-                'RANK': str(rank),
-                'MASTER_ADDR': master_addr,
-                'MASTER_PORT': str(master_port),
-                "LOCAL_RANK": str(local_rank),
-            }
-        },
-        'scheduling_strategy': PlacementGroupSchedulingStrategy(
-            placement_group=pg,
-            placement_group_bundle_index=rank
-        ),
-        'num_gpus': 1.0
-    }
-
-def get_network_config():
-    """Get network configuration for distributed setup."""
-    master_addr = ray._private.services.get_node_ip_address()
-    with socket.socket() as sock:
-        sock.bind(('', 0))
-        master_port = sock.getsockname()[1]
-    return master_addr, master_port
 
 @hydra.main(version_base=None, config_name="cfg")
 def main(cfg: DictConfig) -> None:
     print(OmegaConf.to_yaml(cfg))
-    ray.init()
-
-    num_gpus = 2
-    pg = create_placement_group(num_gpus=num_gpus)
-    master_addr, master_port = get_network_config()
-    worker_group = []
-    for i in range(num_gpus):
-        options = create_worker_options(pg, i, i, num_gpus, master_addr, master_port)
-        worker_group.append(MnistExp.options(**options).remote(cfg))
-
-    run_futures = []
-    for i in range(num_gpus):
-        run_futures.append(worker_group[i].run.remote())
-    
-    # Wait for all run tasks to complete
-    ray.get(run_futures)
+    if cfg.launch == "ray":
+        ray.init()
+        remote_exp = ray.remote(MnistExp)
+        options_list = get_num_gpus_worker_options(torch.cuda.device_count())
+        worker_group = [remote_exp.options(**options).remote(cfg) for options in options_list]
+        run_futures = [worker.run.remote() for worker in worker_group]
+        ray.get(run_futures)
+        ray.shutdown()
+    else:
+        # MnistExp(cfg).run()
+        MnistExp(cfg).eval("xxx.pth")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,6 @@
 import abc
 import os
 from abc import abstractmethod
-from functools import cached_property
 
 import torch
 
@@ -14,6 +13,8 @@ class BaseAccelerator(abc.ABC):
     """
 
     def __init__(self) -> None:
+        self._model = None
+        self._optimizer = None
 
         self.rank = int(os.getenv("RANK", 0))
         self.world_size = int(os.getenv("WORLD_SIZE", 1))
@@ -23,7 +24,10 @@ class BaseAccelerator(abc.ABC):
         self.master_port = int(os.getenv("MASTER_PORT", 12345))
 
         if torch.cuda.is_available():
-            self.device = torch.device("cuda")
+            if torch.cuda.device_count() > 1:  # in ray env, device count is always 1
+                self.device = torch.device("cuda", self.local_rank)
+            else:
+                self.device = torch.device("cuda")
         else:
             self.device = torch.device("cpu")
 
@@ -31,9 +35,17 @@ class BaseAccelerator(abc.ABC):
     def _init_process_group(self) -> None:
         pass
 
+    @property
+    def model(self):  # type: ignore[no-untyped-def]
+        return self._model
+
     @abstractmethod
     def unwrap_model(self, model):  # type: ignore[no-untyped-def]
         pass
+
+    @property
+    def optimizer(self):  # type: ignore[no-untyped-def]
+        return self._optimizer
 
     @abstractmethod
     def prepare(self, model, optimizer=None):  # type: ignore[no-untyped-def]

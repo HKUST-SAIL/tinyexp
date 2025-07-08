@@ -1,10 +1,10 @@
 import os
-import sys
-from functools import cached_property
+from abc import abstractmethod
 from sys import stderr
 
 from loguru import logger
 
+from .tiny_engine.accelerator.base_accelerator import BaseAccelerator
 
 __all__ = ["TinyExp", "tiny_logger_setup"]
 
@@ -55,35 +55,86 @@ def tiny_logger_setup(save_dir: str, distributed_rank: int = 0, filename: str = 
 
 class TinyExp:
     """
-    A tiny experiment class that provides basic functionalities for experiments.
+    TinyExp serves as a lightweight framework for running experiments, with support
+    for both PyTorch and Ray environments. It handles common experiment setup tasks
+    such as configuring accelerators for distributed training, establishing consistent
+    experiment naming, managing output directories, and setting up logging.
+
+    Parameters
+    ----------
+    cfg : object
+        Configuration object containing experiment settings. Should include attributes
+        that control experiment behavior. May include an optional 'output_root' attribute
+        to specify the base output directory.
+
+    Attributes
+    ----------
+        cfg : object
+            The configuration object provided during initialization.
+        accelerator : object or None
+            The accelerator object for distributed training (if applicable).
+        exp_name : str
+            The name of the experiment, derived from the class name.
+        output_dir : str
+            The directory where experiment outputs will be stored.
+        logger : Logger
+            The logger object configured for this experiment.
+
+    Methods
+    -------
+        _configure_exp_name()
+            Generates the experiment name based on the class name.
+        _configure_output_dir()
+            Constructs the output directory path based on output_root and exp_name.
+        _configure_accelerator()
+            Sets up the appropriate accelerator for the experiment.
+        _configure_logger()
+            Initializes and configures the logging system.
+
+    Notes
+    -----
+    This class is designed to be subclassed for specific experiment implementations.
+    Override the configuration methods to customize experiment behavior.
     """
 
     def __init__(self, cfg) -> None:
         self.cfg = cfg
+        self.accelerator = self._configure_accelerator()
+        self.exp_name = self._configure_exp_name()
+        self.output_dir = self._configure_output_dir()
+        self.logger = self._configure_logger()
+        self.module = self._configure_module()
+        self.optimizer = self._configure_optimizer()
+        self.lr_scheduler = self._configure_lr_scheduler()
+        self.global_step = 0
+        self.global_epoch = 0
 
-    @cached_property
-    def exp_name(self) -> str:
-        exp_class_name = self.__class__.__name__
-        # if hasattr(self, "_override_cfg"):
-        #     for k, v in self._override_cfg.items():
-        #         if isinstance(v, str):
-        #             exp_class_name += "_{}{}".format(k, v.replace("/", "-"))
-        #         else:
-        #             exp_class_name += f"_{k}{v}"
-        return exp_class_name
+    def _configure_exp_name(self) -> str:
+        return self.__class__.__name__
 
-    @cached_property
-    def output_dir(self) -> str:
+    def _configure_output_dir(self) -> str:
         output_root = getattr(self.cfg, "output_root", "./output")
         return os.path.join(output_root, self.exp_name)
 
-    @cached_property
-    def accelerator(self):
-        return None
+    @abstractmethod
+    def _configure_accelerator(self) -> BaseAccelerator:
+        pass
 
-    @cached_property
-    def logger(self):
+    @abstractmethod
+    def _configure_module(self):
+        pass
+
+    @abstractmethod
+    def _configure_optimizer(self):
+        pass
+
+    @abstractmethod
+    def _configure_lr_scheduler(self):
+        pass
+
+    def _configure_logger(self):
         distributed_rank = self.accelerator.rank if self.accelerator else 0
         logger = tiny_logger_setup(self.output_dir, distributed_rank=distributed_rank, filename="log.log")
-        logger.info("{}{}".format("Command line: ", " ".join(sys.argv)))
+        logger.info("{}{}".format("log file: ", os.path.join(self.output_dir, "log.log")))
+        # logger.info("{}{}".format("Command line: ", " ".join(sys.argv)))
         return logger

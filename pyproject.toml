@@ -24,9 +24,10 @@ dependencies = [
     "hydra-core",
     "omegaconf",
     "ray",
-    "tqdm"
+    "tqdm",
     "torch",
     "torchvision",
+    "redis",
 ]
 
 [project.urls]
