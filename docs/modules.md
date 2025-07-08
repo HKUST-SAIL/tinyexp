@@ -1,1 +1,1 @@
-::: tinyexp.tinyexp
+::: tinyexp
