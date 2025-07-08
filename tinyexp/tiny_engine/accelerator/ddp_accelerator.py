@@ -90,6 +90,7 @@ class DDPAccelerator(BaseAccelerator):
     def __init__(self, mixed_precision=None):
         super().__init__()
         assert torch.cuda.is_available(), "DDPAccelerator requires CUDA to be available."
+        self._init_process_group()
 
         self.mixed_precision = mixed_precision
         self.dtype = None
@@ -122,13 +123,14 @@ class DDPAccelerator(BaseAccelerator):
             return ret_model
 
     def prepare_model(self, model):
-        model.to(self.device)
-        wrapped_model = nn.parallel.DistributedDataParallel(
-            model,
-            # device_ids=[self.local_rank],
-            # find_unused_parameters=self.find_unused_parameters,
-            # broadcast_buffers=self.broadcast_buffers,
-        )
+        if self._model is None:
+            model.to(self.device)
+            self._model = nn.parallel.DistributedDataParallel(
+                model,
+                # device_ids=[self.local_rank],
+                # find_unused_parameters=self.find_unused_parameters,
+                # broadcast_buffers=self.broadcast_buffers,
+            )
 
         if self.mixed_precision == torch.bfloat16 or self.mixed_precision == torch.float16:
 
@@ -136,8 +138,8 @@ class DDPAccelerator(BaseAccelerator):
                 with self.autocast:
                     return old_forward(*args, **kwargs)
 
-            wrapped_model.forward = new_forward.__get__(wrapped_model.forward)
-        return wrapped_model
+            self._model.forward = new_forward.__get__(self._model.forward)
+        return self._model
 
     def prepare_optimizer(self, optimizer):
         # refer to: https://github.com/pytorch/pytorch/issues/8741
@@ -155,11 +157,13 @@ class DDPAccelerator(BaseAccelerator):
                             if subparam._grad is not None:
                                 subparam._grad.data = subparam._grad.data.to(device)
 
-        optimizer_to(optimizer, self.device)
+        if self._optimizer is None:
+            self._optimizer = optimizer
+            optimizer_to(self._optimizer, self.device)
 
         if self.mixed_precision == torch.bfloat16 or self.mixed_precision == torch.float16:
-            optimizer = DDPAcceleratedOptimizer(optimizer, self.grad_scaler)
-        return optimizer
+            self._optimizer = DDPAcceleratedOptimizer(self._optimizer, self.grad_scaler)
+        return self._optimizer
 
     def _naive_backward(self, loss: torch.Tensor):
         loss.backward()
@@ -170,16 +174,32 @@ class DDPAccelerator(BaseAccelerator):
     def backward(self, loss: torch.Tensor):
         pass
 
-    def dump_model_to_state_dict(self, model):
+    def load_model_from_state_dict(self, state_dict, *args, **kwargs):
+        return self._model.module.load_state_dict(state_dict, *args, **kwargs)
+
+    def dump_model_to_state_dict(self):
         """
         dump model to cpu state_dict
         """
-        model_state = model.module.state_dict()
+        model_state = self._model.module.state_dict()
         model_state_cpu = type(model_state)()
         for key, val in model_state.items():
             model_state_cpu[key] = val.cpu()
         return model_state_cpu
 
+    @property
+    def is_main_process(self):
+        """True for one process per server."""
+        return self.rank == 0
+
+    @property
+    def is_local_main_process(self) -> bool:
+        """True for one process per server."""
+        return self.local_rank == 0
+
+    @property
+    def is_last_process(self) -> bool:
+        return self.rank == self.world_size - 1
 
     def wait_for_everyone(self) -> None:
         if self.world_size < 2:

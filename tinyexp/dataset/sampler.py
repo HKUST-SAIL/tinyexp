@@ -33,8 +33,8 @@ class InfiniteSampler(Sampler):
         self._seed = int(seed)
         self.drop_last = drop_last
         if accelerator is not None:
-            self._rank = accelerator.local_process_index
-            self._world_size = accelerator.num_processes
+            self._rank = accelerator.rank
+            self._world_size = accelerator.world_size
         else:
             self._rank = 0
             self._world_size = 1

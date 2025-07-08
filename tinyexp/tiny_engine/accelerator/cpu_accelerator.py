@@ -1,5 +1,7 @@
-import torch 
+import torch
+
 from .base_accelerator import BaseAccelerator
+
 
 class CPUAccelerator(BaseAccelerator):
     """
