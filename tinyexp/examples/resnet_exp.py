@@ -405,7 +405,6 @@ class ResNetExp(TinyExp):
 @hydra.main(version_base=None, config_name="cfg")
 def main(cfg: DictConfig) -> None:
     print(OmegaConf.to_yaml(cfg))
-    from IPython import embed; embed()
     if cfg.launch == "ray":
         ray.init()
         # ------------------- build redis server -------------------- #
