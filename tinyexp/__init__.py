@@ -26,7 +26,7 @@ class _HydraConfig(HydraConf):
     """
 
     output_subdir: Optional[str] = None
-    run: RunDir = RunDir("./output")
+    run: RunDir = field(default_factory=lambda: RunDir("./output"))
 
 
 @dataclass
