@@ -8,7 +8,7 @@ on:
 
 jobs:
   validate-codecov-config:
-    runs-on: hkust_yliang
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
       - name: Validate codecov configuration

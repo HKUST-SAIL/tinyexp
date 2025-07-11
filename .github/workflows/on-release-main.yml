@@ -7,7 +7,7 @@ on:
 jobs:
 
   set-version:
-    runs-on: hkust_yliang
+    runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
 
@@ -30,7 +30,7 @@ jobs:
           path: pyproject.toml
 
   publish:
-    runs-on: hkust_yliang
+    runs-on: self-hosted
     needs: [set-version]
     steps:
       - name: Check out
@@ -54,7 +54,7 @@ jobs:
 
   deploy-docs:
     needs: publish
-    runs-on: hkust_yliang
+    runs-on: self-hosted
     steps:
       - name: Check out
         uses: actions/checkout@v4
