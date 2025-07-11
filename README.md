@@ -6,69 +6,52 @@
 [![Commit activity](https://img.shields.io/github/commit-activity/m/zengarden/TinyExp)](https://img.shields.io/github/commit-activity/m/zengarden/TinyExp)
 [![License](https://img.shields.io/github/license/zengarden/TinyExp)](https://img.shields.io/github/license/zengarden/TinyExp)
 
-A minimalist Python project for deep learning experiment management. It uses Ray for core distributed environment and backend setup, and provides basic, no-frills tracking for models, optimizers, and LR schedulers.
+A simple Python project for deep learning experiment management. It uses Ray for core distributed environment and backend setup, and provides basic, no-frills tracking for models, optimizers, and LR schedulers.
 
-- **Github repository**: <https://github.com/zengarden/TinyExp/>
-- **Documentation** <https://zengarden.github.io/TinyExp/>
+# Usage
 
-## Getting started with your project
 
-### 1. Create a New Repository
-
-First, create a repository on GitHub with the same name as this project, and then run the following commands:
-
-```bash
-git init -b main
-git add .
-git commit -m "init commit"
-git remote add origin git@github.com:zengarden/TinyExp.git
-git push -u origin main
+```
+pip install tinyexp
 ```
 
-### 2. Set Up Your Development Environment
+Run mnist example, By default, all available GPUs will be used.
 
-Then, install the environment and the pre-commit hooks with
+```
+import tinyexp
+from tinyexp.examples.mnist_exp import Config
+tinyexp.ConfigStore.instance().store(name="cfg", node=Config)
+tinyexp.simple_ray_launch_exp()
+```
+
+# More Examples
+
+1. ImageNet ResNet-50 Example with Extremely Fast Data Loading:
 
 ```bash
+export IMAGENET_HOME=yours_imagenet_dir
+
+import tinyexp
+from tinyexp.examples.resnet_exp import Config
+tinyexp.ConfigStore.instance().store(name="cfg", node=Config)
+tinyexp.simple_ray_launch_exp()
+```
+
+# Develop
+
+
+1. prepare env
+```bash
+# 1. clone repo
+git clone https://github.com/zengarden/tinyexp.git
+# 2. Set Up Your Development Environment, This will also generate your `uv.lock` file
 make install
+source .venv/bin/activate
 ```
 
-This will also generate your `uv.lock` file
-
-### 3. Run the pre-commit hooks
-
-Initially, the CI/CD pipeline might be failing due to formatting issues. To resolve those run:
+2. After development, checking whether the code is standardized
 
 ```bash
+# Initially, the CI/CD pipeline might be failing due to formatting issues. To resolve those run:
 uv run pre-commit run -a
 ```
-
-### 4. Commit the changes
-
-Lastly, commit the changes made by the two steps above to your repository.
-
-```bash
-git add .
-git commit -m 'Fix formatting issues'
-git push origin main
-```
-
-You are now ready to start development on your project!
-The CI/CD pipeline will be triggered when you open a pull request, merge to main, or when you create a new release.
-
-To finalize the set-up for publishing to PyPI, see [here](https://fpgmaas.github.io/cookiecutter-uv/features/publishing/#set-up-for-pypi).
-For activating the automatic documentation with MkDocs, see [here](https://fpgmaas.github.io/cookiecutter-uv/features/mkdocs/#enabling-the-documentation-on-github).
-To enable the code coverage reports, see [here](https://fpgmaas.github.io/cookiecutter-uv/features/codecov/).
-
-## Releasing a new version
-
-- Create an API Token on [PyPI](https://pypi.org/).
-- Add the API Token to your projects secrets with the name `PYPI_TOKEN` by visiting [this page](https://github.com/zengarden/TinyExp/settings/secrets/actions/new).
-- Create a [new release](https://github.com/zengarden/TinyExp/releases/new) on Github.
-- Create a new tag in the form `*.*.*`.
-
-For more details, see [here](https://fpgmaas.github.io/cookiecutter-uv/features/cicd/#how-to-trigger-a-release).
-
----
-
-Repository initiated with [fpgmaas/cookiecutter-uv](https://github.com/fpgmaas/cookiecutter-uv).

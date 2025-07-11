@@ -1,56 +1,37 @@
+"""
+author: LI Zeming
+email: zengarden2009@gmail.com
+"""
+
 import os
 from abc import abstractmethod
-from sys import stderr
+from dataclasses import dataclass, field
+from typing import Optional
 
-from loguru import logger
+import ray
+from hydra.conf import HydraConf, RunDir
+from hydra.core.config_store import ConfigStore
 
 from .tiny_engine.accelerator.base_accelerator import BaseAccelerator
+from .utils.log_utils import tiny_logger_setup
+from .utils.ray_utils import simple_ray_launch_exp
 
-__all__ = ["TinyExp", "tiny_logger_setup"]
+__all__ = ["TinyExp", "TinyCfg", "simple_ray_launch_exp", "ConfigStore"]
 
 
-def tiny_logger_setup(save_dir: str, distributed_rank: int = 0, filename: str = "log.txt", mode: str = "a"):  # type: ignore[no-untyped-def]
-    """setup logger for training and testing.
-    Args:
-        save_dir(str): loaction to save log file
-        distributed_rank(int): device rank when multi-gpu environment
-        mode(str): log file write mode, `append` or `override`. default is `a`.
-    Return:
-        logger instance.
+@dataclass
+class _HydraConfig(HydraConf):
     """
-    save_file = os.path.join(save_dir, filename)
-    if mode == "o" and os.path.exists(save_file):
-        os.remove(save_file)
+    To avoid hydra output the config in unexpected directory.
+    """
 
-    # Remove all existing processors
-    logger.remove()
+    output_subdir: Optional[str] = None
+    run: RunDir = field(default_factory=lambda: RunDir("./output"))
 
-    # Detailed format for file logging
-    file_format = "{time:HH:mm:ss} {message}"
 
-    # Simplified format for console output
-    console_format = "<green>{time:HH:mm:ss}</green> {message}"
-
-    # Add file logging processor
-    _ = logger.add(
-        save_file,
-        format=file_format,
-        filter="",
-        level="INFO" if distributed_rank == 0 else "WARNING",
-        enqueue=True,
-        colorize=False,
-    )
-
-    # Add console logging processor
-    _ = logger.add(
-        stderr,
-        format=console_format,
-        filter="",
-        level="INFO" if distributed_rank == 0 else "WARNING",
-        colorize=True,
-    )
-
-    return logger
+@dataclass
+class TinyCfg:
+    hydra: _HydraConfig = field(default_factory=_HydraConfig)
 
 
 class TinyExp:
@@ -138,3 +119,46 @@ class TinyExp:
         logger.info("{}{}".format("log file: ", os.path.join(self.output_dir, "log.log")))
         # logger.info("{}{}".format("Command line: ", " ".join(sys.argv)))
         return logger
+
+    @staticmethod
+    def after_ray_init_callback(cfg):
+        # ------------------- build redis server -------------------- #
+        actor_list = []
+        if hasattr(cfg, "redis_cache_enabled") and cfg.redis_cache_enabled:
+            from tinyexp.utils.redis_utils import RedisClusterManager
+
+            requested_cpu = cfg.num_gpus * (cfg.train_data_worker_per_gpu + cfg.val_data_worker_per_gpu + 1)
+            if requested_cpu + cfg.redis_cluster_manager_cpus > os.cpu_count():
+                raise RuntimeError(
+                    f"Total CPU count {os.cpu_count()} is not enough for the experiment, "
+                    f"please set `num_gpus * (train_data_worker_per_gpu + val_data_worker_per_gpu + 1)"
+                    f"+ redis_cluster_manager_cpus` <= {os.cpu_count()}"
+                )
+            RemoteRedisClusterManager = ray.remote(num_cpus=cfg.redis_cluster_manager_cpus)(RedisClusterManager)
+            redis_actor = RemoteRedisClusterManager.remote(
+                ports=cfg.redis_cache_shard_ports,
+                max_memory_per_port=cfg.redis_cache_max_memory // len(cfg.redis_cache_shard_ports) + 1,
+            )
+            success = ray.get(redis_actor.start_redis_cluster.remote())
+            if not success:
+                raise RuntimeError("Failed to start Redis cluster")
+                # Periodically monitor Redis memory usage
+            else:
+                print(f"Redis cluster started successfully with ports: {cfg.redis_cache_shard_ports}")
+            actor_list.append(redis_actor)
+
+            # import threading
+            # import time
+
+            # def monitor_redis_memory():
+            #     while True:
+            #         try:
+            #             memory_info = ray.get(redis_actor.get_redis_memory_info.remote())
+            #             print(f" ==> Redis Memory Status: {memory_info}")
+            #             time.sleep(60)
+            #         except:
+            #             break
+
+            # monitor_thread = threading.Thread(target=monitor_redis_memory, daemon=True)
+            # monitor_thread.start()
+        return actor_list
