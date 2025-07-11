@@ -25,6 +25,12 @@ class RedisClusterManager:
         try:
             for i, port in enumerate(self.ports):
                 # Start Redis server process
+                # check if the redis-server command is available
+                if not subprocess.run(["which", "redis-server"], stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout:
+                    raise EnvironmentError(
+                        "redis-server command not found. Please install using sudo apt-get install redis-server."
+                    )
+
                 redis_process = subprocess.Popen(
                     [
                         "redis-server",

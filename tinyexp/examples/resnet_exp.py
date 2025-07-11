@@ -4,26 +4,22 @@ import os
 import time
 from dataclasses import dataclass
 
-import hydra
-import ray
 import redis
 import torch
 import torch.nn as nn
 import torchvision.models as models
 import wandb
 from hydra.core.config_store import ConfigStore
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from omegaconf.listconfig import ListConfig
 from PIL import Image
 from torch.optim import SGD
 from torch.optim.lr_scheduler import StepLR
 from torchvision import datasets, transforms
 
-from tinyexp import TinyExp
+from tinyexp import TinyCfg, TinyExp, simple_ray_launch_exp
 from tinyexp.dataset.sampler import InfiniteSampler
 from tinyexp.tiny_engine.accelerator import CPUAccelerator, DDPAccelerator
-from tinyexp.utils.ray_utils import get_num_gpus_worker_options
-from tinyexp.utils.redis_utils import RedisClusterManager
 
 
 def transform_template_imagenet(
@@ -89,8 +85,8 @@ class LocalCachedImageFolder:
             print(f"Error decoding image: {e}")
             raise
 
-        if (self.cache_hits + self.cache_misses) % 1000 == 0:
-            print(f"Local Cache stats - hits: {self.cache_hits}, misses: {self.cache_misses}")
+        # if (self.cache_hits + self.cache_misses) % 1000 == 0:
+        #     print(f"Local Cache stats - hits: {self.cache_hits}, misses: {self.cache_misses}")
 
         if self.transform is not None:
             image = self.transform(image)
@@ -195,37 +191,6 @@ class RedisCachedImageFolder:
                 redis_client.close()
             except:
                 pass
-
-
-@dataclass
-class ResNetConfig:
-    # for exp actor
-    data_root: str = os.environ.get("IMAGENET_HOME", "./data/imagenet/")
-    accelerator: str = "ddp"  # "cpu", "ddp"
-    train_data_worker_per_gpu: int = 11
-    train_lr_per_img: float = 0.1 / 256.0  # single image learning rate
-    train_batch_size_per_device: int = 32
-    val_data_worker_per_gpu: int = 1
-    val_batch_size_per_device: int = 50
-    train_max_epoch: int = 90
-    train_warmup_epoch: int = 0
-    train_enable_wandb: bool = False
-    launch: str = "ray"  # "ray", "local"
-    seed: int = 42
-
-    # for redis actor
-    redis_cache_enabled: bool = True  # Whether to use Redis cache for images
-    redis_cache_max_memory: int = 160  # Maximum memory is 160GB, according to the ImageNet dataset size
-    redis_cache_shard_ports: ListConfig = ListConfig(
-        [
-            7000,
-            7001,
-            7002,
-            7003,
-            7004,
-        ]
-    )  # List of Redis cache shard used ports
-    redis_cluster_manager_cpus: int = 10  # Number of CPUs allocated for Redis cluster manager
 
 
 class ResNetExp(TinyExp):
@@ -402,52 +367,44 @@ class ResNetExp(TinyExp):
             wandb.log({"val_metric": eval_metric})
 
 
-@hydra.main(version_base=None, config_name="cfg")
-def main(cfg: DictConfig) -> None:
-    print(OmegaConf.to_yaml(cfg))
-    if cfg.launch == "ray":
-        ray.init()
-        # ------------------- build redis server -------------------- #
-        if cfg.redis_cache_enabled:
-            RemoteRedisClusterManager = ray.remote(num_cpus=cfg.redis_cluster_manager_cpus)(RedisClusterManager)
-            redis_actor = RemoteRedisClusterManager.remote(
-                ports=cfg.redis_cache_shard_ports,
-                max_memory_per_port=cfg.redis_cache_max_memory // len(cfg.redis_cache_shard_ports) + 1,
-            )
-            success = ray.get(redis_actor.start_redis_cluster.remote())
-            if not success:
-                raise RuntimeError("Failed to start Redis cluster")
+@dataclass
+class Config(TinyCfg):
+    # for exp actor
+    exp_class: str = f"{ResNetExp.__module__}.{ResNetExp.__name__}"
+    data_root: str = os.environ.get("IMAGENET_HOME", "./data/imagenet/")
 
-            # Periodically monitor Redis memory usage
-            # import threading
-            # import time
+    accelerator: str = "ddp"  # "cpu", "ddp"
 
-            # def monitor_redis_memory():
-            #     while True:
-            #         try:
-            #             memory_info = ray.get(redis_actor.get_redis_memory_info.remote())
-            #             print(f" ==> Redis Memory Status: {memory_info}")
-            #             time.sleep(60)
-            #         except:
-            #             break
+    # bellowing config specific the cpu and gpu resources for the experiment
+    # total_cpu = num_gpus * (train_data_worker_per_gpu + val_data_worker_per_gpu + 1) + redis_cluster_manager_cpus
+    num_gpus: int = torch.cuda.device_count()
+    train_data_worker_per_gpu: int = 6
+    val_data_worker_per_gpu: int = 1
+    redis_cluster_manager_cpus: int = 10  # Number of CPUs allocated for Redis cluster manager
 
-            # monitor_thread = threading.Thread(target=monitor_redis_memory, daemon=True)
-            # monitor_thread.start()
+    train_lr_per_img: float = 0.1 / 256.0  # single image learning rate
+    train_batch_size_per_device: int = 32
+    val_batch_size_per_device: int = 50
+    train_max_epoch: int = 90
+    train_warmup_epoch: int = 0
+    train_enable_wandb: bool = False
+    launch: str = "ray"  # "ray", "local"
+    seed: int = 42
 
-        remote_exp = ray.remote(ResNetExp)
-        num_gpus = torch.cuda.device_count()
-        options_list = get_num_gpus_worker_options(
-            num_gpus, num_cpus_per_gpu=cfg.train_data_worker_per_gpu + cfg.val_data_worker_per_gpu + 1
-        )
-
-        worker_group = [remote_exp.options(**options).remote(cfg) for options in options_list]
-        run_futures = [worker.run.remote() for worker in worker_group]
-        ray.get(run_futures)
-
-    else:
-        ResNetExp(cfg).run()
+    # for redis actor
+    redis_cache_enabled: bool = True  # Whether to use Redis cache for images
+    redis_cache_max_memory: int = 160  # Maximum memory is 160GB, according to the ImageNet dataset size
+    redis_cache_shard_ports: ListConfig = ListConfig(
+        [
+            7000,
+            7001,
+            7002,
+            7003,
+            7004,
+        ]
+    )  # List of Redis cache shard used ports
 
 
 if __name__ == "__main__":
-    ConfigStore.instance().store(name="cfg", node=ResNetConfig)
-    main()
+    ConfigStore.instance().store(name="cfg", node=Config)
+    simple_ray_launch_exp()

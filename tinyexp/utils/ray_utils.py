@@ -1,6 +1,9 @@
+import os
 import socket
 
+import hydra
 import ray
+from omegaconf import DictConfig, OmegaConf
 from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
@@ -48,3 +51,36 @@ def get_num_gpus_worker_options(num_gpus, num_cpus_per_gpu=10):
         options = get_1gpu_worker_options(pg, i, i, num_gpus, master_addr, master_port)
         options_list.append(options)
     return options_list
+
+
+@hydra.main(version_base=None, config_name="cfg")
+def simple_ray_launch_exp(cfg: DictConfig) -> None:
+    """This is a template for launching a Ray-based experiment."""
+    print(OmegaConf.to_yaml(cfg))
+
+    exp_class = hydra.utils.get_class(cfg.exp_class)
+    if cfg.launch == "ray":
+        ray.init()
+
+        # hold actor list to avoid garbage collection, otherwise the actors will be garbage collected
+        actor_list = exp_class.after_ray_init_callback(cfg)
+
+        requested_cpu = cfg.num_gpus * (cfg.train_data_worker_per_gpu + cfg.val_data_worker_per_gpu + 1)
+        if requested_cpu > os.cpu_count():
+            raise RuntimeError(
+                f"Total CPU count {os.cpu_count()} is not enough for the experiment, "
+                f"please set `num_gpus * (train_data_worker_per_gpu + val_data_worker_per_gpu + 1)`"
+                f"<= {os.cpu_count()}"
+            )
+
+        remote_exp = ray.remote(exp_class)
+        options_list = get_num_gpus_worker_options(
+            cfg.num_gpus, num_cpus_per_gpu=cfg.train_data_worker_per_gpu + cfg.val_data_worker_per_gpu + 1
+        )
+
+        worker_group = [remote_exp.options(**options).remote(cfg) for options in options_list]
+        run_futures = [worker.run.remote() for worker in worker_group]
+        ray.get(run_futures)
+
+    else:
+        exp_class(cfg).run()

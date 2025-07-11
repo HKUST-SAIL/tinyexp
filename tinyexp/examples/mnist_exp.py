@@ -1,21 +1,19 @@
 import datetime
+import os
 from dataclasses import dataclass
 
-import hydra
 import ray
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import wandb
-from hydra.core.config_store import ConfigStore
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from torch.optim.lr_scheduler import StepLR
 from torchvision import datasets, transforms
 from tqdm import tqdm
 
-from tinyexp import TinyExp
-from tinyexp.utils.ray_utils import get_num_gpus_worker_options
+from tinyexp import ConfigStore, TinyCfg, TinyExp, simple_ray_launch_exp
 
 
 class Net(nn.Module):
@@ -52,15 +50,6 @@ class Net(nn.Module):
 
 
 class MnistExp(TinyExp):
-    @dataclass
-    class Config:
-        data_root: str = "./data/"
-        accelerator: str = "ddp"  # "cpu", "ddp"
-        train_lr_per_img: float = 1.0 / 64.0  # single image learning rate
-        train_batch_size_per_device: int = 32
-        train_max_epoch: int = 3
-        train_enable_wandb: bool = False
-        launch: str = "ray"  # "ray", "local"
 
     def __init__(self, cfg: DictConfig):
         super().__init__(cfg)
@@ -91,7 +80,7 @@ class MnistExp(TinyExp):
             ds_train,
             batch_size=self.cfg.train_batch_size_per_device,
             shuffle=False,
-            num_workers=2,
+            num_workers=self.cfg.train_data_worker_per_gpu,
             drop_last=True,
             sampler=sampler,
         )
@@ -107,7 +96,7 @@ class MnistExp(TinyExp):
             ds_val,
             batch_size=self.cfg.train_batch_size_per_device,
             shuffle=False,
-            num_workers=2,
+            num_workers=self.cfg.val_data_worker_per_gpu,
             drop_last=True,
             sampler=sampler,
         )
@@ -211,22 +200,21 @@ class MnistExp(TinyExp):
             wandb.log({"val_metric": eval_metric})
 
 
-@hydra.main(version_base=None, config_name="cfg")
-def main(cfg: DictConfig) -> None:
-    print(OmegaConf.to_yaml(cfg))
-    if cfg.launch == "ray":
-        ray.init()
-        remote_exp = ray.remote(MnistExp)
-        options_list = get_num_gpus_worker_options(torch.cuda.device_count())
-        worker_group = [remote_exp.options(**options).remote(cfg) for options in options_list]
-        run_futures = [worker.run.remote() for worker in worker_group]
-        ray.get(run_futures)
-        ray.shutdown()
-    else:
-        # MnistExp(cfg).run()
-        MnistExp(cfg).eval("xxx.pth")
+@dataclass
+class Config(TinyCfg):
+    exp_class: str = f"{MnistExp.__module__}.{MnistExp.__name__}"
+    data_root: str = "./data/"
+    accelerator: str = "ddp"  # "cpu", "ddp"
+    train_lr_per_img: float = 1.0 / 64.0  # single image learning rate
+    train_batch_size_per_device: int = 32
+    train_max_epoch: int = 3
+    train_enable_wandb: bool = False
+    launch: str = "ray"  # "ray", "local"
+    num_gpus: int = torch.cuda.device_count()
+    train_data_worker_per_gpu: int = 2
+    val_data_worker_per_gpu: int = 1
 
 
 if __name__ == "__main__":
-    ConfigStore.instance().store(name="cfg", node=MnistExp.Config)
-    main()
+    ConfigStore.instance().store(name="cfg", node=Config)
+    simple_ray_launch_exp()

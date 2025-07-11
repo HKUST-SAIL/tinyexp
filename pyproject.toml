@@ -28,6 +28,8 @@ dependencies = [
     "torch",
     "torchvision",
     "redis",
+    "wandb",
+    "loguru",
 ]
 
 [project.urls]
@@ -47,10 +49,6 @@ dev = [
     "mkdocs>=1.4.2",
     "mkdocs-material>=8.5.10",
     "mkdocstrings[python]>=0.26.1",
-
-    "loguru",
-    "wandb",
-
 ]
 
 [build-system]
@@ -59,6 +57,19 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["tinyexp"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/tinyexp",
+    "/tests",
+    "/CONTRIBUTING.md",
+    "/LICENSE",
+    "/Makefile",
+    "/pyproject.toml",
+    "/README.md",
+]
+
+
 
 [tool.mypy]
 files = ["tinyexp"]
