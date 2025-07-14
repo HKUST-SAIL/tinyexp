@@ -95,7 +95,7 @@ class DDPAccelerator(BaseAccelerator):
         self.mixed_precision = mixed_precision
         self.dtype = None
         if self.mixed_precision == torch.float16 or self.mixed_precision == torch.bfloat16:
-            self.grad_scaler = torch.amp.GradScaler(self.device.type)
+            self.grad_scaler = torch.cuda.amp.GradScaler(self.device.type)
             self.autocast = torch.autocast(device_type=self.device.type, dtype=mixed_precision)
             self.backward = self._amp_backward
             self.dtype = mixed_precision
