@@ -1,10 +1,8 @@
+[![Main](https://github.com/HKUST-SAIL/tinyexp/actions/workflows/main.yml/badge.svg?branch=main)](https://github.com/HKUST-SAIL/tinyexp/actions/workflows/main.yml)
+[![codecov](https://codecov.io/gh/HKUST-SAIL/TinyExp/branch/main/graph/badge.svg)](https://codecov.io/gh/HKUST-SAIL/TinyExp)
+
 # TinyExp
 
-[![Release](https://img.shields.io/github/v/release/zengarden/TinyExp)](https://img.shields.io/github/v/release/zengarden/TinyExp)
-[![Build status](https://img.shields.io/github/actions/workflow/status/zengarden/TinyExp/main.yml?branch=main)](https://github.com/zengarden/TinyExp/actions/workflows/main.yml?query=branch%3Amain)
-[![codecov](https://codecov.io/gh/zengarden/TinyExp/branch/main/graph/badge.svg)](https://codecov.io/gh/zengarden/TinyExp)
-[![Commit activity](https://img.shields.io/github/commit-activity/m/zengarden/TinyExp)](https://img.shields.io/github/commit-activity/m/zengarden/TinyExp)
-[![License](https://img.shields.io/github/license/zengarden/TinyExp)](https://img.shields.io/github/license/zengarden/TinyExp)
 
 A simple Python project for deep learning experiment management. It uses Ray for core distributed environment and backend setup, and provides basic, no-frills tracking for models, optimizers, and LR schedulers.
 
@@ -43,7 +41,7 @@ tinyexp.simple_ray_launch_exp()
 1. prepare env
 ```bash
 # 1. clone repo
-git clone https://github.com/zengarden/tinyexp.git
+git clone https://github.com/HKUST-SAIL/tinyexp.git
 # 2. Set Up Your Development Environment, This will also generate your `uv.lock` file
 make install
 source .venv/bin/activate
