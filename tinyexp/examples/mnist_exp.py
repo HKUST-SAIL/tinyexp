@@ -202,6 +202,7 @@ class MnistExp(TinyExp):
 
 @dataclass
 class Config(TinyCfg):
+    launcher: str = "ray"  # "ray", "local"
     exp_class: str = f"{MnistExp.__module__}.{MnistExp.__name__}"
     data_root: str = "./data/"
     accelerator: str = "ddp"  # "cpu", "ddp"
@@ -209,7 +210,6 @@ class Config(TinyCfg):
     train_batch_size_per_device: int = 32
     train_max_epoch: int = 3
     train_enable_wandb: bool = False
-    launch: str = "ray"  # "ray", "local"
     num_gpus: int = torch.cuda.device_count()
     train_data_worker_per_gpu: int = 2
     val_data_worker_per_gpu: int = 1
