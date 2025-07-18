@@ -32,6 +32,7 @@ class _HydraConfig(HydraConf):
 @dataclass
 class TinyCfg:
     hydra: _HydraConfig = field(default_factory=_HydraConfig)
+    launcher: str = "ray"  # "ray" or "torchrun"
 
 
 class TinyExp:

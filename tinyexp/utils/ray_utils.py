@@ -59,7 +59,7 @@ def simple_ray_launch_exp(cfg: DictConfig) -> None:
     print(OmegaConf.to_yaml(cfg))
 
     exp_class = hydra.utils.get_class(cfg.exp_class)
-    if cfg.launch == "ray":
+    if cfg.launcher == "ray":
         ray.init()
 
         # hold actor list to avoid garbage collection, otherwise the actors will be garbage collected
@@ -82,5 +82,7 @@ def simple_ray_launch_exp(cfg: DictConfig) -> None:
         run_futures = [worker.run.remote() for worker in worker_group]
         ray.get(run_futures)
 
-    else:
+    elif cfg.launcher == "torchrun":
         exp_class(cfg).run()
+    else:
+        raise ValueError(f"Unknown launcher {cfg.launcher}, please set `launcher` to 'ray' or 'torchrun'.")

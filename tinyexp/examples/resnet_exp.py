@@ -370,6 +370,7 @@ class ResNetExp(TinyExp):
 @dataclass
 class Config(TinyCfg):
     # for exp actor
+    launcher: str = "ray"  # "ray", "local"
     exp_class: str = f"{ResNetExp.__module__}.{ResNetExp.__name__}"
     data_root: str = os.environ.get("IMAGENET_HOME", "./data/imagenet/")
 
@@ -388,7 +389,6 @@ class Config(TinyCfg):
     train_max_epoch: int = 90
     train_warmup_epoch: int = 0
     train_enable_wandb: bool = False
-    launch: str = "ray"  # "ray", "local"
     seed: int = 42
 
     # for redis actor
