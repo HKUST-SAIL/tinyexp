@@ -3,12 +3,14 @@ author: LI Zeming
 email: zengarden2009@gmail.com
 """
 
+import inspect
 import os
 from abc import abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional
 
 import ray
+import torch
 from hydra.conf import HydraConf, RunDir
 from hydra.core.config_store import ConfigStore
 
@@ -81,15 +83,68 @@ class TinyExp:
 
     def __init__(self, cfg) -> None:
         self.cfg = cfg
-        self.accelerator = self._configure_accelerator()
-        self.exp_name = self._configure_exp_name()
-        self.output_dir = self._configure_output_dir()
-        self.logger = self._configure_logger()
-        self.module = self._configure_module()
-        self.optimizer = self._configure_optimizer()
-        self.lr_scheduler = self._configure_lr_scheduler()
         self.global_step = 0
         self.global_epoch = 0
+
+        # Auto-configure all _configure_* methods
+        self._auto_configure()
+
+    def _auto_configure(self):
+        """
+        Automatically discover and call all _configure_* methods,
+        setting the result as an attribute with the same name (without _configure_ prefix).
+
+        Noticing that we do not use cached_property because it cannot be serialized in ray.
+        """
+        # Get all methods of the current class and its parents
+        methods = inspect.getmembers(self, predicate=inspect.ismethod)
+
+        # Filter methods that start with _configure_
+        configure_methods = [
+            (name, method) for name, method in methods if name.startswith("_configure_") and callable(method)
+        ]
+
+        # Sort by dependency order - some methods might depend on others
+        configure_methods = self._sort_configure_methods(configure_methods)
+
+        # Call each method and set the attribute
+        for method_name, method in configure_methods:
+            # Extract attribute name: _configure_accelerator -> accelerator
+            attr_name = method_name[len("_configure_") :]
+
+            try:
+                result = method()
+                setattr(self, attr_name, result)
+                # print(f"Auto-configured: {attr_name}")
+            except Exception as e:
+                print(f"Error configuring {attr_name}: {e}")
+                raise
+
+    def _sort_configure_methods(self, configure_methods):
+        """
+        Sort configure methods by dependency order.
+        Some methods might depend on others (e.g., logger depends on accelerator).
+        """
+        # Define dependency order - methods that should be called first
+        priority_order = [
+            "_configure_accelerator",
+            "_configure_exp_name",
+            "_configure_output_dir",
+            "_configure_logger",
+            "_configure_module",
+            "_configure_optimizer",
+            "_configure_lr_scheduler",
+        ]
+
+        # Sort based on priority order, with unknown methods at the end
+        def get_priority(method_tuple):
+            method_name = method_tuple[0]
+            try:
+                return priority_order.index(method_name)
+            except ValueError:
+                return len(priority_order)  # Put unknown methods at the end
+
+        return sorted(configure_methods, key=get_priority)
 
     def _configure_exp_name(self) -> str:
         return self.__class__.__name__
@@ -98,31 +153,31 @@ class TinyExp:
         output_root = getattr(self.cfg, "output_root", "./output")
         return os.path.join(output_root, self.exp_name)
 
+    def _configure_logger(self):
+        distributed_rank = self.accelerator.rank if self.accelerator else 0
+        logger = tiny_logger_setup(self.output_dir, distributed_rank=distributed_rank, filename="log.log")
+        logger.info("{}{}".format("==> log file: ", os.path.join(self.output_dir, "log.log")))
+        # logger.info("{}{}".format("Command line: ", " ".join(sys.argv)))
+        return logger
+
     @abstractmethod
     def _configure_accelerator(self) -> BaseAccelerator:
         pass
 
     @abstractmethod
-    def _configure_module(self):
+    def _configure_module(self) -> torch.nn.Module:
         pass
 
     @abstractmethod
-    def _configure_optimizer(self):
+    def _configure_optimizer(self) -> torch.optim.Optimizer:
         pass
 
     @abstractmethod
-    def _configure_lr_scheduler(self):
+    def _configure_lr_scheduler(self) -> torch.optim.lr_scheduler.LRScheduler:
         pass
-
-    def _configure_logger(self):
-        distributed_rank = self.accelerator.rank if self.accelerator else 0
-        logger = tiny_logger_setup(self.output_dir, distributed_rank=distributed_rank, filename="log.log")
-        logger.info("{}{}".format("log file: ", os.path.join(self.output_dir, "log.log")))
-        # logger.info("{}{}".format("Command line: ", " ".join(sys.argv)))
-        return logger
 
     @staticmethod
-    def after_ray_init_callback(cfg):
+    def after_ray_init_callback(cfg) -> list:
         # ------------------- build redis server -------------------- #
         actor_list = []
         if hasattr(cfg, "redis_cache_enabled") and cfg.redis_cache_enabled:

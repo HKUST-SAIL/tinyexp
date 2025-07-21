@@ -1,4 +1,5 @@
 # flake8: noqa: F401, F403
+from .base_accelerator import BaseAccelerator
 from .cpu_accelerator import CPUAccelerator
 from .ddp_accelerator import DDPAccelerator
 
