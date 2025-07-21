@@ -53,8 +53,6 @@ class MnistExp(TinyExp):
 
     def __init__(self, cfg: DictConfig):
         super().__init__(cfg)
-        self.train_dataloader = self._configure_train_dataloader()
-        self.val_dataloader = self._configure_val_dataloader()
 
     def _configure_accelerator(self):
         from tinyexp.tiny_engine.accelerator import CPUAccelerator, DDPAccelerator

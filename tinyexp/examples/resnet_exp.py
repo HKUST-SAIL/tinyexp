@@ -196,11 +196,6 @@ class RedisCachedImageFolder:
 class ResNetExp(TinyExp):
     def __init__(self, cfg: DictConfig):
         super().__init__(cfg)
-        self.module = self._configure_module()
-        self.optimizer = self._configure_optimizer()
-        self.lr_scheduler = self._configure_lr_scheduler()
-        self.train_dataloader = self._configure_train_dataloader()
-        self.val_dataloader = self._configure_val_dataloader()
 
     def _configure_accelerator(self):
         if self.cfg.accelerator == "cpu":

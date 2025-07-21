@@ -91,11 +91,12 @@ class DDPAccelerator(BaseAccelerator):
         super().__init__()
         assert torch.cuda.is_available(), "DDPAccelerator requires CUDA to be available."
         self._init_process_group()
+        self._process_group_initialized = True  # Mark that the process group has been initialized
 
         self.mixed_precision = mixed_precision
         self.dtype = None
         if self.mixed_precision == torch.float16 or self.mixed_precision == torch.bfloat16:
-            self.grad_scaler = torch.cuda.amp.GradScaler(self.device.type)
+            self.grad_scaler = torch.cuda.amp.GradScaler()
             self.autocast = torch.autocast(device_type=self.device.type, dtype=mixed_precision)
             self.backward = self._amp_backward
             self.dtype = mixed_precision
@@ -111,6 +112,21 @@ class DDPAccelerator(BaseAccelerator):
             world_size=self.world_size,
         )
 
+    def destroy(self):
+        """Explicitly destroy the distributed process group"""
+        if hasattr(self, "_process_group_initialized") and self._process_group_initialized:
+            if dist.is_initialized():
+                dist.destroy_process_group()
+            self._process_group_initialized = False
+
+    def __del__(self):
+        """Destructor, which is automatically called when the object is garbage collected"""
+        try:
+            self.destroy()
+        except Exception:
+            # Ignore exceptions in destructor to avoid crashing
+            pass
+
     def unwrap_model(self, model):
         return model.module if hasattr(model, "module") else model
 
@@ -122,15 +138,14 @@ class DDPAccelerator(BaseAccelerator):
         else:
             return ret_model
 
-    def prepare_model(self, model):
-        if self._model is None:
-            model.to(self.device)
-            self._model = nn.parallel.DistributedDataParallel(
-                model,
-                # device_ids=[self.local_rank],
-                # find_unused_parameters=self.find_unused_parameters,
-                # broadcast_buffers=self.broadcast_buffers,
-            )
+    def prepare_model(self, module):
+        module.to(self.device)
+        wrapped_module = nn.parallel.DistributedDataParallel(
+            module,
+            # device_ids=[self.local_rank],
+            # find_unused_parameters=self.find_unused_parameters,
+            # broadcast_buffers=self.broadcast_buffers,
+        )
 
         if self.mixed_precision == torch.bfloat16 or self.mixed_precision == torch.float16:
 
@@ -138,8 +153,8 @@ class DDPAccelerator(BaseAccelerator):
                 with self.autocast:
                     return old_forward(*args, **kwargs)
 
-            self._model.forward = new_forward.__get__(self._model.forward)
-        return self._model
+            wrapped_module.forward = new_forward.__get__(wrapped_module.forward)
+        return wrapped_module
 
     def prepare_optimizer(self, optimizer):
         # refer to: https://github.com/pytorch/pytorch/issues/8741
@@ -157,13 +172,11 @@ class DDPAccelerator(BaseAccelerator):
                             if subparam._grad is not None:
                                 subparam._grad.data = subparam._grad.data.to(device)
 
-        if self._optimizer is None:
-            self._optimizer = optimizer
-            optimizer_to(self._optimizer, self.device)
+        optimizer_to(optimizer, self.device)
 
         if self.mixed_precision == torch.bfloat16 or self.mixed_precision == torch.float16:
-            self._optimizer = DDPAcceleratedOptimizer(self._optimizer, self.grad_scaler)
-        return self._optimizer
+            optimizer = DDPAcceleratedOptimizer(optimizer, self.grad_scaler)
+        return optimizer
 
     def _naive_backward(self, loss: torch.Tensor):
         loss.backward()
@@ -174,14 +187,11 @@ class DDPAccelerator(BaseAccelerator):
     def backward(self, loss: torch.Tensor):
         pass
 
-    def load_model_from_state_dict(self, state_dict, *args, **kwargs):
-        return self._model.module.load_state_dict(state_dict, *args, **kwargs)
-
-    def dump_model_to_state_dict(self):
+    def dump_model_to_state_dict(self, module: nn.Module) -> dict:
         """
         dump model to cpu state_dict
         """
-        model_state = self._model.module.state_dict()
+        model_state = module.state_dict()
         model_state_cpu = type(model_state)()
         for key, val in model_state.items():
             model_state_cpu[key] = val.cpu()
