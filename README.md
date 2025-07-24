@@ -15,10 +15,10 @@ pip install tinyexp
 
 Run mnist example, By default, all available GPUs will be used.
 
-```
+```python
 import tinyexp
-from tinyexp.examples.mnist_exp import Config
-tinyexp.ConfigStore.instance().store(name="cfg", node=Config)
+from tinyexp.examples.mnist_exp import Exp
+tinyexp.ConfigStore.instance().store(name="cfg", node=Exp)
 tinyexp.simple_ray_launch_exp()
 ```
 
@@ -26,12 +26,12 @@ tinyexp.simple_ray_launch_exp()
 
 1. ImageNet ResNet-50 Example with Extremely Fast Data Loading:
 
-```bash
-export IMAGENET_HOME=yours_imagenet_dir
+```python
+# export IMAGENET_HOME=yours_imagenet_dir
 
 import tinyexp
-from tinyexp.examples.resnet_exp import Config
-tinyexp.ConfigStore.instance().store(name="cfg", node=Config)
+from tinyexp.examples.resnet_exp import ResNetExp
+tinyexp.ConfigStore.instance().store(name="cfg", node=ResNetExp)
 tinyexp.simple_ray_launch_exp()
 ```
 

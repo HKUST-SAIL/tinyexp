@@ -2,7 +2,7 @@ import datetime
 import io
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import redis
 import torch
@@ -17,9 +17,8 @@ from torch.optim import SGD
 from torch.optim.lr_scheduler import StepLR
 from torchvision import datasets, transforms
 
-from tinyexp import TinyCfg, TinyExp, simple_ray_launch_exp
+from tinyexp import RedisCfgMixin, TinyExp, simple_ray_launch_exp
 from tinyexp.dataset.sampler import InfiniteSampler
-from tinyexp.tiny_engine.accelerator import CPUAccelerator, DDPAccelerator
 
 
 def transform_template_imagenet(
@@ -193,213 +192,235 @@ class RedisCachedImageFolder:
                 pass
 
 
-class ResNetExp(TinyExp):
-    def __init__(self, cfg: DictConfig):
-        super().__init__(cfg)
+@dataclass(repr=False)
+class ResNetExp(TinyExp, RedisCfgMixin):
+    exp_class: str = f"{__name__}.ResNetExp"
 
-    def _configure_accelerator(self):
-        if self.cfg.accelerator == "cpu":
-            accelerator = CPUAccelerator()
-        elif self.cfg.accelerator == "ddp":
-            accelerator = DDPAccelerator()
-        else:
-            raise ValueError(f"Unknown accelerator type: {self.cfg.accelerator}")
-        return accelerator
+    @dataclass
+    class AcceleratorCfg:
+        accelerator: str = "ddp"
 
-    def _configure_module(self):
-        return models.__dict__["resnet50"](weights=None)
+        def build_accelerator(self):
+            from tinyexp.tiny_engine.accelerator import CPUAccelerator, DDPAccelerator
 
-    def _configure_optimizer(self):
-        cfg = self.cfg
-        lr = cfg.train_lr_per_img * cfg.train_batch_size_per_device * self.accelerator.world_size
-        optimizer = SGD(
-            self.module.parameters(),
-            lr=lr,
-            momentum=0.9,
-            weight_decay=1e-4,
-            nesterov=False,
-        )
-        return optimizer
+            if self.accelerator == "cpu":
+                accelerator = CPUAccelerator()
+            elif self.accelerator == "ddp":
+                accelerator = DDPAccelerator()
+            else:
+                raise ValueError(f"Unknown accelerator type: {self.accelerator}")
+            return accelerator
 
-    def _configure_lr_scheduler(self):
-        from torch.optim.lr_scheduler import LinearLR, SequentialLR
+    accelerator_cfg: AcceleratorCfg = field(default_factory=AcceleratorCfg)
 
-        main_scheduler = StepLR(self.optimizer, step_size=30, gamma=0.1)
+    @dataclass
+    class ModuleCfg:
+        def build_module(self):
+            return models.__dict__["resnet50"](weights=None)
 
-        if self.cfg.train_warmup_epoch > 0:
-            warmup_factor: float = 0.001
+    module_cfg: ModuleCfg = field(default_factory=ModuleCfg)
 
-            warmup_scheduler = LinearLR(
-                self.optimizer,
-                start_factor=warmup_factor,
-                end_factor=1.0,
-                total_iters=self.cfg.train_warmup_epoch,
+    @dataclass
+    class OptimizerCfg:
+        lr_per_img: float = 0.1 / 256.0  # single image learning rate
+
+        def build_optimizer(self, module, dataloader, accelerator):
+            lr = self.lr_per_img * dataloader.batch_size * accelerator.world_size
+            optimizer = SGD(
+                module.parameters(),
+                lr=lr,
+                momentum=0.9,
+                weight_decay=1e-4,
+                nesterov=False,
             )
-            scheduler = SequentialLR(
-                self.optimizer,
-                schedulers=[warmup_scheduler, main_scheduler],
-                milestones=[self.cfg.train_warmup_epoch],
-            )
-        else:
-            scheduler = main_scheduler
-        return scheduler
+            return optimizer
 
-    def _configure_train_dataloader(self):
-        cfg = self.cfg
-        transform = transform_template_imagenet(is_train=True)
-        if cfg.redis_cache_enabled:
-            ds_train = RedisCachedImageFolder(
-                redis_ports=cfg.redis_cache_shard_ports, root=os.path.join(cfg.data_root, "train"), transform=transform
-            )
-        else:
-            ds_train = datasets.ImageFolder(root=os.path.join(cfg.data_root, "train"), transform=transform)
-        sampler = InfiniteSampler(len(ds_train), shuffle=True, seed=cfg.seed, accelerator=self.accelerator)
-        train_kwargs = {
-            "batch_size": cfg.train_batch_size_per_device,
-            "num_workers": cfg.train_data_worker_per_gpu,
-            "pin_memory": True,
-            "sampler": sampler,
-            "persistent_workers": True,  # Keep workers alive for multiple epochs
-        }
-        train_dataloader = torch.utils.data.DataLoader(ds_train, **train_kwargs)
-        # from tinyexp.dataset.fake_dataloader import HoldOnesampleDataLoader
-        # train_dataloader = HoldOnesampleDataLoader(train_dataloader)
-        return train_dataloader
+    optimizer_cfg: OptimizerCfg = field(default_factory=OptimizerCfg)
 
-    def _configure_val_dataloader(self):
-        transform = transform_template_imagenet(is_train=False, interpolation=2)
-        if self.cfg.redis_cache_enabled:
-            ds_val = LocalCachedImageFolder(root=os.path.join(self.cfg.data_root, "val"), transform=transform)
-        else:
-            ds_val = datasets.ImageFolder(root=os.path.join(self.cfg.data_root, "val"), transform=transform)
-        sampler = torch.utils.data.distributed.DistributedSampler(
-            ds_val, num_replicas=self.accelerator.world_size, rank=self.accelerator.rank, shuffle=False
-        )
-        val_kwargs = {
-            "batch_size": self.cfg.val_batch_size_per_device,
-            "num_workers": self.cfg.val_data_worker_per_gpu,
-            "pin_memory": True,
-            "sampler": sampler,
-            "persistent_workers": True,  # Keep workers alive for multiple epochs
-        }
-        val_dataloader = torch.utils.data.DataLoader(ds_val, **val_kwargs)
-        return val_dataloader
+    @dataclass
+    class LrSchedulerCfg:
+        warmup_epoch: int = 0
+
+        def build_lr_scheduler(self, optimizer):
+            from torch.optim.lr_scheduler import LinearLR, SequentialLR
+
+            main_scheduler = StepLR(optimizer, step_size=30, gamma=0.1)
+
+            if self.warmup_epoch > 0:
+                warmup_factor: float = 0.001
+                train_warmup_epoch: int = 3
+
+                warmup_scheduler = LinearLR(
+                    optimizer,
+                    start_factor=warmup_factor,
+                    end_factor=1.0,
+                    total_iters=self.warmup_epoch,
+                )
+                scheduler = SequentialLR(
+                    optimizer,
+                    schedulers=[warmup_scheduler, main_scheduler],
+                    milestones=[train_warmup_epoch],
+                )
+            else:
+                scheduler = main_scheduler
+            return scheduler
+
+    lr_scheduler_cfg: LrSchedulerCfg = field(default_factory=LrSchedulerCfg)
+
+    @dataclass
+    class DataloaderCfg:
+        data_root: str = os.environ.get("IMAGENET_HOME", "./data/imagenet/")
+        train_batch_size_per_device: int = 32
+        train_data_worker_per_gpu: int = 10
+        val_batch_size_per_device: int = 50
+        val_data_worker_per_gpu: int = 1
+        seed: int = 42
+
+        def build_train_dataloader(self, accelerator, redis_cache_cfg):
+            transform = transform_template_imagenet(is_train=True)
+            if redis_cache_cfg.redis_cache_enabled:
+                ds_train = RedisCachedImageFolder(
+                    redis_ports=redis_cache_cfg.redis_cache_shard_ports,
+                    root=os.path.join(self.data_root, "train"),
+                    transform=transform,
+                )
+            else:
+                ds_train = datasets.ImageFolder(root=os.path.join(self.data_root, "train"), transform=transform)
+            sampler = InfiniteSampler(len(ds_train), shuffle=True, seed=self.seed, accelerator=accelerator)
+            train_kwargs = {
+                "batch_size": self.train_batch_size_per_device,
+                "num_workers": self.train_data_worker_per_gpu,
+                "pin_memory": True,
+                "sampler": sampler,
+                "persistent_workers": True,  # Keep workers alive for multiple epochs
+            }
+            train_dataloader = torch.utils.data.DataLoader(ds_train, **train_kwargs)
+            # from tinyexp.dataset.fake_dataloader import HoldOnesampleDataLoader
+            # train_dataloader = HoldOnesampleDataLoader(train_dataloader)
+            return train_dataloader
+
+        def build_val_dataloader(self, accelerator):
+            transform = transform_template_imagenet(is_train=False, interpolation=2)
+            ds_val = LocalCachedImageFolder(root=os.path.join(self.data_root, "val"), transform=transform)
+            # ds_val = datasets.ImageFolder(root=os.path.join(self.data_root, "val"), transform=transform)
+            sampler = torch.utils.data.distributed.DistributedSampler(
+                ds_val, num_replicas=accelerator.world_size, rank=accelerator.rank, shuffle=False
+            )
+            val_kwargs = {
+                "batch_size": self.val_batch_size_per_device,
+                "num_workers": self.val_data_worker_per_gpu,
+                "pin_memory": True,
+                "sampler": sampler,
+                "persistent_workers": True,  # Keep workers alive for multiple epochs
+            }
+            val_dataloader = torch.utils.data.DataLoader(ds_val, **val_kwargs)
+            return val_dataloader
+
+    dataloader_cfg: DataloaderCfg = field(default_factory=DataloaderCfg)
 
     def run(self) -> None:
-        accelerator = self.accelerator
-        module, optimizer = accelerator.prepare(self.module, self.optimizer)
-        if self.cfg.train_enable_wandb and accelerator.rank == 0:
-            wandb.init(config=self.cfg, project="Baselines", name=self.exp_name)
+        cfg = self
+        accelerator = cfg.accelerator_cfg.build_accelerator()
+        logger = cfg.logger_cfg.build_logger(
+            save_dir=os.path.join(cfg.output_root, cfg.__class__.__name__), distributed_rank=accelerator.rank
+        )
 
-        train_dataloader = self.train_dataloader
-        train_iter = iter(train_dataloader)
+        def eval(module_or_module_path, val_dataloader) -> None:
+            if isinstance(module_or_module_path, str):
+                assert val_dataloader is None
+                module = cfg.module_cfg.build_module()
+                module.load_state_dict(torch.load(module_or_module_path))
+                module = accelerator.prepare(module)
+                val_dataloader = cfg.dataloader_cfg.build_val_dataloader(accelerator)
+            else:
+                module = module_or_module_path
 
-        for _ in range(self.cfg.train_max_epoch):
-            module.train()
+            module.eval()
+            accurate = torch.tensor(0.0, device=accelerator.device)
 
-            epoch_start_time = time.time()
-            steps_per_epoch = len(train_dataloader)
-
-            for step_in_epoch in range(len(train_dataloader)):
-                try:
-                    batch = next(train_iter)
-                except StopIteration:
-                    train_iter = iter(train_dataloader)
-                    batch = next(train_iter)
-
+            step = 0
+            for _, batch in enumerate(val_dataloader):
                 images, labels = (_.to(accelerator.device) for _ in batch)
-                preds = module(images)
-                loss = nn.CrossEntropyLoss()(preds, labels)
+                with torch.no_grad():
+                    preds = module(images)
+                predictions = preds.argmax(dim=-1)
+                accurate_preds = predictions == labels
+                accurate_preds_sum = accelerator.reduce_sum(accurate_preds.sum())
+                accurate += accurate_preds_sum
+                if step % 20 == 0:
+                    logger.info(f"Eval step {step}, accurate: {accurate.item()}")
+                step += 1
 
-                optimizer.zero_grad()
-                accelerator.backward(loss)
-                optimizer.step()
-                self.global_step += 1
+            eval_metric = accurate.item() / len(val_dataloader.dataset)
 
-                if self.global_step % 20 == 0:
-                    epoch_elapsed_time = time.time() - epoch_start_time
-                    epoch_elapsed_str = f"{int(epoch_elapsed_time / 60):02d}:{int(epoch_elapsed_time % 60):02d}"
+            nowtime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            logger.info(f"{nowtime} --> eval_metric= {100 * eval_metric:.2f}%")
 
-                    epoch_total_seconds = epoch_elapsed_time / ((step_in_epoch + 1) / steps_per_epoch)
-                    epoch_total_str = f"{int(epoch_total_seconds / 60):02d}:{int(epoch_total_seconds % 60):02d}"
+            if cfg.enable_wandb and accelerator.is_main_process:
+                wandb.log({"val_metric": eval_metric})
 
-                    self.logger.info(
-                        f"e:{self.global_epoch},{step_in_epoch + 1}/{steps_per_epoch}, "
-                        f"loss:{loss.item():.4f}, lr:{optimizer.param_groups[0]['lr']:.4f}, "
-                        f"elapsed:{epoch_elapsed_str}, total:{epoch_total_str}"
-                    )
+        def train():
+            cfg = self
+            train_dataloader = cfg.dataloader_cfg.build_train_dataloader(accelerator, cfg.redis_cache_cfg)
+            val_dataloader = cfg.dataloader_cfg.build_val_dataloader(accelerator)
+            ori_module = cfg.module_cfg.build_module()
+            ori_optimizer = cfg.optimizer_cfg.build_optimizer(ori_module, train_dataloader, accelerator)
+            module, optimizer = accelerator.prepare(ori_module, ori_optimizer)
+            lr_scheduler = cfg.lr_scheduler_cfg.build_lr_scheduler(optimizer)
 
-            self.lr_scheduler.step()
-            self.global_epoch += 1
-            self.eval(module, self.val_dataloader)
+            if cfg.enable_wandb and accelerator.rank == 0:
+                from omegaconf import OmegaConf
 
-    def eval(self, module_or_module_path, val_dataloader) -> None:
-        if isinstance(module_or_module_path, str):
-            module = models.__dict__["resnet50"](weights=None)
-            module.load_state_dict(torch.load(module_or_module_path))
-            module = self.accelerator.prepare(module)
-        else:
-            module = module_or_module_path
+                wandb.init(
+                    config=OmegaConf.to_container(cfg, resolve=True), project="Baselines", name=cfg.__class__.__name__
+                )
 
-        module.eval()
-        accurate = 0.0
+            train_iter = iter(train_dataloader)
+            global_epoch = 0
+            global_step = 0
 
-        for _, batch in enumerate(val_dataloader):
-            images, labels = (_.to(self.accelerator.device) for _ in batch)
-            with torch.no_grad():
-                preds = module(images)
-            predictions = preds.argmax(dim=-1)
-            accurate_preds = predictions == labels
-            accurate_preds_sum = self.accelerator.reduce_sum(accurate_preds.sum())
-            accurate += accurate_preds_sum
+            for _ in range(90):
+                module.train()
 
-        eval_metric = accurate.item() / len(val_dataloader.dataset)
+                epoch_start_time = time.time()
+                steps_per_epoch = len(train_dataloader)
 
-        nowtime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.logger.info(f"{nowtime} --> eval_metric= {100 * eval_metric:.2f}%")
+                for step_in_epoch in range(len(train_dataloader)):
+                    try:
+                        batch = next(train_iter)
+                    except StopIteration:
+                        train_iter = iter(train_dataloader)
+                        batch = next(train_iter)
 
-        if self.cfg.train_enable_wandb and self.accelerator.is_main_process:
-            wandb.log({"val_metric": eval_metric})
+                    images, labels = (_.to(accelerator.device) for _ in batch)
+                    preds = module(images)
+                    loss = nn.CrossEntropyLoss()(preds, labels)
 
+                    optimizer.zero_grad()
+                    accelerator.backward(loss)
+                    optimizer.step()
+                    global_step += 1
 
-@dataclass
-class Config(TinyCfg):
-    # for exp actor
-    launcher: str = "ray"  # "ray", "local"
-    exp_class: str = f"{ResNetExp.__module__}.{ResNetExp.__name__}"
-    data_root: str = os.environ.get("IMAGENET_HOME", "./data/imagenet/")
+                    if global_step % 20 == 0:
+                        epoch_elapsed_time = time.time() - epoch_start_time
+                        epoch_elapsed_str = f"{int(epoch_elapsed_time / 60):02d}:{int(epoch_elapsed_time % 60):02d}"
 
-    accelerator: str = "ddp"  # "cpu", "ddp"
+                        epoch_total_seconds = epoch_elapsed_time / ((step_in_epoch + 1) / steps_per_epoch)
+                        epoch_total_str = f"{int(epoch_total_seconds / 60):02d}:{int(epoch_total_seconds % 60):02d}"
 
-    # bellowing config specific the cpu and gpu resources for the experiment
-    # total_cpu = num_gpus * (train_data_worker_per_gpu + val_data_worker_per_gpu + 1) + redis_cluster_manager_cpus
-    num_gpus: int = torch.cuda.device_count()
-    train_data_worker_per_gpu: int = 6
-    val_data_worker_per_gpu: int = 1
-    redis_cluster_manager_cpus: int = 10  # Number of CPUs allocated for Redis cluster manager
+                        logger.info(
+                            f"e:{global_epoch},{step_in_epoch + 1}/{steps_per_epoch}, "
+                            f"loss:{loss.item():.4f}, lr:{optimizer.param_groups[0]['lr']:.4f}, "
+                            f"elapsed:{epoch_elapsed_str}, total:{epoch_total_str}"
+                        )
 
-    train_lr_per_img: float = 0.1 / 256.0  # single image learning rate
-    train_batch_size_per_device: int = 32
-    val_batch_size_per_device: int = 50
-    train_max_epoch: int = 90
-    train_warmup_epoch: int = 0
-    train_enable_wandb: bool = False
-    seed: int = 42
+                lr_scheduler.step()
+                global_epoch += 1
+                eval(module, val_dataloader)
 
-    # for redis actor
-    redis_cache_enabled: bool = True  # Whether to use Redis cache for images
-    redis_cache_max_memory: int = 160  # Maximum memory is 160GB, according to the ImageNet dataset size
-    redis_cache_shard_ports: ListConfig = ListConfig(
-        [
-            7000,
-            7001,
-            7002,
-            7003,
-            7004,
-        ]
-    )  # List of Redis cache shard used ports
+        train()
 
 
 if __name__ == "__main__":
-    ConfigStore.instance().store(name="cfg", node=Config)
+    ConfigStore.instance().store(name="cfg", node=ResNetExp)
     simple_ray_launch_exp()
