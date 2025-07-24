@@ -99,6 +99,6 @@ def simple_ray_launch_exp(cfg: DictConfig) -> None:
         ray.get(run_futures)
 
     elif cfg.launcher == "torchrun":
-        exp_class().run()
+        exp_class().set_cfg(cfg).run()
     else:
         raise ValueError(f"Unknown launcher {cfg.launcher}, please set `launcher` to 'ray' or 'torchrun'.")
