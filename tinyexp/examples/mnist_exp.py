@@ -1,6 +1,6 @@
 import datetime
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import ray
 import torch
@@ -13,7 +13,7 @@ from torch.optim.lr_scheduler import StepLR
 from torchvision import datasets, transforms
 from tqdm import tqdm
 
-from tinyexp import ConfigStore, TinyCfg, TinyExp, simple_ray_launch_exp
+from tinyexp import ConfigStore, TinyExp, simple_ray_launch_exp
 
 
 class Net(nn.Module):
@@ -49,170 +49,203 @@ class Net(nn.Module):
             return output
 
 
-class MnistExp(TinyExp):
+@dataclass(repr=False)
+class Exp(TinyExp):
+    exp_class: str = f"{__name__}.Exp"
 
-    def __init__(self, cfg: DictConfig):
-        super().__init__(cfg)
+    @dataclass
+    class AcceleratorCfg:
+        accelerator: str = "ddp"
 
-    def _configure_accelerator(self):
-        from tinyexp.tiny_engine.accelerator import CPUAccelerator, DDPAccelerator
+        def build_accelerator(self):
+            from tinyexp.tiny_engine.accelerator import CPUAccelerator, DDPAccelerator
 
-        if self.cfg.accelerator == "cpu":
-            accelerator = CPUAccelerator()
-        elif self.cfg.accelerator == "ddp":
-            accelerator = DDPAccelerator()
-        else:
-            raise ValueError(f"Unknown accelerator type: {self.cfg.accelerator}")
-        return accelerator
+            if self.accelerator == "cpu":
+                accelerator = CPUAccelerator()
+            elif self.accelerator == "ddp":
+                accelerator = DDPAccelerator()
+            else:
+                raise ValueError(f"Unknown accelerator type: {self.accelerator}")
+            return accelerator
 
-    def _configure_module(self):
-        return Net()
+    accelerator_cfg: AcceleratorCfg = field(default_factory=AcceleratorCfg)
 
-    def _configure_train_dataloader(self):
-        transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
-        ds_train = datasets.MNIST(self.cfg.data_root, train=True, download=True, transform=transform)
-        sampler = torch.utils.data.distributed.DistributedSampler(
-            ds_train, num_replicas=self.accelerator.world_size, rank=self.accelerator.rank
-        )
-        dl_train = torch.utils.data.DataLoader(
-            ds_train,
-            batch_size=self.cfg.train_batch_size_per_device,
-            shuffle=False,
-            num_workers=self.cfg.train_data_worker_per_gpu,
-            drop_last=True,
-            sampler=sampler,
-        )
-        return dl_train
+    @dataclass
+    class DataloaderCfg:
+        data_root: str = "./data/"
+        train_batch_size_per_device: int = 32
+        train_data_worker_per_gpu: int = 2
+        val_data_worker_per_gpu: int = 1
 
-    def _configure_val_dataloader(self):
-        transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
-        ds_val = datasets.MNIST(self.cfg.data_root, train=False, download=True, transform=transform)
-        sampler = torch.utils.data.distributed.DistributedSampler(
-            ds_val, num_replicas=self.accelerator.world_size, rank=self.accelerator.rank
-        )
-        dl_val = torch.utils.data.DataLoader(
-            ds_val,
-            batch_size=self.cfg.train_batch_size_per_device,
-            shuffle=False,
-            num_workers=self.cfg.val_data_worker_per_gpu,
-            drop_last=True,
-            sampler=sampler,
-        )
-        return dl_val
+        def build_train_dataloader(self, accelerator):
+            transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
+            ds_train = datasets.MNIST(self.data_root, train=True, download=True, transform=transform)
+            sampler = torch.utils.data.DistributedSampler(
+                ds_train, num_replicas=accelerator.world_size, rank=accelerator.rank
+            )
+            dl_train = torch.utils.data.DataLoader(
+                ds_train,
+                batch_size=self.train_batch_size_per_device,
+                shuffle=False,
+                num_workers=self.train_data_worker_per_gpu,
+                drop_last=True,
+                sampler=sampler,
+            )
+            return dl_train
 
-    def _configure_optimizer(self):
-        cfg = self.cfg
-        optimizer = optim.Adadelta(
-            self.module.parameters(),
-            lr=cfg.train_lr_per_img * cfg.train_batch_size_per_device * self.accelerator.world_size,
-        )
-        return optimizer
+        def build_val_dataloader(self, accelerator):
+            transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
+            ds_val = datasets.MNIST(self.data_root, train=False, download=True, transform=transform)
+            sampler = torch.utils.data.DistributedSampler(
+                ds_val, num_replicas=accelerator.world_size, rank=accelerator.rank
+            )
+            dl_val = torch.utils.data.DataLoader(
+                ds_val,
+                batch_size=self.train_batch_size_per_device,
+                shuffle=False,
+                num_workers=self.val_data_worker_per_gpu,
+                drop_last=True,
+                sampler=sampler,
+            )
+            return dl_val
 
-    def _configure_lr_scheduler(self):
-        return StepLR(self.optimizer, step_size=1, gamma=0.7)
+    dataloader_cfg: DataloaderCfg = field(default_factory=DataloaderCfg)
 
+    @dataclass
+    class OptimizerCfg:
+        lr_per_img: float = 1.0 / 64.0  # single image learning rate
+
+        def build_optimizer(self, module, dataloader, accelerator):
+            optimizer = optim.Adadelta(
+                module.parameters(),
+                lr=self.lr_per_img * dataloader.batch_size * accelerator.world_size,
+            )
+            return optimizer
+
+    optimizer_cfg: OptimizerCfg = field(default_factory=OptimizerCfg)
+
+    @dataclass
+    class ModuleCfg:
+        def build_module(self):
+            return Net()
+
+    module_cfg: ModuleCfg = field(default_factory=ModuleCfg)
+
+    @dataclass
+    class LrSchedulerCfg:
+        def build_lr_scheduler(self, optimizer):
+            return StepLR(optimizer, step_size=1, gamma=0.7)
+
+    lr_scheduler_cfg: LrSchedulerCfg = field(default_factory=LrSchedulerCfg)
+
+    # ------------------------------ bellowing is the execution part --------------------- #
     def run(self) -> None:
-        accelerator = self.accelerator
-        module, optimizer = accelerator.prepare(self.module, self.optimizer)
+        cfg = self
+        accelerator = cfg.accelerator_cfg.build_accelerator()
+        logger = cfg.logger_cfg.build_logger(
+            save_dir=os.path.join(cfg.output_root, cfg.__class__.__name__),
+            distributed_rank=accelerator.rank,
+        )
 
-        lr_scheduler, train_dataloader, val_dataloader = self.lr_scheduler, self.train_dataloader, self.val_dataloader
-        accelerator.print(f"device {accelerator.device!s} is used!")
+        def eval(module_or_module_path, val_dataloader=None):
+            if isinstance(module_or_module_path, str):
+                assert val_dataloader is None
+                module = Net()
+                module.load_state_dict(torch.load(module_or_module_path))
+                module = accelerator.prepare(module)
+                val_dataloader = cfg.dataloader_cfg.build_val_dataloader(accelerator)
+            else:
+                module = module_or_module_path
 
-        train_iter = iter(train_dataloader)
-        if self.cfg.train_enable_wandb and accelerator.rank == 0:
-            wandb.init(config=self.cfg, project="Baselines", name=self.exp_name)
+            module.eval()
+            accurate = torch.tensor(0.0, device=accelerator.device)
 
-        for epoch in range(self.cfg.train_max_epoch):
-            module.train()
-
-            for step in tqdm(
-                range(len(train_dataloader)),
-                ncols=100,
-                desc="Train",
-                bar_format="{n_fmt}/{total_fmt} [{elapsed}<{remaining}] {l_bar}{bar:50}|",
-                colour="blue",
-                ascii=" ·─",
-                unit="batch",
-                disable=accelerator.rank != 0,
-            ):
-                try:
-                    batch = next(train_iter)
-                except StopIteration:
-                    train_iter = iter(train_dataloader)
-                    batch = next(train_iter)
-
+            for _, batch in enumerate(val_dataloader):
                 features, labels = (_.to(accelerator.device) for _ in batch)
-                preds = module(features)
-                loss = nn.CrossEntropyLoss()(preds, labels)
+                with torch.no_grad():
+                    preds = module(features)
+                predictions = preds.argmax(dim=-1)
+                accurate_preds = predictions == labels
+                accurate_preds_sum = accelerator.reduce_sum(accurate_preds.sum())
+                accurate += accurate_preds_sum
+            eval_metric = accurate.item() / len(val_dataloader.dataset)
 
-                optimizer.zero_grad()
-                # ======================================================================
-                accelerator.backward(loss)  # loss.backward()
-                # ======================================================================
+            print(f"======> data_shard_count: {len(val_dataloader.dataset)}")
+            # ======================================================================
+            accelerator.wait_for_everyone()
+            nowtime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            logger.info(f"{nowtime} --> eval_metric= {100 * eval_metric:.2f}%")
 
-                optimizer.step()
-                if step % 20 == 0:
-                    self.logger.info(
-                        f"epoch {epoch} loss: {loss.item(): .4f} lr: {optimizer.param_groups[0]['lr']: .4f}"
-                    )
-                    if self.cfg.train_enable_wandb and accelerator.rank == 0:
-                        wandb.log({"epoch": epoch, "loss": loss.item(), "lr": optimizer.param_groups[0]["lr"]})
-            self.eval(module, val_dataloader)
-            lr_scheduler.step()
+            if cfg.enable_wandb and accelerator.is_main_process:
+                wandb.log({"val_metric": eval_metric})
 
-        # dump model
-        # state_dict = accelerator.dump_model_to_state_dict()
-        # if accelerator.rank == 0:
-        #     self.logger.info(f"Dumping model to {self.exp_name}.pth")
-        #     torch.save(state_dict, f"{self.exp_name}.pth")
+        def train() -> None:
+            train_dataloader = cfg.dataloader_cfg.build_train_dataloader(accelerator)
+            val_dataloader = cfg.dataloader_cfg.build_val_dataloader(accelerator)
+            ori_module = cfg.module_cfg.build_module()
+            ori_optimizer = cfg.optimizer_cfg.build_optimizer(ori_module, train_dataloader, accelerator)
+            lr_scheduler = cfg.lr_scheduler_cfg.build_lr_scheduler(ori_optimizer)
 
-    def eval(self, module_or_module_path, val_dataloader=None):
-        if isinstance(module_or_module_path, str):
-            module = Net()
-            module.load_state_dict(torch.load(module_or_module_path))
-            module = self.accelerator.prepare(module)
-            val_dataloader = self.val_dataloader
-        else:
-            module = module_or_module_path
+            module, optimizer = accelerator.prepare(ori_module, ori_optimizer)
+            accelerator.print(f"device {accelerator.device!s} is used!")
 
-        module.eval()
-        accurate = 0.0
+            train_iter = iter(train_dataloader)
+            if cfg.enable_wandb and accelerator.rank == 0:
+                from omegaconf import OmegaConf
 
-        for _, batch in enumerate(val_dataloader):
-            features, labels = (_.to(self.accelerator.device) for _ in batch)
-            with torch.no_grad():
-                preds = module(features)
-            predictions = preds.argmax(dim=-1)
-            accurate_preds = predictions == labels
-            accurate_preds_sum = self.accelerator.reduce_sum(accurate_preds.sum())
-            accurate += accurate_preds_sum
-        eval_metric = accurate.item() / len(val_dataloader.dataset)
+                wandb.init(
+                    config=OmegaConf.to_container(cfg, resolve=True),
+                    project="Baselines",
+                )
 
-        print(f"======> data_shard_count: {len(val_dataloader.dataset)}")
-        # ======================================================================
-        self.accelerator.wait_for_everyone()
-        nowtime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.logger.info(f"{nowtime} --> eval_metric= {100 * eval_metric:.2f}%")
+            for epoch in range(3):
+                module.train()
 
-        if self.cfg.train_enable_wandb and self.accelerator.is_main_process:
-            wandb.log({"val_metric": eval_metric})
+                for step in range(len(train_dataloader)):
+                    try:
+                        batch = next(train_iter)
+                    except StopIteration:
+                        train_iter = iter(train_dataloader)
+                        batch = next(train_iter)
+
+                    features, labels = (_.to(accelerator.device) for _ in batch)
+                    preds = module(features)
+                    loss = nn.CrossEntropyLoss()(preds, labels)
+
+                    optimizer.zero_grad()
+                    # ======================================================================
+                    accelerator.backward(loss)  # loss.backward()
+                    # ======================================================================
+
+                    optimizer.step()
+                    if (step + 1) % 20 == 0:
+                        logger.info(
+                            f"epoch {epoch} loss: {loss.item(): .4f} lr: {optimizer.param_groups[0]['lr']: .4f}"
+                        )
+                        if cfg.enable_wandb and accelerator.rank == 0:
+                            wandb.log(
+                                {
+                                    "epoch": epoch,
+                                    "loss": loss.item(),
+                                    "lr": optimizer.param_groups[0]["lr"],
+                                }
+                            )
+                eval(module, val_dataloader)
+
+                lr_scheduler.step()
+
+        train()
 
 
-@dataclass
-class Config(TinyCfg):
-    launcher: str = "ray"  # "ray", "local"
-    exp_class: str = f"{MnistExp.__module__}.{MnistExp.__name__}"
-    data_root: str = "./data/"
-    accelerator: str = "ddp"  # "cpu", "ddp"
-    train_lr_per_img: float = 1.0 / 64.0  # single image learning rate
-    train_batch_size_per_device: int = 32
-    train_max_epoch: int = 3
-    train_enable_wandb: bool = False
-    num_gpus: int = torch.cuda.device_count()
-    train_data_worker_per_gpu: int = 2
-    val_data_worker_per_gpu: int = 1
-
+# import hydra
+# @hydra.main(version_base=None, config_name="cfg")
+# def simple_launch_exp(cfg: DictConfig) -> None:
+#     from omegaconf import DictConfig, OmegaConf
+#     print(OmegaConf.to_yaml(cfg))
+#     from IPython import embed; embed()  # for debugging
+#     exp_class = hydra.utils.get_class(cfg.exp_class)
+#     exp_class().set_cfg(cfg).run()
 
 if __name__ == "__main__":
-    ConfigStore.instance().store(name="cfg", node=Config)
+    ConfigStore.instance().store(name="cfg", node=Exp)
     simple_ray_launch_exp()

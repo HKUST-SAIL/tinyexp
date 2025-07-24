@@ -13,12 +13,13 @@ import ray
 import torch
 from hydra.conf import HydraConf, RunDir
 from hydra.core.config_store import ConfigStore
+from omegaconf import DictConfig
+from omegaconf.listconfig import ListConfig
 
-from .tiny_engine.accelerator.base_accelerator import BaseAccelerator
 from .utils.log_utils import tiny_logger_setup
 from .utils.ray_utils import simple_ray_launch_exp
 
-__all__ = ["TinyExp", "TinyCfg", "simple_ray_launch_exp", "ConfigStore"]
+__all__ = ["TinyExp", "RedisCfgMixin", "simple_ray_launch_exp", "ConfigStore"]
 
 
 @dataclass
@@ -32,189 +33,78 @@ class _HydraConfig(HydraConf):
 
 
 @dataclass
-class TinyCfg:
+class TinyExp:
     hydra: _HydraConfig = field(default_factory=_HydraConfig)
     launcher: str = "ray"  # "ray" or "torchrun"
+    local_gpu_count: int = torch.cuda.device_count()
+    output_root = "./output"
+    enable_wandb: bool = False
 
+    def __repr__(self):
+        # Customize the representation of the Exp object for cleaner Ray logs.
+        return f"Exp(rank={os.getenv('RANK', 'N/A')})"
 
-class TinyExp:
-    """
-    TinyExp serves as a lightweight framework for running experiments, with support
-    for both PyTorch and Ray environments. It handles common experiment setup tasks
-    such as configuring accelerators for distributed training, establishing consistent
-    experiment naming, managing output directories, and setting up logging.
+    @dataclass
+    class LoggerCfg:
+        def build_logger(self, save_dir: str, distributed_rank: int = 0, filename: str = "log.txt", mode: str = "a"):
+            logger = tiny_logger_setup(save_dir, distributed_rank, filename, mode)
+            logger.info("{}{}".format("==> log file: ", os.path.join(save_dir, "log.log")))
+            return logger
 
-    Parameters
-    ----------
-    cfg : object
-        Configuration object containing experiment settings. Should include attributes
-        that control experiment behavior. May include an optional 'output_root' attribute
-        to specify the base output directory.
+    logger_cfg: LoggerCfg = field(default_factory=LoggerCfg)
 
-    Attributes
-    ----------
-        cfg : object
-            The configuration object provided during initialization.
-        accelerator : object or None
-            The accelerator object for distributed training (if applicable).
-        exp_name : str
-            The name of the experiment, derived from the class name.
-        output_dir : str
-            The directory where experiment outputs will be stored.
-        logger : Logger
-            The logger object configured for this experiment.
-
-    Methods
-    -------
-        _configure_exp_name()
-            Generates the experiment name based on the class name.
-        _configure_output_dir()
-            Constructs the output directory path based on output_root and exp_name.
-        _configure_accelerator()
-            Sets up the appropriate accelerator for the experiment.
-        _configure_logger()
-            Initializes and configures the logging system.
-
-    Notes
-    -----
-    This class is designed to be subclassed for specific experiment implementations.
-    Override the configuration methods to customize experiment behavior.
-    """
-
-    def __init__(self, cfg) -> None:
-        self.cfg = cfg
-        self.global_step = 0
-        self.global_epoch = 0
-
-        # Auto-configure all _configure_* methods
-        self._auto_configure()
-
-    def _auto_configure(self):
-        """
-        Automatically discover and call all _configure_* methods,
-        setting the result as an attribute with the same name (without _configure_ prefix).
-
-        Noticing that we do not use cached_property because it cannot be serialized in ray.
-        """
-        # Get all methods of the current class and its parents
-        methods = inspect.getmembers(self, predicate=inspect.ismethod)
-
-        # Filter methods that start with _configure_
-        configure_methods = [
-            (name, method) for name, method in methods if name.startswith("_configure_") and callable(method)
-        ]
-
-        # Sort by dependency order - some methods might depend on others
-        configure_methods = self._sort_configure_methods(configure_methods)
-
-        # Call each method and set the attribute
-        for method_name, method in configure_methods:
-            # Extract attribute name: _configure_accelerator -> accelerator
-            attr_name = method_name[len("_configure_") :]
-
-            try:
-                result = method()
-                setattr(self, attr_name, result)
-                # print(f"Auto-configured: {attr_name}")
-            except Exception as e:
-                print(f"Error configuring {attr_name}: {e}")
-                raise
-
-    def _sort_configure_methods(self, configure_methods):
-        """
-        Sort configure methods by dependency order.
-        Some methods might depend on others (e.g., logger depends on accelerator).
-        """
-        # Define dependency order - methods that should be called first
-        priority_order = [
-            "_configure_accelerator",
-            "_configure_exp_name",
-            "_configure_output_dir",
-            "_configure_logger",
-            "_configure_module",
-            "_configure_optimizer",
-            "_configure_lr_scheduler",
-        ]
-
-        # Sort based on priority order, with unknown methods at the end
-        def get_priority(method_tuple):
-            method_name = method_tuple[0]
-            try:
-                return priority_order.index(method_name)
-            except ValueError:
-                return len(priority_order)  # Put unknown methods at the end
-
-        return sorted(configure_methods, key=get_priority)
-
-    def _configure_exp_name(self) -> str:
-        return self.__class__.__name__
-
-    def _configure_output_dir(self) -> str:
-        output_root = getattr(self.cfg, "output_root", "./output")
-        return os.path.join(output_root, self.exp_name)
-
-    def _configure_logger(self):
-        distributed_rank = self.accelerator.rank if self.accelerator else 0
-        logger = tiny_logger_setup(self.output_dir, distributed_rank=distributed_rank, filename="log.log")
-        logger.info("{}{}".format("==> log file: ", os.path.join(self.output_dir, "log.log")))
-        # logger.info("{}{}".format("Command line: ", " ".join(sys.argv)))
-        return logger
-
-    @abstractmethod
-    def _configure_accelerator(self) -> BaseAccelerator:
-        pass
-
-    @abstractmethod
-    def _configure_module(self) -> torch.nn.Module:
-        pass
-
-    @abstractmethod
-    def _configure_optimizer(self) -> torch.optim.Optimizer:
-        pass
-
-    @abstractmethod
-    def _configure_lr_scheduler(self) -> torch.optim.lr_scheduler.LRScheduler:
-        pass
-
-    @staticmethod
-    def after_ray_init_callback(cfg) -> list:
-        # ------------------- build redis server -------------------- #
-        actor_list = []
-        if hasattr(cfg, "redis_cache_enabled") and cfg.redis_cache_enabled:
-            from tinyexp.utils.redis_utils import RedisClusterManager
-
-            requested_cpu = cfg.num_gpus * (cfg.train_data_worker_per_gpu + cfg.val_data_worker_per_gpu + 1)
-            if requested_cpu + cfg.redis_cluster_manager_cpus > os.cpu_count():
-                raise RuntimeError(
-                    f"Total CPU count {os.cpu_count()} is not enough for the experiment, "
-                    f"please set `num_gpus * (train_data_worker_per_gpu + val_data_worker_per_gpu + 1)"
-                    f"+ redis_cluster_manager_cpus` <= {os.cpu_count()}"
-                )
-            RemoteRedisClusterManager = ray.remote(num_cpus=cfg.redis_cluster_manager_cpus)(RedisClusterManager)
-            redis_actor = RemoteRedisClusterManager.remote(
-                ports=cfg.redis_cache_shard_ports,
-                max_memory_per_port=cfg.redis_cache_max_memory // len(cfg.redis_cache_shard_ports) + 1,
-            )
-            success = ray.get(redis_actor.start_redis_cluster.remote())
-            if not success:
-                raise RuntimeError("Failed to start Redis cluster")
-                # Periodically monitor Redis memory usage
+    def set_cfg(self, cfg_hydra, cfg_object=None):
+        if cfg_object is None:
+            cfg_object = self
+        for key, value in cfg_hydra.items():
+            if hasattr(cfg_object, key):
+                if isinstance(value, DictConfig) or isinstance(value, dict):
+                    # If the value is a dictionary, recursively set attributes
+                    sub_object = getattr(cfg_object, key)
+                    self.set_cfg(value, sub_object)
+                else:
+                    # Otherwise, set the attribute directly
+                    ori_value = getattr(cfg_object, key, None)
+                    if ori_value != value:
+                        print(f"Override {key} from {ori_value} to {value} in {cfg_object.__class__.__name__}")
+                        setattr(cfg_object, key, value)
             else:
-                print(f"Redis cluster started successfully with ports: {cfg.redis_cache_shard_ports}")
-            actor_list.append(redis_actor)
+                raise AttributeError(f"Configuration key '{key}' does not exist in the provided object.")
+        return cfg_object
 
-            # import threading
-            # import time
 
-            # def monitor_redis_memory():
-            #     while True:
-            #         try:
-            #             memory_info = ray.get(redis_actor.get_redis_memory_info.remote())
-            #             print(f" ==> Redis Memory Status: {memory_info}")
-            #             time.sleep(60)
-            #         except:
-            #             break
+@dataclass
+class RedisCfgMixin:
+    @dataclass
+    class RedisCacheCfg:
+        redis_cache_enabled: bool = False
+        redis_cache_shard_ports: ListConfig = ListConfig(
+            [
+                7000,
+                7001,
+                7002,
+                7003,
+                7004,
+            ]
+        )  # List of Redis cache shard used ports
+        redis_cache_max_memory: int = 160  # Maximum memory is 160GB, according to the ImageNet dataset size
+        redis_cluster_manager_cpus: int = 10
 
-            # monitor_thread = threading.Thread(target=monitor_redis_memory, daemon=True)
-            # monitor_thread.start()
-        return actor_list
+        def build_redis_cache(self):
+            if self.redis_cache_enabled:
+                from tinyexp.utils.redis_utils import RedisClusterManager
+
+                redis_cluster_manager = RedisClusterManager(
+                    ports=self.redis_cache_shard_ports,
+                    max_memory_per_port=self.redis_cache_max_memory // len(self.redis_cache_shard_ports),
+                )
+                return redis_cluster_manager.start_redis_cluster()
+            return True
+
+    redis_cache_cfg: RedisCacheCfg = field(default_factory=RedisCacheCfg)
+
+    def proxy_build_redis_cache(self):
+        """
+        Hard-coded method to build Redis cache since ray actor need
+        """
+        return self.redis_cache_cfg.build_redis_cache()

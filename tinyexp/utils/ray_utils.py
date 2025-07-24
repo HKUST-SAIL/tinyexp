@@ -61,28 +61,44 @@ def simple_ray_launch_exp(cfg: DictConfig) -> None:
     exp_class = hydra.utils.get_class(cfg.exp_class)
     if cfg.launcher == "ray":
         ray.init()
+        remote_exp = ray.remote(exp_class)
 
-        # hold actor list to avoid garbage collection, otherwise the actors will be garbage collected
-        actor_list = exp_class.after_ray_init_callback(cfg)
+        # -------------------- allocate resources for redis cache ----------------- #
+        cpu_need_list = []
+        if hasattr(cfg, "redis_cache_cfg") and cfg.redis_cache_cfg.redis_cache_enabled:
+            # hold actor list to avoid garbage collection, otherwise the actors will be garbage collected
+            cpu_need_list.append(cfg.redis_cache_cfg.redis_cluster_manager_cpus)
+            redis_actor = remote_exp.options(num_cpus=cfg.redis_cache_cfg.redis_cluster_manager_cpus).remote()
 
-        requested_cpu = cfg.num_gpus * (cfg.train_data_worker_per_gpu + cfg.val_data_worker_per_gpu + 1)
-        if requested_cpu > os.cpu_count():
+            ray.get(redis_actor.set_cfg.remote(cfg))
+            ray.get(redis_actor.proxy_build_redis_cache.remote())
+
+        # -------------------- check cpu count for run ----------------- #
+        requested_cpu = cfg.local_gpu_count * (
+            cfg.dataloader_cfg.train_data_worker_per_gpu + cfg.dataloader_cfg.val_data_worker_per_gpu + 1
+        )
+        if requested_cpu + sum(cpu_need_list) > os.cpu_count():
             raise RuntimeError(
                 f"Total CPU count {os.cpu_count()} is not enough for the experiment, "
-                f"please set `num_gpus * (train_data_worker_per_gpu + val_data_worker_per_gpu + 1)`"
+                f"please set `num_gpus * (train.data_worker_per_gpu + val.data_worker_per_gpu + 1)`"
                 f"<= {os.cpu_count()}"
             )
 
-        remote_exp = ray.remote(exp_class)
+        # -------------------- allocate resources for run ----------------- #
         options_list = get_num_gpus_worker_options(
-            cfg.num_gpus, num_cpus_per_gpu=cfg.train_data_worker_per_gpu + cfg.val_data_worker_per_gpu + 1
+            cfg.local_gpu_count,
+            num_cpus_per_gpu=cfg.dataloader_cfg.train_data_worker_per_gpu
+            + cfg.dataloader_cfg.val_data_worker_per_gpu
+            + 1,
         )
+        worker_group = [remote_exp.options(**options).remote() for options in options_list]
 
-        worker_group = [remote_exp.options(**options).remote(cfg) for options in options_list]
+        # run_futures = [worker.set_cfg.remote(cfg) for worker in worker_group]
+        # ray.get(run_futures)
         run_futures = [worker.run.remote() for worker in worker_group]
         ray.get(run_futures)
 
     elif cfg.launcher == "torchrun":
-        exp_class(cfg).run()
+        exp_class().run()
     else:
         raise ValueError(f"Unknown launcher {cfg.launcher}, please set `launcher` to 'ray' or 'torchrun'.")
