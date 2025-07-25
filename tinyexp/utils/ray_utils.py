@@ -93,8 +93,8 @@ def simple_ray_launch_exp(cfg: DictConfig) -> None:
         )
         worker_group = [remote_exp.options(**options).remote() for options in options_list]
 
-        # run_futures = [worker.set_cfg.remote(cfg) for worker in worker_group]
-        # ray.get(run_futures)
+        run_futures = [worker.set_cfg.remote(cfg) for worker in worker_group]
+        ray.get(run_futures)
         run_futures = [worker.run.remote() for worker in worker_group]
         ray.get(run_futures)
 
