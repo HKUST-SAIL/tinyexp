@@ -1,4 +1,5 @@
 import torch
+import torch.distributed as dist
 
 from .base_accelerator import BaseAccelerator
 
@@ -10,9 +11,33 @@ class CPUAccelerator(BaseAccelerator):
 
     def __init__(self) -> None:
         super().__init__()
+        if self.world_size > 1:
+            self._init_process_group()
+            self._process_group_initialized = True
+        else:
+            self._process_group_initialized = False
 
     def _init_process_group(self) -> None:
-        pass
+        dist.init_process_group(
+            backend="gloo",
+            init_method="env://",
+            rank=self.rank,
+            world_size=self.world_size,
+        )
+
+    def destroy(self):
+        """Explicitly destroy the distributed process group"""
+        if self._process_group_initialized:
+            if dist.is_initialized():
+                dist.destroy_process_group()
+            self._process_group_initialized = False
+
+    def __del__(self):
+        """Destructor, which is automatically called when the object is garbage collected"""
+        try:
+            self.destroy()
+        except Exception:
+            pass
 
     def unwrap_model(self, model):
         return model
@@ -32,10 +57,16 @@ class CPUAccelerator(BaseAccelerator):
         loss.backward()
 
     def wait_for_everyone(self) -> None:
-        pass
+        if self.world_size > 1:
+            dist.barrier()
 
     def reduce_sum(self, tensor: torch.Tensor) -> torch.Tensor:
+        if self.world_size < 2:
+            return tensor
+        tensor = tensor.clone().to(self.device)
+        dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
         return tensor
 
     def print(self, *args, **kwargs) -> None:
-        print(*args, **kwargs)
+        if self.rank == 0:
+            print(*args, **kwargs)

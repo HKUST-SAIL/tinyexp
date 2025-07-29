@@ -108,8 +108,8 @@ class DDPAccelerator(BaseAccelerator):
         dist.init_process_group(
             backend="nccl",
             init_method="env://",
-            rank=self.rank,
-            world_size=self.world_size,
+            # rank=self.rank,
+            # world_size=self.world_size,
         )
 
     def destroy(self):

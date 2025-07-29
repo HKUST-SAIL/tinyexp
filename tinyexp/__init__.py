@@ -35,8 +35,12 @@ class _HydraConfig(HydraConf):
 @dataclass
 class TinyExp:
     hydra: _HydraConfig = field(default_factory=_HydraConfig)
+
+    # ---------------- luancher configuration ---------------- #
     launcher: str = "ray"  # "ray" or "torchrun"
-    local_gpu_count: int = torch.cuda.device_count()
+    num_worker: int = torch.cuda.device_count()  # currently, it's not suitable for multi-node training
+    num_gpus_per_worker: float = 1.0  # Number of GPUs per worker
+
     output_root = "./output"
     enable_wandb: bool = False
 

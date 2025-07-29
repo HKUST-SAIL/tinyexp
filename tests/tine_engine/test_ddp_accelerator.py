@@ -3,7 +3,7 @@ import ray
 import torch
 
 from tinyexp.tiny_engine.accelerator import DDPAccelerator
-from tinyexp.utils.ray_utils import get_num_gpus_worker_options
+from tinyexp.utils.ray_utils import get_num_worker_options, get_placement_group
 
 
 @ray.remote
@@ -34,38 +34,26 @@ class DDPAcceleratorProxy:
 
 @pytest.mark.skipif(torch.cuda.device_count() < 2, reason="Requires at least 2 GPUs")
 class TestDDPAcceleratorWithRay:
-    @pytest.fixture(autouse=True)
-    def setup_ray(self):
-        # Use a fixture to ensure Ray is initialized and shut down cleanly.
-        # Exclude files to prevent `ray.init` from hanging on large directories.
-        # This tells Ray to only package necessary python files.
 
-        # print("Setting up Ray for testing...")
-        runtime_env = {
-            "working_dir": ".",
-            "excludes": ["*.md", "data/", "tests/", ".git/", ".venv/", "output/", "outputs/", "site/"],
-        }
-        if not ray.is_initialized():
-            ray.init(runtime_env=runtime_env)
-        # print("Ray initialized for testing.")
-
-        yield  # This is where the test runs
-
-        # print("Shutting down Ray...")
-        ray.shutdown()
-        # print("Ray shut down.")
-
-    def test_ddp_accelerator(self):
+    def test_ddp_accelerator(self, ray_session):
         num_workers = 2
         # This utility correctly sets up env vars and placement groups.
-        options_list = get_num_gpus_worker_options(num_workers, num_cpus_per_gpu=1)
+        pg = get_placement_group(
+            num_worker=num_workers,
+            num_gpus_per_worker=1.0,  # Each worker gets 1 GPU
+            num_cpus_per_worker=4,  # Each worker gets 1 CPU
+        )
+        gpu_per_actor = 0.2
 
-        # Create the remote actors.
-        worker_group = [DDPAcceleratorProxy.options(**options).remote() for options in options_list]
+        options_list1 = get_num_worker_options(pg, num_workers, gpu_ratio=gpu_per_actor)
+        worker_group1 = [DDPAcceleratorProxy.options(**options).remote() for options in options_list1]
+        run_futures1 = [worker.test_reduce_sum.remote() for worker in worker_group1]
 
-        # Run the test method on all workers and wait for them to complete.
-        run_futures = [worker.test_reduce_sum.remote() for worker in worker_group]
-        results = ray.get(run_futures)
+        options_list2 = get_num_worker_options(pg, num_workers, gpu_ratio=gpu_per_actor)
+        worker_group2 = [DDPAcceleratorProxy.options(**options).remote() for options in options_list2]
+        run_futures2 = [worker.test_reduce_sum.remote() for worker in worker_group2]
 
-        # Verify that all tests passed.
-        assert all(results)
+        results1 = ray.get(run_futures1)
+        results2 = ray.get(run_futures2)
+        assert all(results1)
+        assert all(results2)
