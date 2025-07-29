@@ -13,7 +13,7 @@ A simple Python project for deep learning experiment management. It uses Ray for
 pip install tinyexp
 ```
 
-Run mnist example, By default, all available GPUs will be used.
+Run mnist example(By default, It will trained on CPU)
 
 ```python
 import tinyexp
@@ -24,7 +24,7 @@ tinyexp.simple_ray_launch_exp()
 
 # More Examples
 
-1. ImageNet ResNet-50 Example with Extremely Fast Data Loading:
+1. ImageNet ResNet-50 Example with Extremely Fast Data Loading (By default, all available GPUs will be used.)
 
 ```python
 # export IMAGENET_HOME=yours_imagenet_dir

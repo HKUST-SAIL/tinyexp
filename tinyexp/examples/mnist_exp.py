@@ -2,16 +2,14 @@ import datetime
 import os
 from dataclasses import dataclass, field
 
-import ray
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import wandb
-from omegaconf import DictConfig
+from omegaconf import OmegaConf
 from torch.optim.lr_scheduler import StepLR
 from torchvision import datasets, transforms
-from tqdm import tqdm
 
 from tinyexp import ConfigStore, TinyExp, simple_ray_launch_exp
 
@@ -52,10 +50,12 @@ class Net(nn.Module):
 @dataclass(repr=False)
 class Exp(TinyExp):
     exp_class: str = f"{__name__}.Exp"
+    num_worker: int = 2
+    num_gpus_per_worker: float = 0.0
 
     @dataclass
     class AcceleratorCfg:
-        accelerator: str = "ddp"
+        accelerator: str = "cpu"
 
         def build_accelerator(self):
             from tinyexp.tiny_engine.accelerator import CPUAccelerator, DDPAccelerator
@@ -146,6 +146,7 @@ class Exp(TinyExp):
             save_dir=os.path.join(cfg.output_root, cfg.__class__.__name__),
             distributed_rank=accelerator.rank,
         )
+        logger.info(f"-------- Configurations --------\n{OmegaConf.to_yaml(cfg)}")
 
         def eval(module_or_module_path, val_dataloader=None):
             if isinstance(module_or_module_path, str):
@@ -170,7 +171,6 @@ class Exp(TinyExp):
                 accurate += accurate_preds_sum
             eval_metric = accurate.item() / len(val_dataloader.dataset)
 
-            print(f"======> data_shard_count: {len(val_dataloader.dataset)}")
             # ======================================================================
             accelerator.wait_for_everyone()
             nowtime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")

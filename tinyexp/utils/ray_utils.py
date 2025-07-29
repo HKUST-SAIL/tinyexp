@@ -8,20 +8,20 @@ from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 
-def get_1gpu_placement_group(num_gpus, num_cpus_per_gpu=10):
+def get_placement_group(num_worker, num_gpus_per_worker=1, num_cpus_per_worker=10):
     """Create and return a placement group for GPU allocation."""
-    bundles = [{"CPU": num_cpus_per_gpu, "GPU": 1} for _ in range(num_gpus)]
+    bundles = [{"CPU": num_cpus_per_worker, "GPU": num_gpus_per_worker} for _ in range(num_worker)]
     pg = placement_group(bundles=bundles, strategy="STRICT_PACK")
     ray.get(pg.ready())
     return pg
 
 
-def get_1gpu_worker_options(pg, rank, local_rank, num_gpus, master_addr, master_port):
+def get_worker_options(gpu_ratio, pg, rank, local_rank, num_worker, master_addr, master_port):
     """Create options for Ray workers."""
     return {
         "runtime_env": {
             "env_vars": {
-                "WORLD_SIZE": str(num_gpus),
+                "WORLD_SIZE": str(num_worker),
                 "RANK": str(rank),
                 "MASTER_ADDR": master_addr,
                 "MASTER_PORT": str(master_port),
@@ -29,7 +29,7 @@ def get_1gpu_worker_options(pg, rank, local_rank, num_gpus, master_addr, master_
             }
         },
         "scheduling_strategy": PlacementGroupSchedulingStrategy(placement_group=pg, placement_group_bundle_index=rank),
-        "num_gpus": 1.0,
+        "num_gpus": gpu_ratio,
     }
 
 
@@ -42,13 +42,13 @@ def get_network_config():
     return master_addr, master_port
 
 
-def get_num_gpus_worker_options(num_gpus, num_cpus_per_gpu=10):
+def get_num_worker_options(pg, num_worker, gpu_ratio=1.0):
     """Create options for multiple Ray workers with GPU allocation."""
-    pg = get_1gpu_placement_group(num_gpus=num_gpus, num_cpus_per_gpu=num_cpus_per_gpu)
+
     master_addr, master_port = get_network_config()
     options_list = []
-    for i in range(num_gpus):
-        options = get_1gpu_worker_options(pg, i, i, num_gpus, master_addr, master_port)
+    for i in range(num_worker):
+        options = get_worker_options(gpu_ratio, pg, i, i, num_worker, master_addr, master_port)
         options_list.append(options)
     return options_list
 
@@ -56,11 +56,10 @@ def get_num_gpus_worker_options(num_gpus, num_cpus_per_gpu=10):
 @hydra.main(version_base=None, config_name="cfg")
 def simple_ray_launch_exp(cfg: DictConfig) -> None:
     """This is a template for launching a Ray-based experiment."""
-    print(OmegaConf.to_yaml(cfg))
-
     exp_class = hydra.utils.get_class(cfg.exp_class)
     if cfg.launcher == "ray":
         ray.init()
+
         remote_exp = ray.remote(exp_class)
 
         # -------------------- allocate resources for redis cache ----------------- #
@@ -74,22 +73,28 @@ def simple_ray_launch_exp(cfg: DictConfig) -> None:
             ray.get(redis_actor.proxy_build_redis_cache.remote())
 
         # -------------------- check cpu count for run ----------------- #
-        requested_cpu = cfg.local_gpu_count * (
+        requested_cpu = cfg.num_worker * (
             cfg.dataloader_cfg.train_data_worker_per_gpu + cfg.dataloader_cfg.val_data_worker_per_gpu + 1
         )
         if requested_cpu + sum(cpu_need_list) > os.cpu_count():
             raise RuntimeError(
                 f"Total CPU count {os.cpu_count()} is not enough for the experiment, "
-                f"please set `num_gpus * (train.data_worker_per_gpu + val.data_worker_per_gpu + 1)`"
+                f"please set `num_worker * (train.data_worker_per_gpu + val.data_worker_per_gpu + 1)`"
                 f"<= {os.cpu_count()}"
             )
 
         # -------------------- allocate resources for run ----------------- #
-        options_list = get_num_gpus_worker_options(
-            cfg.local_gpu_count,
-            num_cpus_per_gpu=cfg.dataloader_cfg.train_data_worker_per_gpu
+        pg = get_placement_group(
+            num_worker=cfg.num_worker,
+            num_gpus_per_worker=cfg.num_gpus_per_worker,
+            num_cpus_per_worker=cfg.dataloader_cfg.train_data_worker_per_gpu
             + cfg.dataloader_cfg.val_data_worker_per_gpu
             + 1,
+        )
+        options_list = get_num_worker_options(
+            pg,
+            cfg.num_worker,
+            gpu_ratio=cfg.num_gpus_per_worker,
         )
         worker_group = [remote_exp.options(**options).remote() for options in options_list]
 

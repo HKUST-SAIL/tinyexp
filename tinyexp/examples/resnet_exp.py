@@ -10,8 +10,7 @@ import torch.nn as nn
 import torchvision.models as models
 import wandb
 from hydra.core.config_store import ConfigStore
-from omegaconf import DictConfig
-from omegaconf.listconfig import ListConfig
+from omegaconf import OmegaConf
 from PIL import Image
 from torch.optim import SGD
 from torch.optim.lr_scheduler import StepLR
@@ -324,6 +323,7 @@ class ResNetExp(TinyExp, RedisCfgMixin):
         logger = cfg.logger_cfg.build_logger(
             save_dir=os.path.join(cfg.output_root, cfg.__class__.__name__), distributed_rank=accelerator.rank
         )
+        logger.info(f"-------- Configurations --------\n{OmegaConf.to_yaml(cfg)}")
 
         def eval(module_or_module_path, val_dataloader) -> None:
             if isinstance(module_or_module_path, str):
