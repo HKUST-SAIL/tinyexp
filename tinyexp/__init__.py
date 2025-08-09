@@ -3,14 +3,10 @@ author: LI Zeming
 email: zengarden2009@gmail.com
 """
 
-import inspect
 import os
-from abc import abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional
 
-import ray
-import torch
 from hydra.conf import HydraConf, RunDir
 from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig
@@ -34,12 +30,18 @@ class _HydraConfig(HydraConf):
 
 @dataclass
 class TinyExp:
+    """
+    Simple experiment configuration class, which use hydra to manage and override configurations.
+    The core idea is to provide a unified interface for experiment configurations, which can be instantiated
+    and used in various contexts, such as Ray or TorchRun.
+    """
+
     hydra: _HydraConfig = field(default_factory=_HydraConfig)
 
     # ---------------- luancher configuration ---------------- #
     launcher: str = "ray"  # "ray" or "torchrun"
-    num_worker: int = torch.cuda.device_count()  # currently, it's not suitable for multi-node training
-    num_gpus_per_worker: float = 1.0  # Number of GPUs per worker
+    num_worker: int = -1  # Number of workers, -1 means to be determined by the user
+    num_gpus_per_worker: float = 1.0  # Number of GPUs per worker, should be a float value between 0 and 1.
 
     output_root = "./output"
     enable_wandb: bool = False

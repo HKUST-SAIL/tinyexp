@@ -57,6 +57,9 @@ def get_num_worker_options(pg, num_worker, gpu_ratio=1.0):
 def simple_ray_launch_exp(cfg: DictConfig) -> None:
     """This is a template for launching a Ray-based experiment."""
     exp_class = hydra.utils.get_class(cfg.exp_class)
+    if cfg.num_worker <= 0:
+        raise ValueError(f"Number of workers must be greater than 0, got {cfg.num_worker}.")
+
     if cfg.launcher == "ray":
         ray.init()
 
