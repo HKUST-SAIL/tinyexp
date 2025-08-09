@@ -194,6 +194,7 @@ class RedisCachedImageFolder:
 @dataclass(repr=False)
 class ResNetExp(TinyExp, RedisCfgMixin):
     exp_class: str = f"{__name__}.ResNetExp"
+    num_worker: int = torch.cuda.device_count()
 
     @dataclass
     class AcceleratorCfg:
@@ -328,9 +329,9 @@ class ResNetExp(TinyExp, RedisCfgMixin):
         def eval(module_or_module_path, val_dataloader) -> None:
             if isinstance(module_or_module_path, str):
                 assert val_dataloader is None
-                module = cfg.module_cfg.build_module()
+                module: nn.Module = cfg.module_cfg.build_module()
                 module.load_state_dict(torch.load(module_or_module_path))
-                module = accelerator.prepare(module)
+                module = accelerator.prepare_model(module)
                 val_dataloader = cfg.dataloader_cfg.build_val_dataloader(accelerator)
             else:
                 module = module_or_module_path

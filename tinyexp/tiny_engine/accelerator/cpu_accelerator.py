@@ -50,6 +50,10 @@ class CPUAccelerator(BaseAccelerator):
         else:
             return model
 
+    def prepare_model(self, model):
+        model.to(self.device)
+        return model
+
     def prepare_optimizer(self, optimizer):
         return optimizer
 
