@@ -39,12 +39,12 @@ class TinyExp:
     hydra: _HydraConfig = field(default_factory=_HydraConfig)
 
     # ---------------- luancher configuration ---------------- #
-    launcher: str = "ray"  # "ray" or "torchrun"
     num_worker: int = -1  # Number of workers, -1 means to be determined by the user
     num_gpus_per_worker: float = 1.0  # Number of GPUs per worker, should be a float value between 0 and 1.
 
     output_root = "./output"
     enable_wandb: bool = False
+    overrided_cfg: dict = field(default_factory=dict)
 
     def __repr__(self):
         # Customize the representation of the Exp object for cleaner Ray logs.
@@ -74,6 +74,7 @@ class TinyExp:
                     if ori_value != value:
                         print(f"Override {key} from {ori_value} to {value} in {cfg_object.__class__.__name__}")
                         setattr(cfg_object, key, value)
+                        self.overrided_cfg[key] = value
             else:
                 raise AttributeError(f"Configuration key '{key}' does not exist in the provided object.")
         return cfg_object

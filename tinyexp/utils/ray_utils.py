@@ -2,6 +2,7 @@ import os
 import socket
 
 import hydra
+import psutil
 import ray
 from omegaconf import DictConfig, OmegaConf
 from ray.util.placement_group import placement_group
@@ -53,14 +54,43 @@ def get_num_worker_options(pg, num_worker, gpu_ratio=1.0):
     return options_list
 
 
+def get_launcher():
+    # Get the current process
+    current_process = psutil.Process(os.getpid())
+    process_chain = [current_process]
+
+    # Trace up the process tree (up to 10 levels to avoid infinite loops)
+    for _ in range(10):
+        parent = current_process.parent()
+        if not parent or parent.pid == 1:  # Stop when reaching the root process (PID=1)
+            break
+        process_chain.append(parent)
+        current_process = parent
+
+    # Check if there is torchrun or python in the process chain
+    for proc in process_chain:
+        try:
+            cmd_line = " ".join(proc.cmdline())
+            proc_name = proc.name()
+            if "torchrun" in cmd_line or "torchrun" in proc_name:
+                return "torchrun"
+        except (psutil.AccessDenied, psutil.NoSuchProcess):
+            continue
+
+    return "python"
+
+
 @hydra.main(version_base=None, config_name="cfg")
 def simple_ray_launch_exp(cfg: DictConfig) -> None:
     """This is a template for launching a Ray-based experiment."""
     exp_class = hydra.utils.get_class(cfg.exp_class)
+    launcher = get_launcher()
+    print(f"==> use launcher:{launcher}")
+
     if cfg.num_worker <= 0:
         raise ValueError(f"Number of workers must be greater than 0, got {cfg.num_worker}.")
 
-    if cfg.launcher == "ray":
+    if launcher == "python":
         ray.init()
 
         remote_exp = ray.remote(exp_class)
@@ -76,10 +106,13 @@ def simple_ray_launch_exp(cfg: DictConfig) -> None:
             ray.get(redis_actor.proxy_build_redis_cache.remote())
 
         # -------------------- check cpu count for run ----------------- #
-        requested_cpu = cfg.num_worker * (
-            cfg.dataloader_cfg.train_data_worker_per_gpu + cfg.dataloader_cfg.val_data_worker_per_gpu + 1
-        )
-        if requested_cpu + sum(cpu_need_list) > os.cpu_count():
+        assert cfg.mode in ["train", "val"], f"Unknown mode {cfg.mode}, please set `mode` to 'train' or 'val'."
+        needed_num_cpus_per_worker = cfg.dataloader_cfg.val_data_worker_per_gpu + 1
+        if cfg.mode == "train":
+            needed_num_cpus_per_worker += cfg.dataloader_cfg.train_data_worker_per_gpu
+
+        needed_cpu = cfg.num_worker * needed_num_cpus_per_worker
+        if needed_cpu + sum(cpu_need_list) > os.cpu_count():
             raise RuntimeError(
                 f"Total CPU count {os.cpu_count()} is not enough for the experiment, "
                 f"please set `num_worker * (train.data_worker_per_gpu + val.data_worker_per_gpu + 1)`"
@@ -87,12 +120,11 @@ def simple_ray_launch_exp(cfg: DictConfig) -> None:
             )
 
         # -------------------- allocate resources for run ----------------- #
+
         pg = get_placement_group(
             num_worker=cfg.num_worker,
             num_gpus_per_worker=cfg.num_gpus_per_worker,
-            num_cpus_per_worker=cfg.dataloader_cfg.train_data_worker_per_gpu
-            + cfg.dataloader_cfg.val_data_worker_per_gpu
-            + 1,
+            num_cpus_per_worker=needed_num_cpus_per_worker,
         )
         options_list = get_num_worker_options(
             pg,
@@ -106,7 +138,7 @@ def simple_ray_launch_exp(cfg: DictConfig) -> None:
         run_futures = [worker.run.remote() for worker in worker_group]
         ray.get(run_futures)
 
-    elif cfg.launcher == "torchrun":
+    elif launcher == "torchrun":
         exp_class().set_cfg(cfg).run()
     else:
-        raise ValueError(f"Unknown launcher {cfg.launcher}, please set `launcher` to 'ray' or 'torchrun'.")
+        raise ValueError(f"Unknown launcher {launcher}, please set `launcher` to 'ray' or 'torchrun'.")
