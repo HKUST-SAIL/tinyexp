@@ -135,6 +135,10 @@ ignore = [
 [tool.ruff.format]
 preview = true
 
+[tool.pylint.main]
+max-line-length = 120
+disable = "C0114, C0115, C0116"
+
 [tool.coverage.report]
 skip_empty = true
 
