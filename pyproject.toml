@@ -23,7 +23,7 @@ dependencies = [
     "tabulate",
     "hydra-core",
     "omegaconf",
-    "ray",
+    "ray==2.47.1",
     "tqdm",
     "torch",
     "torchvision",
