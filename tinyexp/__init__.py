@@ -43,12 +43,27 @@ class TinyExp:
     num_gpus_per_worker: float = 1.0  # Number of GPUs per worker, should be a float value between 0 and 1.
 
     output_root = "./output"
-    enable_wandb: bool = False
     overrided_cfg: dict = field(default_factory=dict)
 
     def __repr__(self):
         # Customize the representation of the Exp object for cleaner Ray logs.
         return f"Exp(rank={os.getenv('RANK', 'N/A')})"
+
+    @dataclass
+    class WandbCfg:
+        enable_wandb: bool = False
+
+        def build_wandb(self, accelerator=None, **kwargs):
+            if self.enable_wandb:
+                import wandb
+
+                if accelerator is None:
+                    wandb.init(**kwargs)
+                elif accelerator.rank == 0:
+                    wandb.init(**kwargs)
+                return wandb
+
+    wandb_cfg: WandbCfg = field(default_factory=WandbCfg)
 
     @dataclass
     class LoggerCfg:
@@ -84,7 +99,7 @@ class TinyExp:
 class RedisCfgMixin:
     @dataclass
     class RedisCacheCfg:
-        redis_cache_enabled: bool = False
+        redis_cache_enabled: bool = True
         redis_cache_shard_ports: ListConfig = ListConfig(
             [
                 7000,
