@@ -4,7 +4,7 @@ import socket
 import hydra
 import psutil
 import ray
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
@@ -97,7 +97,7 @@ def simple_ray_launch_exp(cfg: DictConfig) -> None:
 
         # -------------------- allocate resources for redis cache ----------------- #
         cpu_need_list = []
-        if hasattr(cfg, "redis_cache_cfg") and cfg.redis_cache_cfg.redis_cache_enabled:
+        if cfg.mode == "train" and hasattr(cfg, "redis_cache_cfg") and cfg.redis_cache_cfg.redis_cache_enabled:
             # hold actor list to avoid garbage collection, otherwise the actors will be garbage collected
             cpu_need_list.append(cfg.redis_cache_cfg.redis_cluster_manager_cpus)
             redis_actor = remote_exp.options(num_cpus=cfg.redis_cache_cfg.redis_cluster_manager_cpus).remote()
@@ -139,6 +139,9 @@ def simple_ray_launch_exp(cfg: DictConfig) -> None:
         ray.get(run_futures)
 
     elif launcher == "torchrun":
+        # if hasattr(cfg, "redis_cache_cfg") and cfg.redis_cache_cfg.redis_cache_enabled:
+        #     cfg.redis_cache_cfg.redis_cache_enabled = False
+
         exp_class().set_cfg(cfg).run()
     else:
         raise ValueError(f"Unknown launcher {launcher}, please set `launcher` to 'ray' or 'torchrun'.")

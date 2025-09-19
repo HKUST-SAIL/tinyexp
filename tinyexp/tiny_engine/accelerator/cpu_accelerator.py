@@ -71,6 +71,9 @@ class CPUAccelerator(BaseAccelerator):
         dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
         return tensor
 
+    def reduce_mean(self, tensor: torch.Tensor) -> torch.Tensor:
+        return self.reduce_sum(tensor) / self.world_size
+
     def print(self, *args, **kwargs) -> None:
         if self.rank == 0:
             print(*args, **kwargs)
