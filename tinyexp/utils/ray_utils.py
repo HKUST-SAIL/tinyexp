@@ -72,8 +72,11 @@ def get_launcher():
         try:
             cmd_line = " ".join(proc.cmdline())
             proc_name = proc.name()
+            # print(cmd_line, proc_name)
             if "torchrun" in cmd_line or "torchrun" in proc_name:
                 return "torchrun"
+            if "accelerate" in cmd_line or "accelerate" in proc_name:
+                return "accelerate"
         except (psutil.AccessDenied, psutil.NoSuchProcess):
             continue
 
@@ -138,7 +141,7 @@ def simple_ray_launch_exp(cfg: DictConfig) -> None:
         run_futures = [worker.run.remote() for worker in worker_group]
         ray.get(run_futures)
 
-    elif launcher == "torchrun":
+    elif launcher == "torchrun" or launcher == "accelerate":
         # if hasattr(cfg, "redis_cache_cfg") and cfg.redis_cache_cfg.redis_cache_enabled:
         #     cfg.redis_cache_cfg.redis_cache_enabled = False
 

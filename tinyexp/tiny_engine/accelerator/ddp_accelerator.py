@@ -5,104 +5,12 @@ from torch import nn
 from .base_accelerator import BaseAccelerator
 
 
-class DDPAcceleratedOptimizer(torch.optim.Optimizer):
-    """
-    Internal wrapper around a torch optimizer.
-
-    Conditionally will perform `step` and `zero_grad` if gradients should be synchronized when performing gradient
-    accumulation.
-
-    Args:
-        optimizer (`torch.optim.optimizer.Optimizer`):
-            The optimizer to wrap.
-        scaler (`torch.cuda.amp.grad_scaler.GradScaler`, *optional*):
-            The scaler to use in the step function if training with mixed precision.
-    """
-
-    def __init__(self, optimizer, scaler):
-        self.optimizer = optimizer
-        self.scaler = scaler
-
-    @property
-    def state(self):
-        return self.optimizer.state
-
-    @state.setter
-    def state(self, state):
-        self.optimizer.state = state
-
-    @property
-    def param_groups(self):
-        return self.optimizer.param_groups
-
-    @param_groups.setter
-    def param_groups(self, param_groups):
-        self.optimizer.param_groups = param_groups
-
-    @property
-    def defaults(self):
-        return self.optimizer.defaults
-
-    @defaults.setter
-    def defaults(self, defaults):
-        self.optimizer.defaults = defaults
-
-    def add_param_group(self, param_group):
-        self.optimizer.add_param_group(param_group)
-
-    def load_state_dict(self, state_dict):
-        self.optimizer.load_state_dict(state_dict)
-
-    def state_dict(self):
-        return self.optimizer.state_dict()
-
-    def zero_grad(self, set_to_none=None):
-        self.optimizer.zero_grad()
-
-    def train(self) -> None:
-        """
-        Sets the optimizer to "train" mode. Useful for optimizers like `schedule_free`
-        """
-        if hasattr(self.optimizer, "train") and callable(self.optimizer.train):
-            self.optimizer.train()
-
-    def eval(self) -> None:
-        """
-        Sets the optimizer to "eval" mode. Useful for optimizers like `schedule_free`
-        """
-        if hasattr(self.optimizer, "eval") and callable(self.optimizer.eval):
-            self.optimizer.eval()
-
-    def step(self, closure=None) -> None:
-        if self.scaler is not None:
-            self.scaler.unscale_(self.optimizer)
-            self.scaler.step(self.optimizer, closure)
-            self.scaler.update()
-        else:
-            self.optimizer.step(closure)
-
-    def _switch_parameters(self, parameters_map) -> None:
-        for param_group in self.optimizer.param_groups:
-            param_group["params"] = [parameters_map.get(p, p) for p in param_group["params"]]
-
-
 class DDPAccelerator(BaseAccelerator):
-    def __init__(self, mixed_precision=None):
+    def __init__(self):
         super().__init__()
         assert torch.cuda.is_available(), "DDPAccelerator requires CUDA to be available."
         self._init_process_group()
         self._process_group_initialized = True  # Mark that the process group has been initialized
-
-        self.mixed_precision = mixed_precision
-        self.dtype = None
-        if self.mixed_precision == torch.float16 or self.mixed_precision == torch.bfloat16:
-            self.grad_scaler = torch.cuda.amp.GradScaler()
-            self.autocast = torch.autocast(device_type=self.device.type, dtype=mixed_precision)
-            self.backward = self._amp_backward
-            self.dtype = mixed_precision
-        else:
-            self.backward = self._naive_backward
-            self.dtype = torch.float32
 
     def _init_process_group(self):
         dist.init_process_group(
@@ -146,14 +54,6 @@ class DDPAccelerator(BaseAccelerator):
             # find_unused_parameters=self.find_unused_parameters,
             # broadcast_buffers=self.broadcast_buffers,
         )
-
-        if self.mixed_precision == torch.bfloat16 or self.mixed_precision == torch.float16:
-
-            def new_forward(old_forward, *args, **kwargs):
-                with self.autocast:
-                    return old_forward(*args, **kwargs)
-
-            wrapped_module.forward = new_forward.__get__(wrapped_module.forward)
         return wrapped_module
 
     def prepare_optimizer(self, optimizer):
@@ -173,19 +73,10 @@ class DDPAccelerator(BaseAccelerator):
                                 subparam._grad.data = subparam._grad.data.to(device)
 
         optimizer_to(optimizer, self.device)
-
-        if self.mixed_precision == torch.bfloat16 or self.mixed_precision == torch.float16:
-            optimizer = DDPAcceleratedOptimizer(optimizer, self.grad_scaler)
         return optimizer
 
-    def _naive_backward(self, loss: torch.Tensor):
-        loss.backward()
-
-    def _amp_backward(self, loss: torch.Tensor):
-        self.grad_scaler.scale(loss).backward()
-
     def backward(self, loss: torch.Tensor):
-        pass
+        loss.backward()
 
     def dump_model_to_state_dict(self, module: nn.Module) -> dict:
         """
@@ -226,6 +117,25 @@ class DDPAccelerator(BaseAccelerator):
 
     def reduce_mean(self, tensor: torch.Tensor) -> torch.Tensor:
         return self.reduce_sum(tensor) / self.world_size
+
+    def gather(self, tensor: torch.Tensor) -> torch.Tensor:
+        """
+        Gather tensors from all processes to the main process (rank 0).
+        Only rank 0 will have the gathered result, other ranks will return None.
+        """
+        world_size = self.world_size
+        if world_size < 2:
+            return tensor
+
+        if self.rank == 0:
+            # Main process: gather tensors from all processes
+            gather_list = [torch.zeros_like(tensor) for _ in range(world_size)]
+            dist.gather(tensor, gather_list, dst=0)
+            return torch.cat(gather_list, dim=0)
+        else:
+            # Other processes: send tensor to main process
+            dist.gather(tensor, dst=0)
+            return tensor
 
     def print(self, *args, **kwargs) -> None:
         if self.is_local_main_process:

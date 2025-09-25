@@ -13,9 +13,6 @@ class BaseAccelerator(abc.ABC):
     """
 
     def __init__(self) -> None:
-        self._model = None
-        self._optimizer = None
-
         self.rank = int(os.getenv("RANK", 0))
         self.world_size = int(os.getenv("WORLD_SIZE", 1))
         self.local_rank = int(os.getenv("LOCAL_RANK", 0))
@@ -35,17 +32,9 @@ class BaseAccelerator(abc.ABC):
     def _init_process_group(self) -> None:
         pass
 
-    @property
-    def model(self):  # type: ignore[no-untyped-def]
-        return self._model
-
     @abstractmethod
     def unwrap_model(self, model):  # type: ignore[no-untyped-def]
         pass
-
-    @property
-    def optimizer(self):  # type: ignore[no-untyped-def]
-        return self._optimizer
 
     @abstractmethod
     def prepare(self, model, optimizer=None):  # type: ignore[no-untyped-def]
