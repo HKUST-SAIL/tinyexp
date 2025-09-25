@@ -6,11 +6,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-import wandb
 from omegaconf import OmegaConf
 from torch.optim.lr_scheduler import StepLR
 from torchvision import datasets, transforms
 
+import wandb
 from tinyexp import ConfigStore, TinyExp, simple_ray_launch_exp
 
 
@@ -52,6 +52,7 @@ class Exp(TinyExp):
     exp_class: str = f"{__name__}.Exp"
     num_worker: int = 2
     num_gpus_per_worker: float = 0.0
+    mode: str = "train"
 
     @dataclass
     class AcceleratorCfg:
@@ -146,7 +147,9 @@ class Exp(TinyExp):
             save_dir=os.path.join(cfg.output_root, cfg.__class__.__name__),
             distributed_rank=accelerator.rank,
         )
-        logger.info(f"-------- Configurations --------\n{OmegaConf.to_yaml(cfg)}")
+        cfg_dict = OmegaConf.to_container(OmegaConf.structured(self), resolve=True)
+        del cfg_dict["hydra"]
+        logger.info(f"-------- Configurations --------\n{OmegaConf.to_yaml(cfg_dict)}")
 
         def eval(module_or_module_path, val_dataloader=None):
             if isinstance(module_or_module_path, str):
@@ -176,7 +179,7 @@ class Exp(TinyExp):
             nowtime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             logger.info(f"{nowtime} --> eval_metric= {100 * eval_metric:.2f}%")
 
-            if cfg.enable_wandb and accelerator.is_main_process:
+            if cfg.wandb_cfg.enable_wandb and accelerator.is_main_process:
                 wandb.log({"val_metric": eval_metric})
 
         def train() -> None:
@@ -190,12 +193,11 @@ class Exp(TinyExp):
             accelerator.print(f"device {accelerator.device!s} is used!")
 
             train_iter = iter(train_dataloader)
-            if cfg.enable_wandb and accelerator.rank == 0:
-                from omegaconf import OmegaConf
-
-                wandb.init(
-                    config=OmegaConf.to_container(cfg, resolve=True),
+            if cfg.wandb_cfg.enable_wandb and accelerator.rank == 0:
+                cfg.wandb_cfg.build_wandb(
+                    accelerator=accelerator,
                     project="Baselines",
+                    config=cfg_dict,
                 )
 
             for epoch in range(3):
@@ -222,7 +224,7 @@ class Exp(TinyExp):
                         logger.info(
                             f"epoch {epoch} loss: {loss.item(): .4f} lr: {optimizer.param_groups[0]['lr']: .4f}"
                         )
-                        if cfg.enable_wandb and accelerator.rank == 0:
+                        if cfg.wandb_cfg.enable_wandb and accelerator.rank == 0:
                             wandb.log(
                                 {
                                     "epoch": epoch,
