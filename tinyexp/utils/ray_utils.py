@@ -89,7 +89,7 @@ def simple_ray_launch_exp(cfg: DictConfig) -> None:
     exp_class = hydra.utils.get_class(cfg.exp_class)
     launcher = get_launcher()
 
-    if os.environ.get("RANK", 0) == 0:
+    if os.getenv("RANK", 0) == 0 or os.getenv("RANK", 0) == "0":
         print(f"==> use launcher:{launcher}")
 
     if cfg.num_worker <= 0:
