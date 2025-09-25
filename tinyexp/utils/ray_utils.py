@@ -72,8 +72,11 @@ def get_launcher():
         try:
             cmd_line = " ".join(proc.cmdline())
             proc_name = proc.name()
+            # print(cmd_line, proc_name)
             if "torchrun" in cmd_line or "torchrun" in proc_name:
                 return "torchrun"
+            if "accelerate" in cmd_line or "accelerate" in proc_name:
+                return "accelerate"
         except (psutil.AccessDenied, psutil.NoSuchProcess):
             continue
 
@@ -85,7 +88,9 @@ def simple_ray_launch_exp(cfg: DictConfig) -> None:
     """This is a template for launching a Ray-based experiment."""
     exp_class = hydra.utils.get_class(cfg.exp_class)
     launcher = get_launcher()
-    print(f"==> use launcher:{launcher}")
+
+    if os.getenv("RANK", 0) == 0 or os.getenv("RANK", 0) == "0":
+        print(f"==> use launcher:{launcher}")
 
     if cfg.num_worker <= 0:
         raise ValueError(f"Number of workers must be greater than 0, got {cfg.num_worker}.")
@@ -106,7 +111,10 @@ def simple_ray_launch_exp(cfg: DictConfig) -> None:
             ray.get(redis_actor.proxy_build_redis_cache.remote())
 
         # -------------------- check cpu count for run ----------------- #
-        assert cfg.mode in ["train", "val"], f"Unknown mode {cfg.mode}, please set `mode` to 'train' or 'val'."
+        assert cfg.mode in [
+            "train",
+            "val",
+        ], f"Unknown mode {cfg.mode}, please set `mode` to 'train' or 'val'."
         needed_num_cpus_per_worker = cfg.dataloader_cfg.val_data_worker_per_gpu + 1
         if cfg.mode == "train":
             needed_num_cpus_per_worker += cfg.dataloader_cfg.train_data_worker_per_gpu
@@ -138,7 +146,7 @@ def simple_ray_launch_exp(cfg: DictConfig) -> None:
         run_futures = [worker.run.remote() for worker in worker_group]
         ray.get(run_futures)
 
-    elif launcher == "torchrun":
+    elif launcher == "torchrun" or launcher == "accelerate":
         # if hasattr(cfg, "redis_cache_cfg") and cfg.redis_cache_cfg.redis_cache_enabled:
         #     cfg.redis_cache_cfg.redis_cache_enabled = False
 
