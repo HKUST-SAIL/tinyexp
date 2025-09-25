@@ -30,6 +30,7 @@ dependencies = [
     "redis",
     "wandb",
     "loguru",
+    "accelerate",
 ]
 
 [project.urls]
