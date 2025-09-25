@@ -146,3 +146,10 @@ skip_empty = true
 [tool.coverage.run]
 branch = true
 source = ["tinyexp"]
+
+[tool.isort]
+profile = "black"
+line_length = 120
+py_version = 310
+known_first_party = "tinyexp"
+known_third_party = "wandb"

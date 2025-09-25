@@ -6,11 +6,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+import wandb
 from omegaconf import OmegaConf
 from torch.optim.lr_scheduler import StepLR
 from torchvision import datasets, transforms
 
-import wandb
 from tinyexp import ConfigStore, TinyExp, simple_ray_launch_exp
 
 

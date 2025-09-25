@@ -8,6 +8,7 @@ import redis
 import torch
 import torch.nn as nn
 import torchvision.models as models
+import wandb
 from hydra.core.config_store import ConfigStore
 from omegaconf import OmegaConf
 from PIL import Image
@@ -15,7 +16,6 @@ from torch.optim import SGD
 from torch.optim.lr_scheduler import StepLR
 from torchvision import datasets, transforms
 
-import wandb
 from tinyexp import RedisCfgMixin, TinyExp, simple_ray_launch_exp
 from tinyexp.dataset.sampler import InfiniteSampler
 
