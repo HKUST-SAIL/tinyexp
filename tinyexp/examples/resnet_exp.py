@@ -325,7 +325,9 @@ class ResNetExp(TinyExp, RedisCfgMixin):
         logger = cfg.logger_cfg.build_logger(
             save_dir=os.path.join(cfg.output_root, cfg.__class__.__name__), distributed_rank=accelerator.rank
         )
-        logger.info(f"-------- Configurations --------\n{OmegaConf.to_yaml(cfg)}")
+        cfg_dict = OmegaConf.to_container(OmegaConf.structured(self), resolve=True)
+        del cfg_dict["hydra"]
+        logger.info(f"-------- Configurations --------\n{OmegaConf.to_yaml(cfg_dict)}")
 
         def eval(module_or_module_path, val_dataloader) -> None:
             if isinstance(module_or_module_path, str):
@@ -358,7 +360,7 @@ class ResNetExp(TinyExp, RedisCfgMixin):
             nowtime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             logger.info(f"{nowtime} --> eval_metric= {100 * eval_metric:.2f}%")
 
-            if cfg.enable_wandb and accelerator.is_main_process:
+            if cfg.wandb_cfg.enable_wandb and accelerator.is_main_process:
                 wandb.log({"val_metric": eval_metric})
 
         def train():
@@ -370,11 +372,9 @@ class ResNetExp(TinyExp, RedisCfgMixin):
             module, optimizer = accelerator.prepare(ori_module, ori_optimizer)
             lr_scheduler = cfg.lr_scheduler_cfg.build_lr_scheduler(optimizer)
 
-            if cfg.enable_wandb and accelerator.rank == 0:
-                from omegaconf import OmegaConf
-
-                wandb.init(
-                    config=OmegaConf.to_container(cfg, resolve=True), project="Baselines", name=cfg.__class__.__name__
+            if cfg.wandb_cfg.enable_wandb and accelerator.rank == 0:
+                cfg.wandb_cfg.build_wandb(
+                    accelerator=accelerator, config=cfg_dict, project="Baselines", name=cfg.__class__.__name__
                 )
 
             train_iter = iter(train_dataloader)
