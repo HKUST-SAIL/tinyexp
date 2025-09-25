@@ -88,7 +88,9 @@ def simple_ray_launch_exp(cfg: DictConfig) -> None:
     """This is a template for launching a Ray-based experiment."""
     exp_class = hydra.utils.get_class(cfg.exp_class)
     launcher = get_launcher()
-    print(f"==> use launcher:{launcher}")
+
+    if os.environ.get("RANK", 0) == 0:
+        print(f"==> use launcher:{launcher}")
 
     if cfg.num_worker <= 0:
         raise ValueError(f"Number of workers must be greater than 0, got {cfg.num_worker}.")
@@ -109,7 +111,10 @@ def simple_ray_launch_exp(cfg: DictConfig) -> None:
             ray.get(redis_actor.proxy_build_redis_cache.remote())
 
         # -------------------- check cpu count for run ----------------- #
-        assert cfg.mode in ["train", "val"], f"Unknown mode {cfg.mode}, please set `mode` to 'train' or 'val'."
+        assert cfg.mode in [
+            "train",
+            "val",
+        ], f"Unknown mode {cfg.mode}, please set `mode` to 'train' or 'val'."
         needed_num_cpus_per_worker = cfg.dataloader_cfg.val_data_worker_per_gpu + 1
         if cfg.mode == "train":
             needed_num_cpus_per_worker += cfg.dataloader_cfg.train_data_worker_per_gpu
