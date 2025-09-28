@@ -84,8 +84,11 @@ def get_launcher():
 
 
 @hydra.main(version_base=None, config_name="cfg")
-def simple_ray_launch_exp(cfg: DictConfig) -> None:
-    """This is a template for launching a Ray-based experiment."""
+def simple_launch_exp(cfg: DictConfig) -> None:
+    """
+    This is a template for launching a experiment with hydra config.
+    The launcher can be torchrun(multi-process), accelerate(multi-process), or python(ray).
+    """
     exp_class = hydra.utils.get_class(cfg.exp_class)
     launcher = get_launcher()
 

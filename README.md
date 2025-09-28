@@ -19,7 +19,7 @@ Run mnist example(By default, It will trained on CPU)
 import tinyexp
 from tinyexp.examples.mnist_exp import Exp
 tinyexp.ConfigStore.instance().store(name="cfg", node=Exp)
-tinyexp.simple_ray_launch_exp()
+tinyexp.simple_launch_exp()
 ```
 
 # More Examples
@@ -32,7 +32,7 @@ tinyexp.simple_ray_launch_exp()
 import tinyexp
 from tinyexp.examples.resnet_exp import ResNetExp
 tinyexp.ConfigStore.instance().store(name="cfg", node=ResNetExp)
-tinyexp.simple_ray_launch_exp()
+tinyexp.simple_launch_exp()
 ```
 
 # Develop

@@ -1,3 +1,5 @@
+from typing import Literal
+
 import torch
 import torch.distributed as dist
 from torch import nn
@@ -11,6 +13,7 @@ class DDPAccelerator(BaseAccelerator):
         assert torch.cuda.is_available(), "DDPAccelerator requires CUDA to be available."
         self._init_process_group()
         self._process_group_initialized = True  # Mark that the process group has been initialized
+        self.sync_gradients = True  # currently not support accumulate gradient
 
     def _init_process_group(self):
         dist.init_process_group(
@@ -106,6 +109,15 @@ class DDPAccelerator(BaseAccelerator):
         if self.world_size < 2:
             return
         dist.barrier()
+
+    def reduce(self, tensor, reduction: Literal["sum", "mean"] = "sum", scale=1.0):
+        if reduction == "sum":
+            return self.reduce_sum(tensor)
+        elif reduction == "mean":
+            return self.reduce_mean(tensor)
+
+    def clip_grad_norm_(self, parameters, max_norm, norm_type=2):
+        return torch.nn.utils.clip_grad_norm_(parameters, max_norm, norm_type=norm_type)
 
     def reduce_sum(self, tensor: torch.Tensor) -> torch.Tensor:
         world_size = self.world_size
