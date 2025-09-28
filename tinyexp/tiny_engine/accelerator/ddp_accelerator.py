@@ -1,4 +1,5 @@
 from typing import Literal
+
 import torch
 import torch.distributed as dist
 from torch import nn
@@ -12,7 +13,7 @@ class DDPAccelerator(BaseAccelerator):
         assert torch.cuda.is_available(), "DDPAccelerator requires CUDA to be available."
         self._init_process_group()
         self._process_group_initialized = True  # Mark that the process group has been initialized
-        self.sync_gradients = True # currently not support accumulate gradient
+        self.sync_gradients = True  # currently not support accumulate gradient
 
     def _init_process_group(self):
         dist.init_process_group(
