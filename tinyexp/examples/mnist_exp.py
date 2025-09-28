@@ -11,7 +11,7 @@ from omegaconf import OmegaConf
 from torch.optim.lr_scheduler import StepLR
 from torchvision import datasets, transforms
 
-from tinyexp import ConfigStore, TinyExp, simple_ray_launch_exp
+from tinyexp import ConfigStore, TinyExp, simple_launch_exp
 
 
 class Net(nn.Module):
@@ -250,4 +250,4 @@ class Exp(TinyExp):
 
 if __name__ == "__main__":
     ConfigStore.instance().store(name="cfg", node=Exp)
-    simple_ray_launch_exp()
+    simple_launch_exp()

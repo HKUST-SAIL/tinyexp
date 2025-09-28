@@ -16,7 +16,7 @@ from torch.optim import SGD
 from torch.optim.lr_scheduler import StepLR
 from torchvision import datasets, transforms
 
-from tinyexp import RedisCfgMixin, TinyExp, simple_ray_launch_exp
+from tinyexp import RedisCfgMixin, TinyExp, simple_launch_exp
 from tinyexp.dataset.sampler import InfiniteSampler
 
 
@@ -425,4 +425,4 @@ class ResNetExp(TinyExp, RedisCfgMixin):
 
 if __name__ == "__main__":
     ConfigStore.instance().store(name="cfg", node=ResNetExp)
-    simple_ray_launch_exp()
+    simple_launch_exp()

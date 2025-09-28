@@ -13,9 +13,9 @@ from omegaconf import DictConfig
 from omegaconf.listconfig import ListConfig
 
 from .utils.log_utils import tiny_logger_setup
-from .utils.ray_utils import simple_ray_launch_exp
+from .utils.ray_utils import simple_launch_exp
 
-__all__ = ["TinyExp", "RedisCfgMixin", "simple_ray_launch_exp", "ConfigStore"]
+__all__ = ["TinyExp", "RedisCfgMixin", "simple_launch_exp", "ConfigStore"]
 
 
 @dataclass
@@ -87,7 +87,8 @@ class TinyExp:
                     # Otherwise, set the attribute directly
                     ori_value = getattr(cfg_object, key, None)
                     if ori_value != value:
-                        print(f"Override {key} from {ori_value} to {value} in {cfg_object.__class__.__name__}")
+                        if os.getenv("RANK", 0) == 0 or os.getenv("RANK", 0) == "0":
+                            print(f"Override {key} from {ori_value} to {value} in {cfg_object.__class__.__name__}")
                         setattr(cfg_object, key, value)
                         self.overrided_cfg[key] = value
             else:
