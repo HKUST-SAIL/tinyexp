@@ -78,3 +78,7 @@ source .venv/bin/activate
 # Initially, the CI/CD pipeline might be failing due to formatting issues. To resolve those run:
 uv run pre-commit run -a
 ```
+
+# License
+
+MIT License. See `LICENSE`.

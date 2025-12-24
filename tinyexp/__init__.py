@@ -1,7 +1,6 @@
-"""
-author: LI Zeming
-email: zengarden2009@gmail.com
-"""
+__author__ = "LI Zeming"
+__email__ = "zane.li@connect.ust.hk"
+__license__ = "MIT"
 
 import os
 from dataclasses import dataclass, field
