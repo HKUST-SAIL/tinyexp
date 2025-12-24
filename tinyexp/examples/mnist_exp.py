@@ -12,6 +12,7 @@ from torch.optim.lr_scheduler import StepLR
 from torchvision import datasets, transforms
 
 from tinyexp import ConfigStore, TinyExp, simple_launch_exp
+from tinyexp.exceptions import UnknownAcceleratorTypeError
 
 
 class Net(nn.Module):
@@ -66,7 +67,7 @@ class Exp(TinyExp):
             elif self.accelerator == "ddp":
                 accelerator = DDPAccelerator()
             else:
-                raise ValueError(f"Unknown accelerator type: {self.accelerator}")
+                raise UnknownAcceleratorTypeError(self.accelerator)
             return accelerator
 
     accelerator_cfg: AcceleratorCfg = field(default_factory=AcceleratorCfg)
@@ -141,102 +142,98 @@ class Exp(TinyExp):
 
     # ------------------------------ bellowing is the execution part --------------------- #
     def run(self) -> None:
-        cfg = self
-        accelerator = cfg.accelerator_cfg.build_accelerator()
-        logger = cfg.logger_cfg.build_logger(
-            save_dir=os.path.join(cfg.output_root, cfg.__class__.__name__),
+        accelerator = self.accelerator_cfg.build_accelerator()
+        logger = self.logger_cfg.build_logger(
+            save_dir=os.path.join(self.output_root, self.__class__.__name__),
             distributed_rank=accelerator.rank,
         )
         cfg_dict = OmegaConf.to_container(OmegaConf.structured(self), resolve=True)
         del cfg_dict["hydra"]
         logger.info(f"-------- Configurations --------\n{OmegaConf.to_yaml(cfg_dict)}")
 
-        def eval(module_or_module_path, val_dataloader=None):
-            if isinstance(module_or_module_path, str):
-                assert val_dataloader is None
-                module = Net()
-                module.load_state_dict(torch.load(module_or_module_path))
-                module = accelerator.prepare(module)
-                val_dataloader = cfg.dataloader_cfg.build_val_dataloader(accelerator)
-            else:
-                module = module_or_module_path
+        self._train(accelerator=accelerator, logger=logger, cfg_dict=cfg_dict)
 
-            module.eval()
-            accurate = torch.tensor(0.0, device=accelerator.device)
+    def _evaluate(self, accelerator, logger, module_or_module_path, val_dataloader=None) -> None:
+        if isinstance(module_or_module_path, str):
+            module = Net()
+            module.load_state_dict(torch.load(module_or_module_path))
+            module = accelerator.prepare(module)
+        else:
+            module = module_or_module_path
 
-            for _, batch in enumerate(val_dataloader):
-                features, labels = (_.to(accelerator.device) for _ in batch)
-                with torch.no_grad():
-                    preds = module(features)
-                predictions = preds.argmax(dim=-1)
-                accurate_preds = predictions == labels
-                accurate_preds_sum = accelerator.reduce_sum(accurate_preds.sum())
-                accurate += accurate_preds_sum
-            eval_metric = accurate.item() / len(val_dataloader.dataset)
+        if val_dataloader is None:
+            val_dataloader = self.dataloader_cfg.build_val_dataloader(accelerator)
 
-            # ======================================================================
-            accelerator.wait_for_everyone()
-            nowtime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            logger.info(f"{nowtime} --> eval_metric= {100 * eval_metric:.2f}%")
+        module.eval()
+        accurate = torch.tensor(0.0, device=accelerator.device)
 
-            if cfg.wandb_cfg.enable_wandb and accelerator.is_main_process:
-                wandb.log({"val_metric": eval_metric})
+        for batch in val_dataloader:
+            features, labels = (item.to(accelerator.device) for item in batch)
+            with torch.no_grad():
+                preds = module(features)
+            predictions = preds.argmax(dim=-1)
+            accurate_preds = predictions == labels
+            accurate_preds_sum = accelerator.reduce_sum(accurate_preds.sum())
+            accurate += accurate_preds_sum
+        eval_metric = accurate.item() / len(val_dataloader.dataset)
 
-        def train() -> None:
-            train_dataloader = cfg.dataloader_cfg.build_train_dataloader(accelerator)
-            val_dataloader = cfg.dataloader_cfg.build_val_dataloader(accelerator)
-            ori_module = cfg.module_cfg.build_module()
-            ori_optimizer = cfg.optimizer_cfg.build_optimizer(ori_module, train_dataloader, accelerator)
-            lr_scheduler = cfg.lr_scheduler_cfg.build_lr_scheduler(ori_optimizer)
+        accelerator.wait_for_everyone()
+        nowtime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        logger.info(f"{nowtime} --> eval_metric= {100 * eval_metric:.2f}%")
 
-            module, optimizer = accelerator.prepare(ori_module, ori_optimizer)
-            accelerator.print(f"device {accelerator.device!s} is used!")
+        if self.wandb_cfg.enable_wandb and accelerator.is_main_process:
+            wandb.log({"val_metric": eval_metric})
 
-            train_iter = iter(train_dataloader)
-            if cfg.wandb_cfg.enable_wandb and accelerator.rank == 0:
-                cfg.wandb_cfg.build_wandb(
-                    accelerator=accelerator,
-                    project="Baselines",
-                    config=cfg_dict,
-                )
+    def _train(self, accelerator, logger, cfg_dict) -> None:
+        train_dataloader = self.dataloader_cfg.build_train_dataloader(accelerator)
+        val_dataloader = self.dataloader_cfg.build_val_dataloader(accelerator)
+        ori_module = self.module_cfg.build_module()
+        ori_optimizer = self.optimizer_cfg.build_optimizer(ori_module, train_dataloader, accelerator)
+        lr_scheduler = self.lr_scheduler_cfg.build_lr_scheduler(ori_optimizer)
 
-            for epoch in range(3):
-                module.train()
+        module, optimizer = accelerator.prepare(ori_module, ori_optimizer)
+        accelerator.print(f"device {accelerator.device!s} is used!")
 
-                for step in range(len(train_dataloader)):
-                    try:
-                        batch = next(train_iter)
-                    except StopIteration:
-                        train_iter = iter(train_dataloader)
-                        batch = next(train_iter)
+        train_iter = iter(train_dataloader)
+        if self.wandb_cfg.enable_wandb and accelerator.rank == 0:
+            self.wandb_cfg.build_wandb(
+                accelerator=accelerator,
+                project="Baselines",
+                config=cfg_dict,
+            )
 
-                    features, labels = (_.to(accelerator.device) for _ in batch)
-                    preds = module(features)
-                    loss = nn.CrossEntropyLoss()(preds, labels)
+        for epoch in range(3):
+            module.train()
 
-                    optimizer.zero_grad()
-                    # ======================================================================
-                    accelerator.backward(loss)  # loss.backward()
-                    # ======================================================================
+            for step in range(len(train_dataloader)):
+                try:
+                    batch = next(train_iter)
+                except StopIteration:
+                    train_iter = iter(train_dataloader)
+                    batch = next(train_iter)
 
-                    optimizer.step()
-                    if (step + 1) % 20 == 0:
-                        logger.info(
-                            f"epoch {epoch} loss: {loss.item(): .4f} lr: {optimizer.param_groups[0]['lr']: .4f}"
+                features, labels = (item.to(accelerator.device) for item in batch)
+                preds = module(features)
+                loss = nn.CrossEntropyLoss()(preds, labels)
+
+                optimizer.zero_grad()
+                accelerator.backward(loss)
+                optimizer.step()
+                if (step + 1) % 20 == 0:
+                    logger.info(f"epoch {epoch} loss: {loss.item(): .4f} lr: {optimizer.param_groups[0]['lr']: .4f}")
+                    if self.wandb_cfg.enable_wandb and accelerator.rank == 0:
+                        wandb.log(
+                            {
+                                "epoch": epoch,
+                                "loss": loss.item(),
+                                "lr": optimizer.param_groups[0]["lr"],
+                            }
                         )
-                        if cfg.wandb_cfg.enable_wandb and accelerator.rank == 0:
-                            wandb.log(
-                                {
-                                    "epoch": epoch,
-                                    "loss": loss.item(),
-                                    "lr": optimizer.param_groups[0]["lr"],
-                                }
-                            )
-                eval(module, val_dataloader)
+            self._evaluate(
+                accelerator=accelerator, logger=logger, module_or_module_path=module, val_dataloader=val_dataloader
+            )
 
-                lr_scheduler.step()
-
-        train()
+            lr_scheduler.step()
 
 
 # import hydra

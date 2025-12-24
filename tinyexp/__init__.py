@@ -12,10 +12,11 @@ from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig
 from omegaconf.listconfig import ListConfig
 
+from .exceptions import UnknownConfigurationKeyError
 from .utils.log_utils import tiny_logger_setup
 from .utils.ray_utils import simple_launch_exp
 
-__all__ = ["TinyExp", "RedisCfgMixin", "simple_launch_exp", "ConfigStore"]
+__all__ = ["ConfigStore", "RedisCfgMixin", "TinyExp", "simple_launch_exp"]
 
 
 @dataclass
@@ -57,9 +58,7 @@ class TinyExp:
             if self.enable_wandb:
                 import wandb
 
-                if accelerator is None:
-                    wandb.init(**kwargs)
-                elif accelerator.rank == 0:
+                if accelerator is None or accelerator.rank == 0:
                     wandb.init(**kwargs)
                 return wandb
 
@@ -79,7 +78,7 @@ class TinyExp:
             cfg_object = self
         for key, value in cfg_hydra.items():
             if hasattr(cfg_object, key):
-                if isinstance(value, DictConfig) or isinstance(value, dict):
+                if isinstance(value, (DictConfig, dict)):
                     # If the value is a dictionary, recursively set attributes
                     sub_object = getattr(cfg_object, key)
                     self.set_cfg(value, sub_object)
@@ -92,7 +91,7 @@ class TinyExp:
                         setattr(cfg_object, key, value)
                         self.overrided_cfg[key] = value
             else:
-                raise AttributeError(f"Configuration key '{key}' does not exist in the provided object.")
+                raise UnknownConfigurationKeyError(key)
         return cfg_object
 
 
@@ -101,14 +100,16 @@ class RedisCfgMixin:
     @dataclass
     class RedisCacheCfg:
         redis_cache_enabled: bool = True
-        redis_cache_shard_ports: ListConfig = ListConfig(
-            [
-                7000,
-                7001,
-                7002,
-                7003,
-                7004,
-            ]
+        redis_cache_shard_ports: ListConfig = field(
+            default_factory=lambda: ListConfig(
+                [
+                    7000,
+                    7001,
+                    7002,
+                    7003,
+                    7004,
+                ]
+            )
         )  # List of Redis cache shard used ports
         redis_cache_max_memory: int = 160  # Maximum memory is 160GB, according to the ImageNet dataset size
         redis_cluster_manager_cpus: int = 10

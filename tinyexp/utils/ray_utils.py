@@ -8,6 +8,8 @@ from omegaconf import DictConfig
 from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
+from ..exceptions import InsufficientCPUError, InvalidWorkerCountError, UnknownExperimentModeError, UnknownLauncherError
+
 
 def get_placement_group(num_worker, num_gpus_per_worker=1, num_cpus_per_worker=10):
     """Create and return a placement group for GPU allocation."""
@@ -96,7 +98,7 @@ def simple_launch_exp(cfg: DictConfig) -> None:
         print(f"==> use launcher:{launcher}")
 
     if cfg.num_worker <= 0:
-        raise ValueError(f"Number of workers must be greater than 0, got {cfg.num_worker}.")
+        raise InvalidWorkerCountError(cfg.num_worker)
 
     if launcher == "python":
         ray.init()
@@ -114,21 +116,19 @@ def simple_launch_exp(cfg: DictConfig) -> None:
             ray.get(redis_actor.proxy_build_redis_cache.remote())
 
         # -------------------- check cpu count for run ----------------- #
-        assert cfg.mode in [
-            "train",
-            "val",
-        ], f"Unknown mode {cfg.mode}, please set `mode` to 'train' or 'val'."
+        if cfg.mode not in {"train", "val"}:
+            raise UnknownExperimentModeError(cfg.mode)
         needed_num_cpus_per_worker = cfg.dataloader_cfg.val_data_worker_per_gpu + 1
         if cfg.mode == "train":
             needed_num_cpus_per_worker += cfg.dataloader_cfg.train_data_worker_per_gpu
 
         needed_cpu = cfg.num_worker * needed_num_cpus_per_worker
-        if needed_cpu + sum(cpu_need_list) > os.cpu_count():
-            raise RuntimeError(
-                f"Total CPU count {os.cpu_count()} is not enough for the experiment, "
-                f"please set `num_worker * (train.data_worker_per_gpu + val.data_worker_per_gpu + 1)`"
-                f"<= {os.cpu_count()}"
-            )
+        total_cpu = os.cpu_count()
+        if total_cpu is None:
+            total_cpu = 0
+
+        if needed_cpu + sum(cpu_need_list) > total_cpu:
+            raise InsufficientCPUError(total_cpu=total_cpu, needed_cpu=needed_cpu + sum(cpu_need_list))
 
         # -------------------- allocate resources for run ----------------- #
 
@@ -155,4 +155,4 @@ def simple_launch_exp(cfg: DictConfig) -> None:
 
         exp_class().set_cfg(cfg).run()
     else:
-        raise ValueError(f"Unknown launcher {launcher}, please set `launcher` to 'ray' or 'torchrun'.")
+        raise UnknownLauncherError(launcher)

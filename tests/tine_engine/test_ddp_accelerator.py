@@ -34,7 +34,6 @@ class DDPAcceleratorProxy:
 
 @pytest.mark.skipif(torch.cuda.device_count() < 2, reason="Requires at least 2 GPUs")
 class TestDDPAcceleratorWithRay:
-
     def test_ddp_accelerator(self, ray_session):
         num_workers = 2
         # This utility correctly sets up env vars and placement groups.

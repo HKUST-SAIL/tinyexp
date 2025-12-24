@@ -1,16 +1,19 @@
+from contextlib import suppress
 from typing import Literal
 
 import torch
 import torch.distributed as dist
 from torch import nn
 
+from ...exceptions import CudaNotAvailableError
 from .base_accelerator import BaseAccelerator
 
 
 class DDPAccelerator(BaseAccelerator):
     def __init__(self):
         super().__init__()
-        assert torch.cuda.is_available(), "DDPAccelerator requires CUDA to be available."
+        if not torch.cuda.is_available():
+            raise CudaNotAvailableError()
         self._init_process_group()
         self._process_group_initialized = True  # Mark that the process group has been initialized
         self.sync_gradients = True  # currently not support accumulate gradient
@@ -32,11 +35,8 @@ class DDPAccelerator(BaseAccelerator):
 
     def __del__(self):
         """Destructor, which is automatically called when the object is garbage collected"""
-        try:
+        with suppress(Exception):
             self.destroy()
-        except Exception:
-            # Ignore exceptions in destructor to avoid crashing
-            pass
 
     def unwrap_model(self, model):
         return model.module if hasattr(model, "module") else model

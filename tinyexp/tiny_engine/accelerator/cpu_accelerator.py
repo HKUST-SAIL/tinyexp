@@ -1,3 +1,5 @@
+from contextlib import suppress
+
 import torch
 import torch.distributed as dist
 
@@ -34,10 +36,8 @@ class CPUAccelerator(BaseAccelerator):
 
     def __del__(self):
         """Destructor, which is automatically called when the object is garbage collected"""
-        try:
+        with suppress(Exception):
             self.destroy()
-        except Exception:
-            pass
 
     def unwrap_model(self, model):
         return model

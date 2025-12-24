@@ -1,3 +1,4 @@
+import shutil
 import subprocess
 import time
 
@@ -22,20 +23,18 @@ class RedisClusterManager:
         Returns:
             bool: True if all Redis servers started successfully, False otherwise.
         """
+        redis_server_path = shutil.which("redis-server")
+        if redis_server_path is None:
+            print("redis-server command not found. Please install it before enabling Redis cache.")
+            return False
+
         try:
             for i, port in enumerate(self.ports):
-                # Start Redis server process
-                # check if the redis-server command is available
-                if not subprocess.run(["which", "redis-server"], stdout=subprocess.PIPE, stderr=subprocess.PIPE).stdout:
-                    raise EnvironmentError(
-                        "redis-server command not found. Please install using sudo apt-get install redis-server."
-                    )
-
                 redis_process = subprocess.Popen(
                     [
-                        "redis-server",
+                        redis_server_path,
                         "--port",
-                        str(port),
+                        str(int(port)),
                         "--daemonize",
                         "no",
                         "--save",
@@ -60,13 +59,13 @@ class RedisClusterManager:
 
                 print(f"Redis shard {i} started on port {port}")
 
-            return True
-
         except Exception as e:
             print(f"Failed to start Redis cluster: {e}")
             self.stop_redis_cluster()
             print(e)
             return False
+        else:
+            return True
 
     def stop_redis_cluster(self):
         """Stop all Redis servers"""

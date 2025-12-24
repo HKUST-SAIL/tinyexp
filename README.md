@@ -4,7 +4,10 @@
 # TinyExp
 
 
-A simple Python project for deep learning experiment management. It uses Ray for core distributed environment and backend setup, and provides basic, no-frills tracking for models, optimizers, and LR schedulers.
+A simple Python project for deep learning experiment management.
+
+
+TinyExp lets you launch experiments with one click: the file you edit becomes the entrypoint to your experiment.
 
 # Usage
 
