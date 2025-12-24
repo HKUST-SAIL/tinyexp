@@ -2,6 +2,7 @@ import datetime
 import io
 import os
 import time
+from contextlib import suppress
 from dataclasses import dataclass, field
 
 import redis
@@ -18,16 +19,21 @@ from torchvision import datasets, transforms
 
 from tinyexp import RedisCfgMixin, TinyExp, simple_launch_exp
 from tinyexp.dataset.sampler import InfiniteSampler
+from tinyexp.exceptions import UnknownAcceleratorTypeError
 
 
 def transform_template_imagenet(
     is_train=True,
     resize_size=256,
     target_size=224,
-    target_mean=[0.485, 0.456, 0.406],
-    target_std=[0.229, 0.224, 0.225],
+    target_mean=None,
+    target_std=None,
     interpolation=2,
 ):
+    if target_mean is None:
+        target_mean = (0.485, 0.456, 0.406)
+    if target_std is None:
+        target_std = (0.229, 0.224, 0.225)
     if is_train:
         return transforms.Compose(
             [
@@ -131,17 +137,21 @@ class RedisCachedImageFolder:
             self.redis_clients = []
 
     def _safe_redis_get(self, key):
+        if not self.redis_clients:
+            return None
         redis_client = self.redis_clients[key % self.num_shards]
         try:
             return redis_client.get(key)
-        except:
+        except redis.exceptions.RedisError:
             return None
 
     def _safe_redis_set(self, key, value):
+        if not self.redis_clients:
+            return False
         redis_client = self.redis_clients[key % self.num_shards]
         try:
             return redis_client.set(key, value)
-        except:
+        except redis.exceptions.RedisError:
             return False
 
     def __getitem__(self, index):
@@ -185,10 +195,8 @@ class RedisCachedImageFolder:
     def __del__(self):
         """Destructor to ensure connections are properly closed"""
         for redis_client in self.redis_clients:
-            try:
+            with suppress(Exception):
                 redis_client.close()
-            except:
-                pass
 
 
 @dataclass(repr=False)
@@ -209,7 +217,7 @@ class ResNetExp(TinyExp, RedisCfgMixin):
             elif self.accelerator == "ddp":
                 accelerator = DDPAccelerator()
             else:
-                raise ValueError(f"Unknown accelerator type: {self.accelerator}")
+                raise UnknownAcceleratorTypeError(self.accelerator)
             return accelerator
 
     accelerator_cfg: AcceleratorCfg = field(default_factory=AcceleratorCfg)
@@ -320,107 +328,104 @@ class ResNetExp(TinyExp, RedisCfgMixin):
     dataloader_cfg: DataloaderCfg = field(default_factory=DataloaderCfg)
 
     def run(self) -> None:
-        cfg = self
-        accelerator = cfg.accelerator_cfg.build_accelerator()
-        logger = cfg.logger_cfg.build_logger(
-            save_dir=os.path.join(cfg.output_root, cfg.__class__.__name__), distributed_rank=accelerator.rank
+        accelerator = self.accelerator_cfg.build_accelerator()
+        logger = self.logger_cfg.build_logger(
+            save_dir=os.path.join(self.output_root, self.__class__.__name__), distributed_rank=accelerator.rank
         )
         cfg_dict = OmegaConf.to_container(OmegaConf.structured(self), resolve=True)
         del cfg_dict["hydra"]
         logger.info(f"-------- Configurations --------\n{OmegaConf.to_yaml(cfg_dict)}")
 
-        def eval(module_or_module_path, val_dataloader) -> None:
-            if isinstance(module_or_module_path, str):
-                assert val_dataloader is None
-                module: nn.Module = cfg.module_cfg.build_module()
-                module.load_state_dict(torch.load(module_or_module_path))
-                module = accelerator.prepare_model(module)
-                val_dataloader = cfg.dataloader_cfg.build_val_dataloader(accelerator)
-            else:
-                module = module_or_module_path
+        self._train(accelerator=accelerator, logger=logger, cfg_dict=cfg_dict)
 
-            module.eval()
-            accurate = torch.tensor(0.0, device=accelerator.device)
+    def _evaluate(self, accelerator, logger, module_or_module_path, val_dataloader=None) -> None:
+        if isinstance(module_or_module_path, str):
+            module: nn.Module = self.module_cfg.build_module()
+            module.load_state_dict(torch.load(module_or_module_path))
+            module = accelerator.prepare_model(module)
+        else:
+            module = module_or_module_path
 
-            step = 0
-            for _, batch in enumerate(val_dataloader):
-                images, labels = (_.to(accelerator.device) for _ in batch)
-                with torch.no_grad():
-                    preds = module(images)
-                predictions = preds.argmax(dim=-1)
-                accurate_preds = predictions == labels
-                accurate_preds_sum = accelerator.reduce_sum(accurate_preds.sum())
-                accurate += accurate_preds_sum
-                if step % 20 == 0:
-                    logger.info(f"Eval step {step}, accurate: {accurate.item()}")
-                step += 1
+        if val_dataloader is None:
+            val_dataloader = self.dataloader_cfg.build_val_dataloader(accelerator)
 
-            eval_metric = accurate.item() / len(val_dataloader.dataset)
+        module.eval()
+        accurate = torch.tensor(0.0, device=accelerator.device)
 
-            nowtime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            logger.info(f"{nowtime} --> eval_metric= {100 * eval_metric:.2f}%")
+        for step, batch in enumerate(val_dataloader):
+            images, labels = (item.to(accelerator.device) for item in batch)
+            with torch.no_grad():
+                preds = module(images)
+            predictions = preds.argmax(dim=-1)
+            accurate_preds = predictions == labels
+            accurate_preds_sum = accelerator.reduce_sum(accurate_preds.sum())
+            accurate += accurate_preds_sum
+            if step % 20 == 0:
+                logger.info(f"Eval step {step}, accurate: {accurate.item()}")
 
-            if cfg.wandb_cfg.enable_wandb and accelerator.is_main_process:
-                wandb.log({"val_metric": eval_metric})
+        eval_metric = accurate.item() / len(val_dataloader.dataset)
 
-        def train():
-            cfg = self
-            train_dataloader = cfg.dataloader_cfg.build_train_dataloader(accelerator, cfg.redis_cache_cfg)
-            val_dataloader = cfg.dataloader_cfg.build_val_dataloader(accelerator)
-            ori_module = cfg.module_cfg.build_module()
-            ori_optimizer = cfg.optimizer_cfg.build_optimizer(ori_module, train_dataloader, accelerator)
-            module, optimizer = accelerator.prepare(ori_module, ori_optimizer)
-            lr_scheduler = cfg.lr_scheduler_cfg.build_lr_scheduler(optimizer)
+        nowtime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        logger.info(f"{nowtime} --> eval_metric= {100 * eval_metric:.2f}%")
 
-            if cfg.wandb_cfg.enable_wandb and accelerator.rank == 0:
-                cfg.wandb_cfg.build_wandb(
-                    accelerator=accelerator, config=cfg_dict, project="Baselines", name=cfg.__class__.__name__
-                )
+        if self.wandb_cfg.enable_wandb and accelerator.is_main_process:
+            wandb.log({"val_metric": eval_metric})
 
-            train_iter = iter(train_dataloader)
-            global_epoch = 0
-            global_step = 0
+    def _train(self, accelerator, logger, cfg_dict) -> None:
+        train_dataloader = self.dataloader_cfg.build_train_dataloader(accelerator, self.redis_cache_cfg)
+        val_dataloader = self.dataloader_cfg.build_val_dataloader(accelerator)
+        ori_module = self.module_cfg.build_module()
+        ori_optimizer = self.optimizer_cfg.build_optimizer(ori_module, train_dataloader, accelerator)
+        module, optimizer = accelerator.prepare(ori_module, ori_optimizer)
+        lr_scheduler = self.lr_scheduler_cfg.build_lr_scheduler(optimizer)
 
-            for _ in range(90):
-                module.train()
+        if self.wandb_cfg.enable_wandb and accelerator.rank == 0:
+            self.wandb_cfg.build_wandb(
+                accelerator=accelerator, config=cfg_dict, project="Baselines", name=self.__class__.__name__
+            )
 
-                epoch_start_time = time.time()
-                steps_per_epoch = len(train_dataloader)
+        train_iter = iter(train_dataloader)
+        global_step = 0
 
-                for step_in_epoch in range(len(train_dataloader)):
-                    try:
-                        batch = next(train_iter)
-                    except StopIteration:
-                        train_iter = iter(train_dataloader)
-                        batch = next(train_iter)
+        for global_epoch in range(90):
+            module.train()
 
-                    images, labels = (_.to(accelerator.device) for _ in batch)
-                    preds = module(images)
-                    loss = nn.CrossEntropyLoss()(preds, labels)
+            epoch_start_time = time.time()
+            steps_per_epoch = len(train_dataloader)
 
-                    optimizer.zero_grad()
-                    accelerator.backward(loss)
-                    optimizer.step()
-                    global_step += 1
+            for step_in_epoch in range(len(train_dataloader)):
+                try:
+                    batch = next(train_iter)
+                except StopIteration:
+                    train_iter = iter(train_dataloader)
+                    batch = next(train_iter)
 
-                    if global_step % 20 == 0:
-                        epoch_elapsed_time = time.time() - epoch_start_time
-                        epoch_elapsed_str = f"{int(epoch_elapsed_time / 60):02d}:{int(epoch_elapsed_time % 60):02d}"
+                images, labels = (item.to(accelerator.device) for item in batch)
+                preds = module(images)
+                loss = nn.CrossEntropyLoss()(preds, labels)
 
-                        epoch_total_seconds = epoch_elapsed_time / ((step_in_epoch + 1) / steps_per_epoch)
-                        epoch_total_str = f"{int(epoch_total_seconds / 60):02d}:{int(epoch_total_seconds % 60):02d}"
+                optimizer.zero_grad()
+                accelerator.backward(loss)
+                optimizer.step()
+                global_step += 1
 
-                        logger.info(
-                            f"e:{global_epoch},{step_in_epoch + 1}/{steps_per_epoch}, "
-                            f"loss:{loss.item():.4f}, lr:{optimizer.param_groups[0]['lr']:.4f}, "
-                            f"elapsed:{epoch_elapsed_str}, total:{epoch_total_str}"
-                        )
+                if global_step % 20 == 0:
+                    epoch_elapsed_time = time.time() - epoch_start_time
+                    epoch_elapsed_str = f"{int(epoch_elapsed_time / 60):02d}:{int(epoch_elapsed_time % 60):02d}"
 
-                lr_scheduler.step()
-                global_epoch += 1
-                eval(module, val_dataloader)
+                    epoch_total_seconds = epoch_elapsed_time / ((step_in_epoch + 1) / steps_per_epoch)
+                    epoch_total_str = f"{int(epoch_total_seconds / 60):02d}:{int(epoch_total_seconds % 60):02d}"
 
-        train()
+                    logger.info(
+                        f"e:{global_epoch},{step_in_epoch + 1}/{steps_per_epoch}, "
+                        f"loss:{loss.item():.4f}, lr:{optimizer.param_groups[0]['lr']:.4f}, "
+                        f"elapsed:{epoch_elapsed_str}, total:{epoch_total_str}"
+                    )
+
+            lr_scheduler.step()
+            self._evaluate(
+                accelerator=accelerator, logger=logger, module_or_module_path=module, val_dataloader=val_dataloader
+            )
 
 
 if __name__ == "__main__":

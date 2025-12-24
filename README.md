@@ -3,17 +3,17 @@
 
 # TinyExp
 
+A simple Python project for deep learning experiment management.
 
-A simple Python project for deep learning experiment management. It uses Ray for core distributed environment and backend setup, and provides basic, no-frills tracking for models, optimizers, and LR schedulers.
+TinyExp lets you launch experiments with one click: the file you edit becomes the entrypoint to your experiment.
 
 # Usage
-
 
 ```
 pip install tinyexp
 ```
 
-Run mnist example(By default, It will trained on CPU)
+1. Run mnist example(By default, It will trained on CPU)
 
 ```python
 import tinyexp
@@ -21,6 +21,31 @@ from tinyexp.examples.mnist_exp import Exp
 tinyexp.ConfigStore.instance().store(name="cfg", node=Exp)
 tinyexp.simple_launch_exp()
 ```
+
+2. or:
+
+```
+python tinyexp/examples/mnist_exp.py
+```
+
+3. Run mnist example with overridden config:
+
+```
+python tinyexp/examples/mnist_exp.py dataloader_cfg.train_batch_size_per_device=16
+```
+
+see all available configs:
+
+```
+python tinyexp/examples/mnist_exp.py mode=help
+```
+
+see all available configs with overridden configs:
+
+```
+python tinyexp/examples/mnist_exp.py mode=help dataloader_cfg.train_batch_size_per_device=16
+```
+
 
 # More Examples
 
@@ -37,8 +62,8 @@ tinyexp.simple_launch_exp()
 
 # Develop
 
-
 1. prepare env
+
 ```bash
 # 1. clone repo
 git clone https://github.com/HKUST-SAIL/tinyexp.git
@@ -53,3 +78,7 @@ source .venv/bin/activate
 # Initially, the CI/CD pipeline might be failing due to formatting issues. To resolve those run:
 uv run pre-commit run -a
 ```
+
+# License
+
+MIT License. See `LICENSE`.
