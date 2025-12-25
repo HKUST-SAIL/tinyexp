@@ -42,7 +42,7 @@ class TinyExp:
     num_worker: int = -1  # Number of workers, -1 means to be determined by the user
     num_gpus_per_worker: float = 1.0  # Number of GPUs per worker, should be a float value between 0 and 1.
 
-    output_root = "./output"
+    output_root: str = "./output"
     overrided_cfg: dict = field(default_factory=dict)
 
     def __repr__(self):
@@ -67,7 +67,7 @@ class TinyExp:
     class LoggerCfg:
         def build_logger(self, save_dir: str, distributed_rank: int = 0, filename: str = "log.txt", mode: str = "a"):
             logger = tiny_logger_setup(save_dir, distributed_rank, filename, mode)
-            logger.info("{}{}".format("==> log file: ", os.path.join(save_dir, "log.log")))
+            logger.info(f"==> log file: {os.path.join(save_dir, filename)}")
             return logger
 
     logger_cfg: LoggerCfg = field(default_factory=LoggerCfg)

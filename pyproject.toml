@@ -149,6 +149,25 @@ skip_empty = true
 [tool.coverage.run]
 branch = true
 source = ["tinyexp"]
+omit = [
+    # Example scripts are not part of the library API surface and are exercised via subprocesses.
+    "tinyexp/examples/*",
+    "*/tinyexp/examples/*",
+    "*/working_dir_files/_ray_pkg_*/tinyexp/examples/*",
+    "*/runtime_resources/working_dir_files/_ray_pkg_*/tinyexp/examples/*",
+]
+
+[tool.coverage.paths]
+source = [
+    # Local source tree.
+    "tinyexp",
+    # Installed package locations (CI / virtualenvs).
+    "*/site-packages/tinyexp",
+    "*/dist-packages/tinyexp",
+    # Ray runtime_env packaged working directories.
+    "*/working_dir_files/_ray_pkg_*/tinyexp",
+    "*/runtime_resources/working_dir_files/_ray_pkg_*/tinyexp",
+]
 
 [tool.isort]
 profile = "black"

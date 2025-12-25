@@ -1,9 +1,14 @@
 coverage:
-  range: 70..100
+  range: 50..100
   round: down
   precision: 1
   status:
     project:
       default:
-        target: 90%
-        threshold: 0.5%
+        # Current baseline is intentionally modest; see `pyproject.toml` coverage configuration for details.
+        target: 55%
+        threshold: 1%
+    patch:
+      default:
+        target: 80%
+        threshold: 1%

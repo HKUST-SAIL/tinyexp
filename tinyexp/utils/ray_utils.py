@@ -114,7 +114,10 @@ def get_launcher():
 
     # Trace up the process tree (up to 10 levels to avoid infinite loops)
     for _ in range(10):
-        parent = current_process.parent()
+        try:
+            parent = current_process.parent()
+        except (psutil.AccessDenied, psutil.NoSuchProcess, PermissionError):
+            break
         if not parent or parent.pid == 1:  # Stop when reaching the root process (PID=1)
             break
         process_chain.append(parent)
@@ -130,7 +133,7 @@ def get_launcher():
                 return "torchrun"
             if "accelerate" in cmd_line or "accelerate" in proc_name:
                 return "accelerate"
-        except (psutil.AccessDenied, psutil.NoSuchProcess):
+        except (psutil.AccessDenied, psutil.NoSuchProcess, PermissionError):
             continue
 
     return "python"

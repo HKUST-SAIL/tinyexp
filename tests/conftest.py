@@ -13,7 +13,10 @@ def ray_session():
             "working_dir": ".",
             "excludes": ["*.md", "data/", "tests/", ".git/", ".venv/", "output/", "outputs/", "site/"],
         }
-        ray.init(runtime_env=runtime_env)
+        try:
+            ray.init(runtime_env=runtime_env)
+        except Exception as exc:
+            pytest.skip(f"Ray is not available in this environment: {exc}")
 
     yield
 
