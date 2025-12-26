@@ -17,9 +17,8 @@ pip install tinyexp
 
 ```python
 import tinyexp
-from tinyexp.examples.mnist_exp import Exp
-tinyexp.ConfigStore.instance().store(name="cfg", node=Exp)
-tinyexp.simple_launch_exp()
+from tinyexp.examples.mnist_exp import Exp, store_and_run_exp
+store_and_run_exp(Exp)
 ```
 
 2. or:
@@ -55,9 +54,8 @@ python tinyexp/examples/mnist_exp.py mode=help dataloader_cfg.train_batch_size_p
 # export IMAGENET_HOME=yours_imagenet_dir
 
 import tinyexp
-from tinyexp.examples.resnet_exp import ResNetExp
-tinyexp.ConfigStore.instance().store(name="cfg", node=ResNetExp)
-tinyexp.simple_launch_exp()
+from tinyexp.examples.resnet_exp import ResNetExp, store_and_run_exp
+store_and_run_exp(ResNetExp)
 ```
 
 # Develop

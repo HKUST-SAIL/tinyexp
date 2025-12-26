@@ -132,3 +132,18 @@ class RedisCfgMixin:
         Hard-coded method to build Redis cache since ray actor need
         """
         return self.redis_cache_cfg.build_redis_cache()
+
+
+def store_and_run_exp(exp_class: type[TinyExp]):
+    """
+    Extract the config from the exp_class and store it in the ConfigStore(hydra config store).
+    Then launch the experiment with the config.
+
+    Args:
+        exp_class: The class of the experiment to run.
+
+    Returns:
+        None
+    """
+    ConfigStore.instance().store(name="cfg", node=exp_class)
+    simple_launch_exp()
