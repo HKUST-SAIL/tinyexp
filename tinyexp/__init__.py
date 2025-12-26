@@ -134,7 +134,7 @@ class RedisCfgMixin:
         return self.redis_cache_cfg.build_redis_cache()
 
 
-def store_and_run_exp(exp_class: type[TinyExp]):
+def store_and_run_exp(exp_class: type[TinyExp]) -> None:
     """
     Extract the config from the exp_class and store it in the ConfigStore(hydra config store).
     Then launch the experiment with the config.
@@ -143,7 +143,7 @@ def store_and_run_exp(exp_class: type[TinyExp]):
         exp_class: The class of the experiment to run.
 
     Returns:
-        None
+        None: This function does not return anything.
     """
     ConfigStore.instance().store(name="cfg", node=exp_class)
     simple_launch_exp()
