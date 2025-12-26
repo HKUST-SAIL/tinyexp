@@ -11,7 +11,7 @@ from omegaconf import OmegaConf
 from torch.optim.lr_scheduler import StepLR
 from torchvision import datasets, transforms
 
-from tinyexp import ConfigStore, TinyExp, simple_launch_exp
+from tinyexp import TinyExp, store_and_run_exp
 from tinyexp.exceptions import UnknownAcceleratorTypeError
 
 
@@ -246,5 +246,4 @@ class Exp(TinyExp):
 #     exp_class().set_cfg(cfg).run()
 
 if __name__ == "__main__":
-    ConfigStore.instance().store(name="cfg", node=Exp)
-    simple_launch_exp()
+    store_and_run_exp(Exp)
