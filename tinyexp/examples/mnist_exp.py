@@ -50,7 +50,6 @@ class Net(nn.Module):
 
 @dataclass(repr=False)
 class Exp(TinyExp):
-    exp_class: str = f"{__name__}.Exp"
     num_worker: int = 2
     num_gpus_per_worker: float = 0.0
     mode: str = "train"
