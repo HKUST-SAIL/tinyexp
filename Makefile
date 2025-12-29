@@ -31,7 +31,7 @@ clean-build: ## Clean build artifacts
 .PHONY: publish
 publish: ## Publish a release to PyPI.
 	@echo "🚀 Publishing."
-	@uvx twine upload --repository testpypi dist/*
+	@uvx twine upload --repository pypi dist/*
 	# @uvx twine upload --repository-url https://upload.pypi.org/legacy/ dist/*
 
 .PHONY: build-and-publish

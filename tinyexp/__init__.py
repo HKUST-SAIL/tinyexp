@@ -42,7 +42,13 @@ class TinyExp:
     num_worker: int = -1  # Number of workers, -1 means to be determined by the user
     num_gpus_per_worker: float = 1.0  # Number of GPUs per worker, should be a float value between 0 and 1.
 
+    # Fully qualified import path for the experiment class, e.g. "tinyexp.examples.mnist_exp.Exp".
+    exp_class: str = ""
+
+    # log directory
     output_root: str = "./output"
+
+    # overridden configurations, only for internal use
     overrided_cfg: dict = field(default_factory=dict)
 
     def __repr__(self):
@@ -145,5 +151,12 @@ def store_and_run_exp(exp_class: type[TinyExp]) -> None:
     Returns:
         None: This function does not return anything.
     """
-    ConfigStore.instance().store(name="cfg", node=exp_class)
+
+    # this is the hack for hydra to find the experiment class
+    exp_class_path = f"{exp_class.__module__}.{exp_class.__qualname__}"
+    exp_cfg = exp_class()
+    exp_cfg.exp_class = exp_class_path
+
+    # store the experiment configuration in the ConfigStore and launch the experiment
+    ConfigStore.instance().store(name="cfg", node=exp_cfg)
     simple_launch_exp()
