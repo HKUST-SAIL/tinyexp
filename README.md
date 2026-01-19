@@ -1,5 +1,5 @@
-[![Main](https://github.com/HKUST-SAIL/tinyexp/actions/workflows/main.yml/badge.svg?branch=main)](https://github.com/HKUST-SAIL/tinyexp/actions/workflows/main.yml)
-[![codecov](https://codecov.io/gh/HKUST-SAIL/TinyExp/branch/main/graph/badge.svg)](https://codecov.io/gh/HKUST-SAIL/TinyExp)
+[![Main](https://github.com/zengarden/tinyexp/actions/workflows/main.yml/badge.svg?branch=main)](https://github.com/zengarden/tinyexp/actions/workflows/main.yml)
+[![codecov](https://codecov.io/gh/zengarden/tinyexp/branch/main/graph/badge.svg)](https://codecov.io/gh/zengarden/tinyexp)
 
 # TinyExp
 

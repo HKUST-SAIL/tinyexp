@@ -50,11 +50,14 @@ jobs:
         # run: uv run mypy
 
 
-      - name: Upload coverage reports to Codecov with GitHub Action on Python 3.11
+      - name: Upload coverage reports to Codecov (Python 3.11 only)
         uses: codecov/codecov-action@v4
         if: ${{ matrix.python-version == '3.11' }}
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: coverage.xml
+          fail_ci_if_error: true
+          verbose: true
 
   check-docs:
     runs-on: self-hosted
