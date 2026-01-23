@@ -143,7 +143,7 @@ class Exp(TinyExp):
     def run(self) -> None:
         accelerator = self.accelerator_cfg.build_accelerator()
         logger = self.logger_cfg.build_logger(
-            save_dir=os.path.join(self.output_root, self.__class__.__name__),
+            save_dir=os.path.join(self.output_root, self.exp_name),
             distributed_rank=accelerator.rank,
         )
         cfg_dict = OmegaConf.to_container(OmegaConf.structured(self), resolve=True)

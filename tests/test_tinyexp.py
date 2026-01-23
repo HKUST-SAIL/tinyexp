@@ -1,3 +1,5 @@
+import sys
+import types
 from dataclasses import dataclass, field
 
 import pytest
@@ -27,6 +29,44 @@ def test_tiny_exp_instantiation():
         pass
 
     _ = MyExperiment()
+
+
+def test_exp_name_defaults_from_main_module_file(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    dummy_main = types.ModuleType("__main__")
+    dummy_main.__file__ = str(tmp_path / "resnet_exp.py")
+    monkeypatch.setitem(sys.modules, "__main__", dummy_main)
+
+    exp = TinyExp()
+    assert exp.exp_name == "resnet_exp"
+
+
+def test_exp_name_falls_back_to_argv(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    dummy_main = types.ModuleType("__main__")
+    monkeypatch.setitem(sys.modules, "__main__", dummy_main)
+    monkeypatch.setattr(sys, "argv", [str(tmp_path / "mnist_exp.py")])
+
+    exp = TinyExp()
+    assert exp.exp_name == "mnist_exp"
+
+
+def test_exp_name_defaults_to_exp_for_dash_c(monkeypatch: pytest.MonkeyPatch) -> None:
+    dummy_main = types.ModuleType("__main__")
+    monkeypatch.setitem(sys.modules, "__main__", dummy_main)
+    monkeypatch.setattr(sys, "argv", ["-c"])
+
+    exp = TinyExp()
+    assert exp.exp_name == "exp"
+
+
+def test_set_cfg_overrides_exp_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RANK", "1")  # avoid noisy stdout prints during tests
+    exp = TinyExp()
+
+    cfg = OmegaConf.create({"exp_name": "my_exp"})
+    exp.set_cfg(cfg)
+
+    assert exp.exp_name == "my_exp"
+    assert exp.overrided_cfg["exp_name"] == "my_exp"
 
 
 def test_set_cfg_overrides_nested(monkeypatch: pytest.MonkeyPatch) -> None:
