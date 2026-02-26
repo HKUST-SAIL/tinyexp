@@ -77,6 +77,15 @@ source .venv/bin/activate
 uv run pre-commit run -a
 ```
 
+3. Release a new version
+
+```bash
+# One command to auto-generate CHANGELOG entry (from commits since last tag),
+# bump version, test, tag, publish and push:
+make release VERSION=0.0.4
+# (The script uses git-cliff; if git-cliff is not installed, it falls back to `uvx --from git-cliff git-cliff`.)
+```
+
 # License
 
 MIT License. See `LICENSE`.

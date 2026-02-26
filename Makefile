@@ -37,6 +37,11 @@ publish: ## Publish a release to PyPI.
 .PHONY: build-and-publish
 build-and-publish: build publish ## Build and publish.
 
+.PHONY: release
+release: ## Release with checks, tests, build, publish, commit, tag, and push. Usage: make release VERSION=0.0.4
+	@if [ -z "$(VERSION)" ]; then echo "VERSION is required, e.g. make release VERSION=0.0.4"; exit 1; fi
+	@./scripts/release.sh $(VERSION)
+
 .PHONY: docs-test
 docs-test: ## Test if documentation can be built without warnings or errors
 	@uv run mkdocs build -s

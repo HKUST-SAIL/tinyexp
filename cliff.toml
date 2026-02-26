@@ -1,0 +1,31 @@
+# git-cliff configuration for TinyExp changelog generation.
+# https://git-cliff.org/docs/configuration
+
+[changelog]
+body = """
+{% if version %}## [{{ version | trim_start_matches(pat="v") }}] - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}## [unreleased]
+{% endif %}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group }}
+{% for commit in commits %}
+- {{ commit.message | trim }}
+{% endfor %}
+{% endfor %}
+"""
+trim = true
+render_always = true
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+protect_breaking_commits = false
+filter_commits = false
+commit_parsers = [
+    { message = "^feat", group = "Added" },
+    { message = "^fix", group = "Fixed" },
+    { message = "^release:", skip = true },
+    { message = "^chore\\(release\\)", skip = true },
+    { message = ".*", group = "Changed" },
+]
+sort_commits = "oldest"
