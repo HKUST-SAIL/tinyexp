@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.0.3] - 2026-02-26
+
+### Added
+- Automatically derive experiment name from the entrypoint script. (#23)
+
 ## [0.0.2] - 2026-01-19
 
 ### Added
