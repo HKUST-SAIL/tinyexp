@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.0.4] - 2026-02-26
+
+
+### Added
+
+- 🎸 integrate git-cliff changelog automation
+
+
 ## [0.0.3] - 2026-02-26
 
 ### Added
