@@ -8,7 +8,7 @@ Simple experiment management for PyTorch.
 TinyExp is built around one idea:
 your configured experiment is your entrypoint.
 
-![TinyExp demo](docs/assets/tinyexp-demo-short.min.gif)
+<img src="docs/assets/tinyexp-demo-short.min.gif" alt="TinyExp demo" width="480"/>
 
 Instead of splitting config, launcher, and execution across many files, TinyExp keeps them together in one experiment
 definition so iteration stays fast and predictable.
