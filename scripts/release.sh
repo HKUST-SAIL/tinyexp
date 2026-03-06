@@ -127,6 +127,44 @@ generate_changelog_if_missing() {
     echo "Generated changelog entry for ${version} with git-cliff"
 }
 
+extract_changelog_entry_for_version() {
+    local entry
+    entry="$(awk -v target_version="${version}" '
+    BEGIN {
+        in_target = 0
+    }
+    $0 ~ "^## \\[" target_version "\\] - " {
+        in_target = 1
+        print
+        next
+    }
+    in_target && $0 ~ "^## \\[" {
+        exit
+    }
+    in_target {
+        print
+    }
+    ' CHANGELOG.md)"
+
+    if [[ -z "${entry//[[:space:]]/}" ]]; then
+        echo "Error: changelog entry for ${version} not found in CHANGELOG.md."
+        exit 1
+    fi
+
+    printf "%s\n" "${entry}"
+}
+
+create_tag_message_file() {
+    local tmp
+    tmp="$(mktemp)"
+    {
+        echo "Release ${tag}"
+        echo
+        extract_changelog_entry_for_version
+    } > "${tmp}"
+    echo "${tmp}"
+}
+
 update_pyproject_version() {
     local tmp
     tmp="$(mktemp)"
@@ -191,7 +229,9 @@ make build
 echo "Committing release changes"
 git add CHANGELOG.md pyproject.toml uv.lock
 git commit -m "release: ${tag}"
-git tag -a "${tag}" -m "Release ${tag}"
+tag_message_file="$(create_tag_message_file)"
+git tag -a "${tag}" -F "${tag_message_file}"
+rm -f "${tag_message_file}"
 
 echo "Publishing to PyPI"
 make publish

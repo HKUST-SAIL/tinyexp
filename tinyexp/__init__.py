@@ -115,9 +115,10 @@ class TinyExp:
                 else:
                     # Otherwise, set the attribute directly
                     ori_value = getattr(cfg_object, key, None)
+                    INDENT = "    "
                     if ori_value != value:
                         if os.getenv("RANK", 0) == 0 or os.getenv("RANK", 0) == "0":
-                            print(f"{key}: {value} <-- {ori_value}(original)")
+                            print(f"{INDENT}{key}: {value} <-- {ori_value}(original)")
                             # print(f"Override {key} from {ori_value} to {value} in {cfg_object.__class__.__name__}")
                         setattr(cfg_object, key, value)
                         self.overrided_cfg[key] = value

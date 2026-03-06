@@ -332,9 +332,13 @@ class ResNetExp(TinyExp, RedisCfgMixin):
         )
         cfg_dict = OmegaConf.to_container(OmegaConf.structured(self), resolve=True)
         del cfg_dict["hydra"]
-        logger.info(f"-------- Configurations --------\n{OmegaConf.to_yaml(cfg_dict)}")
+        cfg_msg = OmegaConf.to_yaml(cfg_dict).strip().replace("\n", "\n    ")
+        logger.info(f"-------- Configurations --------\n    {cfg_msg}")
 
-        self._train(accelerator=accelerator, logger=logger, cfg_dict=cfg_dict)
+        if self.mode == "train":
+            self._train(accelerator=accelerator, logger=logger, cfg_dict=cfg_dict)
+        else:
+            raise NotImplementedError(f"Mode {self.mode} is not implemented")
 
     def _evaluate(self, accelerator, logger, module_or_module_path, val_dataloader=None) -> None:
         if isinstance(module_or_module_path, str):
