@@ -30,22 +30,7 @@ TinyExp focuses on simple, maintainable experiment management:
 
 ## Quick Start (1 Minute)
 
-### Option A: Run the bundled MNIST experiment
-
-```bash
-git clone https://github.com/HKUST-SAIL/tinyexp.git
-cd tinyexp
-make install
-uv run python tinyexp/examples/mnist_exp.py
-```
-
-### Option B: Override config from CLI
-
-```bash
-uv run python tinyexp/examples/mnist_exp.py dataloader_cfg.train_batch_size_per_device=16
-```
-
-### Option C: Use TinyExp in your own script
+### Option A: Install with pip and use import-based entrypoint
 
 ```bash
 pip install tinyexp
@@ -55,7 +40,21 @@ pip install tinyexp
 from tinyexp import store_and_run_exp
 from tinyexp.examples.mnist_exp import Exp
 
-store_and_run_exp(Exp)  # lightweight template helper
+store_and_run_exp(Exp)
+```
+
+```bash
+python your_exp.py
+python your_exp.py dataloader_cfg.train_batch_size_per_device=16
+```
+
+### Option B: Run the bundled example from source (for development)
+
+```bash
+git clone https://github.com/HKUST-SAIL/tinyexp.git
+cd tinyexp
+make install
+uv run python tinyexp/examples/mnist_exp.py
 ```
 
 ## Common Commands
