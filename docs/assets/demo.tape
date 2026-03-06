@@ -1,0 +1,28 @@
+Output docs/assets/tinyexp-demo.gif
+
+Set Shell "zsh"
+Set FontSize 22
+Set Width 1280
+Set Height 720
+Set TypingSpeed 80
+Set CursorBlink false
+Set Theme "Catppuccin Mocha"
+
+Type "clear"
+Enter
+
+Type "echo 'TinyExp: your configured experiment is your entrypoint'"
+Enter
+Sleep 2s
+
+Type "uv run python tinyexp/examples/mnist_exp.py mode=help"
+Enter
+Sleep 8s
+
+Type "uv run python tinyexp/examples/mnist_exp.py mode=help dataloader_cfg.train_batch_size_per_device=16 num_worker=1"
+Enter
+Sleep 8s
+
+Type "echo 'One experiment file. Structured config. CLI overrides.'"
+Enter
+Sleep 3s

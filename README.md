@@ -3,89 +3,149 @@
 
 # TinyExp
 
-A simple Python project for deep learning experiment management.
+Simple experiment management for PyTorch.
 
-TinyExp lets you launch experiments with one click: the file you edit becomes the entrypoint to your experiment.
+TinyExp is built around one idea:
+your configured experiment is your entrypoint.
 
-# Usage
+![TinyExp demo](docs/assets/tinyexp-demo-short.min.gif)
 
+Instead of splitting config, launcher, and execution across many files, TinyExp keeps them together in one experiment
+definition so iteration stays fast and predictable.
+
+What you get in practice:
+
+- Experiment-centered configuration (Hydra/OmegaConf)
+- CLI overrides without rewriting code
+- Keep your training loop close to plain PyTorch
+- Run the same experiment definition from local debug to distributed launch
+
+## Why TinyExp
+
+TinyExp focuses on simple, maintainable experiment management:
+
+- Your experiment code stays readable.
+- Your config stays structured and easy to override.
+- Your execution path stays consistent as experiments grow.
+
+## Quick Start (1 Minute)
+
+### Option A: Run the bundled MNIST experiment
+
+```bash
+git clone https://github.com/HKUST-SAIL/tinyexp.git
+cd tinyexp
+make install
+uv run python tinyexp/examples/mnist_exp.py
 ```
+
+### Option B: Override config from CLI
+
+```bash
+uv run python tinyexp/examples/mnist_exp.py dataloader_cfg.train_batch_size_per_device=16
+```
+
+### Option C: Use TinyExp in your own script
+
+```bash
 pip install tinyexp
 ```
 
-1. Run mnist example(By default, It will trained on CPU)
-
 ```python
-import tinyexp
-from tinyexp.examples.mnist_exp import Exp, store_and_run_exp
-store_and_run_exp(Exp)
+from tinyexp import store_and_run_exp
+from tinyexp.examples.mnist_exp import Exp
+
+store_and_run_exp(Exp)  # lightweight template helper
 ```
 
-2. or:
+## Common Commands
 
-```
-python tinyexp/examples/mnist_exp.py
-```
-
-3. Run mnist example with overridden config:
-
-```
-python tinyexp/examples/mnist_exp.py dataloader_cfg.train_batch_size_per_device=16
-```
-
-see all available configs:
-
-```
-python tinyexp/examples/mnist_exp.py mode=help
-```
-
-see all available configs with overridden configs:
-
-```
-python tinyexp/examples/mnist_exp.py mode=help dataloader_cfg.train_batch_size_per_device=16
-```
-
-
-# More Examples
-
-1. ImageNet ResNet-50 Example with Extremely Fast Data Loading (By default, all available GPUs will be used.)
-
-```python
-# export IMAGENET_HOME=yours_imagenet_dir
-
-import tinyexp
-from tinyexp.examples.resnet_exp import ResNetExp, store_and_run_exp
-store_and_run_exp(ResNetExp)
-```
-
-# Develop
-
-1. prepare env
+Run MNIST with config override:
 
 ```bash
-# 1. clone repo
-git clone https://github.com/HKUST-SAIL/tinyexp.git
-# 2. Set Up Your Development Environment, This will also generate your `uv.lock` file
+uv run python tinyexp/examples/mnist_exp.py dataloader_cfg.train_batch_size_per_device=16
+```
+
+Print all available configs:
+
+```bash
+uv run python tinyexp/examples/mnist_exp.py mode=help
+```
+
+Print all configs plus your overrides:
+
+```bash
+uv run python tinyexp/examples/mnist_exp.py mode=help dataloader_cfg.train_batch_size_per_device=16
+```
+
+## Example Experiments
+
+- MNIST baseline: [`tinyexp/examples/mnist_exp.py`](tinyexp/examples/mnist_exp.py)
+- ImageNet ResNet-50: [`tinyexp/examples/resnet_exp.py`](tinyexp/examples/resnet_exp.py)
+
+For ImageNet example:
+
+```bash
+export IMAGENET_HOME=/path/to/imagenet
+uv run python tinyexp/examples/resnet_exp.py
+```
+
+## How It Works
+
+1. Define an experiment class by inheriting `TinyExp`.
+2. Keep model/data/optimizer/scheduler config in nested dataclasses.
+3. Implement `run()` (and train/eval helpers) in the same experiment definition.
+4. Launch the script and override config from CLI when needed.
+
+This gives you a single, explicit place to manage experiment behavior.
+
+## Development
+
+Install environment and hooks:
+
+```bash
 make install
-source .venv/bin/activate
 ```
 
-2. After development, checking whether the code is standardized
+Run checks:
 
 ```bash
-# Initially, the CI/CD pipeline might be failing due to formatting issues. To resolve those run:
-uv run pre-commit run -a
+make check
 ```
 
-3. Release a new version
+Run tests:
 
 ```bash
-# One command to auto-generate CHANGELOG entry (from commits since last tag),
-# bump version, test, tag, publish and push:
+make test
+```
+
+Build docs:
+
+```bash
+make docs-test
+```
+
+Build package:
+
+```bash
+make build
+```
+
+Release:
+
+```bash
 make release VERSION=0.0.4
-# (The script uses git-cliff; if git-cliff is not installed, it falls back to `uvx --from git-cliff git-cliff`.)
 ```
 
-# License
+## Documentation
 
-MIT License. See `LICENSE`.
+- Docs site: https://zengarden.github.io/TinyExp/
+- API/module overview: [`docs/modules.md`](docs/modules.md)
+
+## Contributing
+
+PRs and issues are welcome. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+## License
+
+MIT License. See [`LICENSE`](LICENSE).
