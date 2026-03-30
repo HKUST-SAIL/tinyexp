@@ -78,7 +78,6 @@ def test_checkpoint_cfg_save_and_load_roundtrip(tmp_path: Path) -> None:
     assert checkpoint["epoch"] == 3
     assert checkpoint["global_step"] == 12
     assert checkpoint["best_metric"] == 0.9
-    assert checkpoint["format_version"] == 1
     assert checkpoint["extra_state"]["custom_value"] == 7
     assert checkpoint["meta"]["exp_name"] == "demo_exp"
     assert checkpoint["meta"]["exp_class"] == "tests.demo.Exp"
@@ -115,16 +114,6 @@ def test_checkpoint_cfg_rejects_unsupported_model_only_format(tmp_path: Path) ->
         checkpoint_cfg.load_checkpoint(str(checkpoint_path))
 
 
-def test_checkpoint_cfg_rejects_unsupported_format_version(tmp_path: Path) -> None:
-    checkpoint_path = tmp_path / "unsupported_version.ckpt"
-    torch.save({"format_version": 999, "meta": {}, "model_state_dict": {}}, checkpoint_path)
-
-    checkpoint_cfg = CheckpointCfg()
-
-    with pytest.raises(ValueError, match="unsupported format_version 999"):
-        checkpoint_cfg.load_checkpoint(str(checkpoint_path))
-
-
 def test_checkpoint_cfg_rejects_non_dict_payload(tmp_path: Path) -> None:
     checkpoint_path = tmp_path / "not_a_dict.ckpt"
     torch.save([1, 2, 3], checkpoint_path)
@@ -137,7 +126,7 @@ def test_checkpoint_cfg_rejects_non_dict_payload(tmp_path: Path) -> None:
 
 def test_checkpoint_cfg_requires_model_state_when_model_is_provided(tmp_path: Path) -> None:
     checkpoint_path = tmp_path / "missing_model_state.ckpt"
-    torch.save({"format_version": 1, "meta": {}, "epoch": 1}, checkpoint_path)
+    torch.save({"meta": {}, "epoch": 1}, checkpoint_path)
 
     checkpoint_cfg = CheckpointCfg()
     model = torch.nn.Linear(2, 1)
@@ -148,7 +137,7 @@ def test_checkpoint_cfg_requires_model_state_when_model_is_provided(tmp_path: Pa
 
 def test_checkpoint_cfg_requires_optimizer_state_when_optimizer_is_provided(tmp_path: Path) -> None:
     checkpoint_path = tmp_path / "missing_optimizer_state.ckpt"
-    torch.save({"format_version": 1, "meta": {}, "model_state_dict": {}}, checkpoint_path)
+    torch.save({"meta": {}, "model_state_dict": {}}, checkpoint_path)
 
     checkpoint_cfg = CheckpointCfg()
     model = torch.nn.Linear(2, 1)
@@ -160,7 +149,7 @@ def test_checkpoint_cfg_requires_optimizer_state_when_optimizer_is_provided(tmp_
 
 def test_checkpoint_cfg_requires_scheduler_state_when_scheduler_is_provided(tmp_path: Path) -> None:
     checkpoint_path = tmp_path / "missing_scheduler_state.ckpt"
-    torch.save({"format_version": 1, "meta": {}, "model_state_dict": {}, "optimizer_state_dict": {}}, checkpoint_path)
+    torch.save({"meta": {}, "model_state_dict": {}, "optimizer_state_dict": {}}, checkpoint_path)
 
     checkpoint_cfg = CheckpointCfg()
     model = torch.nn.Linear(2, 1)

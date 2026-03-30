@@ -55,7 +55,6 @@ def _is_main_process() -> bool:
 
 @dataclass
 class CheckpointCfg:
-    format_version: int = 1
     last_ckpt_name: str = "last.ckpt"
     best_ckpt_name: str = "best.ckpt"
 
@@ -78,7 +77,6 @@ class CheckpointCfg:
         save_path.parent.mkdir(parents=True, exist_ok=True)
 
         checkpoint: dict[str, Any] = {
-            "format_version": self.format_version,
             "epoch": epoch,
             "global_step": global_step,
             "best_metric": best_metric,
@@ -104,18 +102,8 @@ class CheckpointCfg:
         if not isinstance(checkpoint, dict):
             raise TypeError(f"Checkpoint at {path} must be a dict, got {type(checkpoint).__name__}.")  # noqa: TRY003
 
-        checkpoint_format_version = checkpoint.get("format_version")
-        if checkpoint_format_version is not None and checkpoint_format_version != self.format_version:
-            raise ValueError(  # noqa: TRY003
-                f"Checkpoint at {path} has unsupported format_version {checkpoint_format_version}; "
-                f"expected {self.format_version}."
-            )
-
         if (
-            not any(
-                key in checkpoint
-                for key in ("epoch", "global_step", "best_metric", "meta", "extra_state", "format_version")
-            )
+            not any(key in checkpoint for key in ("epoch", "global_step", "best_metric", "meta", "extra_state"))
             and "model_state_dict" not in checkpoint
         ):
             raise UnsupportedCheckpointFormatError(path)
