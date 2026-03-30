@@ -11,6 +11,7 @@ nav:
   - Home: index.md
   - Philosophy: philosophy.md
   - Phase 1 Plan: phase1-minimal-helpers.md
+  - Phase 1 File Plan: phase1-file-by-file-plan.md
   - Modules: modules.md
 plugins:
   - search
