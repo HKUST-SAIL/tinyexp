@@ -59,3 +59,10 @@ class UnsupportedCheckpointFormatError(ValueError):
         super().__init__(
             f"Checkpoint at {path} is not a supported tinyexp checkpoint format and does not contain model_state_dict."
         )
+
+
+class MissingCheckpointStateError(KeyError):
+    def __init__(self, path: str, state_name: str) -> None:
+        self.path = path
+        self.state_name = state_name
+        super().__init__(f"Checkpoint at {path} does not contain required {state_name}.")
