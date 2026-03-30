@@ -2,8 +2,8 @@
 
 This document describes the first implementation phase that follows TinyExp's design philosophy.
 
-The goal is not to turn TinyExp into a trainer framework. The goal is to add a small set of reusable helpers that
-remove repeated experiment plumbing while keeping training loops in user space.
+The goal is not to turn TinyExp into a trainer framework. The goal is to add a small set of reusable,
+configuration-driven helpers that remove repeated experiment plumbing while keeping training loops in user space.
 
 For the broader principles behind these choices, see [Design Philosophy](philosophy.md).
 
@@ -20,6 +20,12 @@ What is still missing is a minimal layer for common experiment chores that many 
 
 This phase adds only thin helpers for those chores. It does not add a trainer, runtime, callback engine, or framework
 owned lifecycle.
+
+It also follows an additional structural rule:
+
+- shared capabilities should usually be exposed through a focused `XXXCfg` class
+- fields inside that class should be Hydra-override-friendly
+- behavior should only run when the user explicitly calls a method on that config object
 
 ## Goals
 
@@ -48,7 +54,8 @@ If a feature starts to own the user workflow instead of helping it, it is out of
 
 ## Minimal Additions to TinyExp
 
-The base `TinyExp` class should remain small. This phase only proposes a few minimal additions.
+The base `TinyExp` class should remain small. This phase only proposes a few minimal additions directly on `TinyExp`,
+and it prefers feature-specific `XXXCfg` classes for behavior-rich capabilities.
 
 ### New fields
 
@@ -64,7 +71,7 @@ These are intentionally minimal:
 
 More policy-driven settings should stay in examples unless they prove broadly reusable.
 
-### New helper methods
+### New helper methods on `TinyExp`
 
 The following methods are the proposed Phase 1 surface area:
 
@@ -72,11 +79,30 @@ The following methods are the proposed Phase 1 surface area:
 - `ensure_run_dir() -> str`
 - `dump_config(path: str | None = None) -> str`
 - `log_metrics(metrics: dict, *, step: int | None = None, epoch: int | None = None, filename: str = "metrics.jsonl") -> None`
-- `save_checkpoint(...) -> str`
-- `load_checkpoint(...) -> dict`
-- `maybe_resume(...) -> dict | None`
 
 These are helpers, not control-flow abstractions.
+
+### New `CheckpointCfg`
+
+Checkpointing should follow the same overall style as existing components such as `logger_cfg` and `wandb_cfg`.
+
+Recommended addition:
+
+- `checkpoint_cfg: CheckpointCfg`
+
+Recommended scope for `CheckpointCfg`:
+
+- default checkpoint filenames
+- standard checkpoint save logic
+- standard checkpoint load logic
+
+Recommended methods:
+
+- `save_checkpoint(...) -> str`
+- `load_checkpoint(...) -> dict`
+
+This keeps checkpoint behavior grouped with its own configuration instead of expanding `TinyExp` with many feature
+specific methods.
 
 ## Artifact Conventions
 
@@ -128,7 +154,8 @@ This gives TinyExp a useful local record format without introducing a full track
 
 ### Checkpoint helpers
 
-`save_checkpoint()` and `load_checkpoint()` should provide a standard way to persist and recover experiment state.
+`checkpoint_cfg.save_checkpoint()` and `checkpoint_cfg.load_checkpoint()` should provide a standard way to persist and
+recover experiment state.
 
 Recommended checkpoint content:
 
@@ -148,17 +175,11 @@ Recommended metadata:
 
 The helper should only standardize the storage format. It should not decide when checkpoints are written.
 
-### Resume helper
+Resume should remain explicit in user code:
 
-`maybe_resume()` should be a thin convenience layer over `resume_from`.
-
-Expected behavior:
-
-- return `None` when `resume_from` is empty
-- otherwise call `load_checkpoint()`
-- return the loaded checkpoint state so the example can decide how to resume
-
-This keeps resume logic explicit while reducing repeated boilerplate.
+- `resume_from` stores the path
+- the example decides whether to call `checkpoint_cfg.load_checkpoint()`
+- the example decides how to continue from the loaded state
 
 ## Boundary Between TinyExp and Examples
 
@@ -169,6 +190,7 @@ This phase depends on keeping a strong boundary between the framework and exampl
 - configuration structure and override ergonomics
 - launch integration
 - thin artifact helpers
+- feature-specific `XXXCfg` components
 - small reusable utilities shared across many experiments
 
 ### Examples should own
@@ -198,7 +220,7 @@ The migration should:
 
 - keep the training loop inside the example
 - replace repeated path/config writing code with helpers
-- add checkpoint save/load through helpers
+- add checkpoint save/load through `checkpoint_cfg`
 - add `mode=val` using `resume_from`
 
 Only after this works well should TinyExp consider extracting a recipe-style base class from examples.
@@ -213,7 +235,6 @@ Recommended test coverage:
 - unit tests for config dumping
 - unit tests for metric logging
 - unit tests for checkpoint save/load
-- unit tests for `maybe_resume()`
 - a small integration test for `mode=val`
 
 The tests should stay CPU-first and deterministic.
@@ -225,11 +246,10 @@ Recommended implementation order:
 1. add run directory helpers
 2. add config dumping
 3. add metric logging
-4. add checkpoint save/load
-5. add `maybe_resume()`
-6. migrate `mnist_exp.py`
-7. add `mode=val`
-8. add tests
+4. add `CheckpointCfg` with save/load
+5. migrate `mnist_exp.py`
+6. add `mode=val`
+7. add tests
 
 This order keeps each change small and easy to validate.
 

@@ -38,6 +38,7 @@ lifecycle. Instead, it focuses on a smaller goal:
 - keep the experiment itself as the main entrypoint
 - keep the training loop in user space
 - make configuration and launch behavior explicit
+- expose shared capabilities through focused `XXXCfg` components
 - provide thin helpers rather than framework-owned control flow
 - treat examples as reusable recipes, not just demos
 

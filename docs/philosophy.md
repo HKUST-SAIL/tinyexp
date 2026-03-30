@@ -14,6 +14,7 @@ It focuses on:
 
 - keeping the experiment definition as the main entrypoint
 - making configuration explicit and easy to override
+- expressing shared features through focused `XXXCfg` components
 - supporting multiple launch styles without changing experiment code too much
 - keeping user code close to normal PyTorch
 - reducing repeated experiment "plumbing" without owning the full training lifecycle
@@ -49,7 +50,34 @@ TinyExp prefers explicit calls over hidden side effects.
 For example, integrations with external systems such as W&B should remain explicit. A config object can expose the
 ability to build an integration, but the user should still decide when to call it.
 
-### 3. Keep the training loop in user space
+This same rule applies to TinyExp features more broadly:
+
+- configuration should live in a small `XXXCfg` class
+- config fields should be override-friendly through Hydra
+- behavior should only run when the user explicitly calls a method on that config object
+
+This keeps configuration and execution separate while still letting execution be part of the experiment structure.
+
+### 3. Prefer `XXXCfg` components for shared features
+
+When TinyExp grows, new capabilities should usually be introduced as focused config components rather than as many
+top-level methods on `TinyExp`.
+
+For example, a feature is often a better fit as:
+
+- `logger_cfg.build_logger(...)`
+- `wandb_cfg.build_wandb(...)`
+- `checkpoint_cfg.save_checkpoint(...)`
+
+than as a large collection of flat framework methods.
+
+This pattern keeps a feature's configuration and execution close together:
+
+- fields describe the feature and can be overridden through Hydra
+- methods execute behavior only when the user explicitly calls them
+- `TinyExp` itself stays smaller and easier to understand
+
+### 4. Keep the training loop in user space
 
 The training loop is often the most task-specific part of an experiment. TinyExp should not rush to abstract it into
 a universal trainer.
@@ -61,19 +89,19 @@ Users should be able to:
 - control when to validate, log, save, or resume
 - stay in plain PyTorch as much as possible
 
-### 4. Helpers are good; control frameworks are not
+### 5. Helpers are good; control frameworks are not
 
 TinyExp should provide thin, reusable helpers for common experiment chores, such as:
 
 - output directory setup
 - config dumping
 - lightweight metric logging
-- checkpoint save/load helpers
+- checkpoint save/load helpers exposed through focused config components
 - launcher compatibility
 
 These helpers reduce repeated boilerplate without dictating how the user structures training.
 
-### 5. Examples are recipes, not just demos
+### 6. Examples are recipes, not just demos
 
 Examples in TinyExp are not only meant to showcase features. They should also serve as reusable recipes and
 inheritance-friendly templates.
@@ -82,7 +110,7 @@ That means examples should remain understandable and useful as starting points f
 emerges across multiple examples, it may be worth extracting a small helper or a recipe base class. But that logic
 should only move into the framework when it is broadly useful and still keeps the system light.
 
-### 6. Framework-level additions must earn their place
+### 7. Framework-level additions must earn their place
 
 A good question for any new feature is:
 
@@ -100,7 +128,8 @@ architecture, it probably does not belong in TinyExp.
 - configuration structure and CLI overrides
 - experiment entry and launch ergonomics
 - lightweight utilities shared across many experiments
-- minimal artifact helpers that do not take over control flow
+- small `XXXCfg` components for shared capabilities
+- minimal helpers that do not take over control flow
 
 ### Examples or user experiments should own
 
@@ -117,7 +146,7 @@ This boundary keeps TinyExp small while still making it genuinely useful.
 
 When extending TinyExp, prefer:
 
-- small helpers over large abstractions
+- small `XXXCfg` components over large abstractions
 - explicit calls over automatic behavior
 - recipe-style examples over framework-owned trainers
 - local clarity over generic indirection
