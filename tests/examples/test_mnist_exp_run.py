@@ -3,7 +3,22 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from tinyexp.examples.mnist_exp import Exp
+
+
+def test_mnist_run_val_mode_requires_resume_from(tmp_path: Path, monkeypatch) -> None:
+    exp = Exp(output_root=str(tmp_path), exp_name="mnist_val", mode="val", resume_from="")
+
+    dummy_accelerator = SimpleNamespace(rank=0, device="cpu", is_main_process=True)
+    dummy_logger = SimpleNamespace(info=lambda *args, **kwargs: None)
+
+    monkeypatch.setattr(exp.accelerator_cfg, "build_accelerator", lambda: dummy_accelerator)
+    monkeypatch.setattr(exp.logger_cfg, "build_logger", lambda **kwargs: dummy_logger)
+
+    with pytest.raises(ValueError, match="resume_from"):
+        exp.run()
 
 
 def test_mnist_run_val_mode_uses_checkpoint_and_dumps_config(tmp_path: Path, monkeypatch) -> None:

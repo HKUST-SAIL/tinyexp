@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+import torch
 from hydra.conf import HydraConf, RunDir
 from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, OmegaConf
@@ -72,8 +73,6 @@ class CheckpointCfg:
         exp_class: str = "",
         extra_state: Optional[dict[str, Any]] = None,
     ) -> str:
-        import torch
-
         save_path = Path(run_dir) / name
         save_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -109,8 +108,6 @@ class CheckpointCfg:
         strict: bool = True,
         map_location=None,
     ) -> dict[str, Any]:
-        import torch
-
         checkpoint = torch.load(path, map_location=map_location)
 
         if model is not None and "model_state_dict" in checkpoint:

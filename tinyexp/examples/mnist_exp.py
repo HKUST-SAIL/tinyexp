@@ -158,7 +158,9 @@ class Exp(TinyExp):
         if self.mode == "train":
             self._train(accelerator=accelerator, logger=logger, cfg_dict=cfg_dict, run_dir=run_dir)
         elif self.mode == "val":
-            self._validate_from_checkpoint(accelerator=accelerator, logger=logger)
+            if not self.resume_from:
+                raise ResumeFromRequiredError
+            self._evaluate(accelerator=accelerator, logger=logger, module_or_module_path=self.resume_from)
         else:
             raise NotImplementedError(f"Mode {self.mode} is not implemented")
 
@@ -298,11 +300,6 @@ class Exp(TinyExp):
         global_step = int(checkpoint.get("global_step", 0))
         best_metric = checkpoint.get("best_metric")
         return start_epoch, global_step, best_metric
-
-    def _validate_from_checkpoint(self, accelerator, logger) -> None:
-        if not self.resume_from:
-            raise ResumeFromRequiredError
-        self._evaluate(accelerator=accelerator, logger=logger, module_or_module_path=self.resume_from)
 
 
 # import hydra
