@@ -165,7 +165,11 @@ class Exp(TinyExp):
     def _evaluate(self, accelerator, logger, module_or_module_path, val_dataloader=None) -> float:
         if isinstance(module_or_module_path, str):
             module = Net()
-            module.load_state_dict(torch.load(module_or_module_path))
+            self.checkpoint_cfg.load_checkpoint(
+                module_or_module_path,
+                model=module,
+                map_location=accelerator.device,
+            )
             module = accelerator.prepare(module)
         else:
             module = module_or_module_path
