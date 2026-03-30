@@ -115,6 +115,26 @@ def test_checkpoint_cfg_rejects_unsupported_model_only_format(tmp_path: Path) ->
         checkpoint_cfg.load_checkpoint(str(checkpoint_path))
 
 
+def test_checkpoint_cfg_rejects_unsupported_format_version(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "unsupported_version.ckpt"
+    torch.save({"format_version": 999, "meta": {}, "model_state_dict": {}}, checkpoint_path)
+
+    checkpoint_cfg = CheckpointCfg()
+
+    with pytest.raises(ValueError, match="unsupported format_version 999"):
+        checkpoint_cfg.load_checkpoint(str(checkpoint_path))
+
+
+def test_checkpoint_cfg_rejects_non_dict_payload(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "not_a_dict.ckpt"
+    torch.save([1, 2, 3], checkpoint_path)
+
+    checkpoint_cfg = CheckpointCfg()
+
+    with pytest.raises(TypeError, match="must be a dict, got list"):
+        checkpoint_cfg.load_checkpoint(str(checkpoint_path))
+
+
 def test_checkpoint_cfg_requires_model_state_when_model_is_provided(tmp_path: Path) -> None:
     checkpoint_path = tmp_path / "missing_model_state.ckpt"
     torch.save({"format_version": 1, "meta": {}, "epoch": 1}, checkpoint_path)

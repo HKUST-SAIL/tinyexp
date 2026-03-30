@@ -100,29 +100,37 @@ class CheckpointCfg:
         torch.save(checkpoint, save_path)
         return str(save_path)
 
-    def load_checkpoint(
-        self,
-        path: str,
-        *,
-        model=None,
-        optimizer=None,
-        scheduler=None,
-        strict: bool = True,
-        map_location=None,
-    ) -> dict[str, Any]:
-        checkpoint = torch.load(path, map_location=map_location)
+    def _invalid_checkpoint_type_error(self, path: str, checkpoint: Any) -> TypeError:
+        return TypeError(f"Checkpoint at {path} must be a dict, got {type(checkpoint).__name__}.")
 
+    def _unsupported_checkpoint_version_error(self, path: str, checkpoint_format_version: Any) -> ValueError:
+        return ValueError(
+            f"Checkpoint at {path} has unsupported format_version {checkpoint_format_version}; "
+            f"expected {self.format_version}."
+        )
+
+    def _validate_checkpoint_payload(self, path: str, checkpoint: Any) -> dict[str, Any]:
         if not isinstance(checkpoint, dict):
-            raise TypeError(type(checkpoint).__name__)
+            raise self._invalid_checkpoint_type_error(path, checkpoint)
 
-        if any(
-            key in checkpoint
-            for key in ("epoch", "global_step", "best_metric", "meta", "extra_state", "format_version")
+        checkpoint_format_version = checkpoint.get("format_version")
+        if checkpoint_format_version is not None and checkpoint_format_version != self.format_version:
+            raise self._unsupported_checkpoint_version_error(path, checkpoint_format_version)
+
+        if (
+            not any(
+                key in checkpoint
+                for key in ("epoch", "global_step", "best_metric", "meta", "extra_state", "format_version")
+            )
+            and "model_state_dict" not in checkpoint
         ):
-            pass
-        elif "model_state_dict" not in checkpoint:
             raise UnsupportedCheckpointFormatError(path)
 
+        return checkpoint
+
+    def _load_required_state(
+        self, checkpoint: dict[str, Any], *, model=None, optimizer=None, scheduler=None, strict: bool = True
+    ) -> None:
         if model is not None:
             if "model_state_dict" not in checkpoint:
                 raise KeyError("model_state_dict")
@@ -135,6 +143,19 @@ class CheckpointCfg:
             if "scheduler_state_dict" not in checkpoint:
                 raise KeyError("scheduler_state_dict")
             scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+    def load_checkpoint(
+        self,
+        path: str,
+        *,
+        model=None,
+        optimizer=None,
+        scheduler=None,
+        strict: bool = True,
+        map_location=None,
+    ) -> dict[str, Any]:
+        checkpoint = self._validate_checkpoint_payload(path, torch.load(path, map_location=map_location))
+        self._load_required_state(checkpoint, model=model, optimizer=optimizer, scheduler=scheduler, strict=strict)
 
         return checkpoint
 
