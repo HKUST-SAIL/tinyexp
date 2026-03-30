@@ -100,22 +100,16 @@ class CheckpointCfg:
         torch.save(checkpoint, save_path)
         return str(save_path)
 
-    def _invalid_checkpoint_type_error(self, path: str, checkpoint: Any) -> TypeError:
-        return TypeError(f"Checkpoint at {path} must be a dict, got {type(checkpoint).__name__}.")
-
-    def _unsupported_checkpoint_version_error(self, path: str, checkpoint_format_version: Any) -> ValueError:
-        return ValueError(
-            f"Checkpoint at {path} has unsupported format_version {checkpoint_format_version}; "
-            f"expected {self.format_version}."
-        )
-
     def _validate_checkpoint_payload(self, path: str, checkpoint: Any) -> dict[str, Any]:
         if not isinstance(checkpoint, dict):
-            raise self._invalid_checkpoint_type_error(path, checkpoint)
+            raise TypeError(f"Checkpoint at {path} must be a dict, got {type(checkpoint).__name__}.")  # noqa: TRY003
 
         checkpoint_format_version = checkpoint.get("format_version")
         if checkpoint_format_version is not None and checkpoint_format_version != self.format_version:
-            raise self._unsupported_checkpoint_version_error(path, checkpoint_format_version)
+            raise ValueError(  # noqa: TRY003
+                f"Checkpoint at {path} has unsupported format_version {checkpoint_format_version}; "
+                f"expected {self.format_version}."
+            )
 
         if (
             not any(
