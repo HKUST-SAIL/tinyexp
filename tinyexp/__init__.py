@@ -173,6 +173,7 @@ class TinyExp:
     @dataclass
     class LoggerCfg:
         def build_logger(self, save_dir: str, distributed_rank: int = 0, filename: str = "log.txt", mode: str = "a"):
+            Path(save_dir).mkdir(parents=True, exist_ok=True)
             logger = tiny_logger_setup(save_dir, distributed_rank, filename, mode)
             logger.info(f"==> log file: {os.path.join(save_dir, filename)}")
             return logger
@@ -183,16 +184,12 @@ class TinyExp:
     def get_run_dir(self) -> str:
         return os.path.join(self.output_root, self.exp_name)
 
-    def ensure_run_dir(self) -> str:
-        run_dir = self.get_run_dir()
-        Path(run_dir).mkdir(parents=True, exist_ok=True)
-        return run_dir
-
     def dump_config(self, path: Optional[str] = None) -> str:
-        run_dir = self.ensure_run_dir()
+        run_dir = self.get_run_dir()
         dump_path = Path(path) if path is not None else Path(run_dir) / "config.yaml"
 
         if _is_main_process():
+            dump_path.parent.mkdir(parents=True, exist_ok=True)
             cfg_dict = OmegaConf.to_container(OmegaConf.structured(self), resolve=True)
             dump_path.write_text(OmegaConf.to_yaml(cfg_dict), encoding="utf-8")
 

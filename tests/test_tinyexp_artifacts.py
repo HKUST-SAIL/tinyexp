@@ -7,15 +7,11 @@ import torch
 from tinyexp import CheckpointCfg, TinyExp
 
 
-def test_get_run_dir_and_ensure_run_dir(tmp_path: Path) -> None:
+def test_get_run_dir(tmp_path: Path) -> None:
     exp = TinyExp(output_root=str(tmp_path), exp_name="demo_exp")
 
     expected = tmp_path / "demo_exp"
     assert exp.get_run_dir() == str(expected)
-
-    created = Path(exp.ensure_run_dir())
-    assert created == expected
-    assert created.is_dir()
 
 
 def test_dump_config_writes_yaml(tmp_path: Path, monkeypatch) -> None:
@@ -29,6 +25,16 @@ def test_dump_config_writes_yaml(tmp_path: Path, monkeypatch) -> None:
     assert "exp_name: demo_exp" in content
     assert "mode: val" in content
     assert "resume_from: checkpoint.ckpt" in content
+
+
+def test_logger_cfg_creates_run_dir(tmp_path: Path) -> None:
+    exp = TinyExp(output_root=str(tmp_path), exp_name="demo_exp")
+    run_dir = Path(exp.get_run_dir())
+
+    exp.logger_cfg.build_logger(save_dir=str(run_dir), distributed_rank=0)
+
+    assert run_dir.is_dir()
+    assert (run_dir / "log.txt").is_file()
 
 
 def test_checkpoint_cfg_save_and_load_roundtrip(tmp_path: Path) -> None:
