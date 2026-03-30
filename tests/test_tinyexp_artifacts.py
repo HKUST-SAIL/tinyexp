@@ -2,9 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import torch
 
 from tinyexp import CheckpointCfg, TinyExp
+from tinyexp.exceptions import UnsupportedCheckpointFormatError
 
 
 def test_get_run_dir(tmp_path: Path) -> None:
@@ -76,10 +78,38 @@ def test_checkpoint_cfg_save_and_load_roundtrip(tmp_path: Path) -> None:
     assert checkpoint["epoch"] == 3
     assert checkpoint["global_step"] == 12
     assert checkpoint["best_metric"] == 0.9
-    assert checkpoint["custom_value"] == 7
+    assert checkpoint["format_version"] == 1
+    assert checkpoint["extra_state"]["custom_value"] == 7
     assert checkpoint["meta"]["exp_name"] == "demo_exp"
     assert checkpoint["meta"]["exp_class"] == "tests.demo.Exp"
     assert "saved_at" in checkpoint["meta"]
 
     for original_param, reloaded_param in zip(model.parameters(), reloaded_model.parameters()):
         assert torch.equal(original_param, reloaded_param)
+
+
+def test_checkpoint_cfg_extra_state_does_not_override_reserved_keys(tmp_path: Path) -> None:
+    checkpoint_cfg = CheckpointCfg()
+
+    checkpoint_path = checkpoint_cfg.save_checkpoint(
+        run_dir=str(tmp_path),
+        name=checkpoint_cfg.last_ckpt_name,
+        epoch=3,
+        extra_state={"epoch": 99, "meta": {"exp_name": "bad"}},
+    )
+
+    checkpoint = checkpoint_cfg.load_checkpoint(checkpoint_path)
+
+    assert checkpoint["epoch"] == 3
+    assert checkpoint["extra_state"]["epoch"] == 99
+    assert checkpoint["meta"]["exp_name"] == ""
+
+
+def test_checkpoint_cfg_rejects_unsupported_model_only_format(tmp_path: Path) -> None:
+    checkpoint_path = tmp_path / "model_only.ckpt"
+    torch.save({"state_dict": {"weight": torch.tensor([1.0])}}, checkpoint_path)
+
+    checkpoint_cfg = CheckpointCfg()
+
+    with pytest.raises(UnsupportedCheckpointFormatError, match="not a supported tinyexp checkpoint format"):
+        checkpoint_cfg.load_checkpoint(str(checkpoint_path))

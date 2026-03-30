@@ -15,7 +15,7 @@ from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, OmegaConf
 from omegaconf.listconfig import ListConfig
 
-from .exceptions import UnknownConfigurationKeyError
+from .exceptions import InvalidCheckpointTypeError, UnknownConfigurationKeyError, UnsupportedCheckpointFormatError
 from .utils.log_utils import tiny_logger_setup
 from .utils.ray_utils import simple_launch_exp
 
@@ -55,6 +55,7 @@ def _is_main_process() -> bool:
 
 @dataclass
 class CheckpointCfg:
+    format_version: int = 1
     last_ckpt_name: str = "last.ckpt"
     best_ckpt_name: str = "best.ckpt"
 
@@ -77,6 +78,7 @@ class CheckpointCfg:
         save_path.parent.mkdir(parents=True, exist_ok=True)
 
         checkpoint: dict[str, Any] = {
+            "format_version": self.format_version,
             "epoch": epoch,
             "global_step": global_step,
             "best_metric": best_metric,
@@ -93,7 +95,7 @@ class CheckpointCfg:
         if scheduler is not None:
             checkpoint["scheduler_state_dict"] = scheduler.state_dict()
         if extra_state is not None:
-            checkpoint.update(extra_state)
+            checkpoint["extra_state"] = extra_state
 
         torch.save(checkpoint, save_path)
         return str(save_path)
@@ -109,6 +111,17 @@ class CheckpointCfg:
         map_location=None,
     ) -> dict[str, Any]:
         checkpoint = torch.load(path, map_location=map_location)
+
+        if not isinstance(checkpoint, dict):
+            raise InvalidCheckpointTypeError(path, type(checkpoint).__name__)
+
+        if any(
+            key in checkpoint
+            for key in ("epoch", "global_step", "best_metric", "meta", "extra_state", "format_version")
+        ):
+            pass
+        elif "model_state_dict" not in checkpoint:
+            raise UnsupportedCheckpointFormatError(path)
 
         if model is not None and "model_state_dict" in checkpoint:
             model.load_state_dict(checkpoint["model_state_dict"], strict=strict)

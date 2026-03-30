@@ -44,3 +44,18 @@ class UnknownLauncherError(ValueError):
 class CudaNotAvailableError(RuntimeError):
     def __init__(self) -> None:
         super().__init__("CUDA is required but not available.")
+
+
+class InvalidCheckpointTypeError(TypeError):
+    def __init__(self, path: str, checkpoint_type: str) -> None:
+        self.path = path
+        self.checkpoint_type = checkpoint_type
+        super().__init__(f"Checkpoint at {path} must be a dict, got {checkpoint_type}.")
+
+
+class UnsupportedCheckpointFormatError(ValueError):
+    def __init__(self, path: str) -> None:
+        self.path = path
+        super().__init__(
+            f"Checkpoint at {path} is not a supported tinyexp checkpoint format and does not contain model_state_dict."
+        )
