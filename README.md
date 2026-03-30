@@ -28,6 +28,23 @@ TinyExp focuses on simple, maintainable experiment management:
 - Your config stays structured and easy to override.
 - Your execution path stays consistent as experiments grow.
 
+## Design Philosophy
+
+TinyExp is intentionally light.
+
+It is not trying to be a heavy trainer framework that owns your epoch loop, callback system, or full runtime
+lifecycle. Instead, it focuses on a smaller goal:
+
+- keep the experiment itself as the main entrypoint
+- keep the training loop in user space
+- make configuration and launch behavior explicit
+- provide thin helpers rather than framework-owned control flow
+- treat examples as reusable recipes, not just demos
+
+In short, TinyExp should help you write less experiment plumbing, not less experiment logic.
+
+For a longer explanation, see [`docs/philosophy.md`](docs/philosophy.md).
+
 ## Quick Start (1 Minute)
 
 ### Option A: Install with pip and use import-based entrypoint
