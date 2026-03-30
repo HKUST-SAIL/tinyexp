@@ -6,7 +6,7 @@ import pytest
 import torch
 
 from tinyexp import CheckpointCfg, TinyExp
-from tinyexp.exceptions import MissingCheckpointStateError, UnsupportedCheckpointFormatError
+from tinyexp.exceptions import UnsupportedCheckpointFormatError
 
 
 def test_get_run_dir(tmp_path: Path) -> None:
@@ -122,7 +122,7 @@ def test_checkpoint_cfg_requires_model_state_when_model_is_provided(tmp_path: Pa
     checkpoint_cfg = CheckpointCfg()
     model = torch.nn.Linear(2, 1)
 
-    with pytest.raises(MissingCheckpointStateError, match="model_state_dict"):
+    with pytest.raises(KeyError, match="model_state_dict"):
         checkpoint_cfg.load_checkpoint(str(checkpoint_path), model=model)
 
 
@@ -134,7 +134,7 @@ def test_checkpoint_cfg_requires_optimizer_state_when_optimizer_is_provided(tmp_
     model = torch.nn.Linear(2, 1)
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
 
-    with pytest.raises(MissingCheckpointStateError, match="optimizer_state_dict"):
+    with pytest.raises(KeyError, match="optimizer_state_dict"):
         checkpoint_cfg.load_checkpoint(str(checkpoint_path), optimizer=optimizer)
 
 
@@ -147,5 +147,5 @@ def test_checkpoint_cfg_requires_scheduler_state_when_scheduler_is_provided(tmp_
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1)
 
-    with pytest.raises(MissingCheckpointStateError, match="scheduler_state_dict"):
+    with pytest.raises(KeyError, match="scheduler_state_dict"):
         checkpoint_cfg.load_checkpoint(str(checkpoint_path), scheduler=scheduler)

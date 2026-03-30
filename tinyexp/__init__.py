@@ -15,12 +15,7 @@ from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, OmegaConf
 from omegaconf.listconfig import ListConfig
 
-from .exceptions import (
-    InvalidCheckpointTypeError,
-    MissingCheckpointStateError,
-    UnknownConfigurationKeyError,
-    UnsupportedCheckpointFormatError,
-)
+from .exceptions import UnknownConfigurationKeyError, UnsupportedCheckpointFormatError
 from .utils.log_utils import tiny_logger_setup
 from .utils.ray_utils import simple_launch_exp
 
@@ -118,7 +113,7 @@ class CheckpointCfg:
         checkpoint = torch.load(path, map_location=map_location)
 
         if not isinstance(checkpoint, dict):
-            raise InvalidCheckpointTypeError(path, type(checkpoint).__name__)
+            raise TypeError(type(checkpoint).__name__)
 
         if any(
             key in checkpoint
@@ -130,15 +125,15 @@ class CheckpointCfg:
 
         if model is not None:
             if "model_state_dict" not in checkpoint:
-                raise MissingCheckpointStateError(path, "model_state_dict")
+                raise KeyError("model_state_dict")
             model.load_state_dict(checkpoint["model_state_dict"], strict=strict)
         if optimizer is not None:
             if "optimizer_state_dict" not in checkpoint:
-                raise MissingCheckpointStateError(path, "optimizer_state_dict")
+                raise KeyError("optimizer_state_dict")
             optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
         if scheduler is not None:
             if "scheduler_state_dict" not in checkpoint:
-                raise MissingCheckpointStateError(path, "scheduler_state_dict")
+                raise KeyError("scheduler_state_dict")
             scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
 
         return checkpoint
