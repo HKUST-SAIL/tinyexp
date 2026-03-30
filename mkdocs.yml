@@ -12,6 +12,7 @@ nav:
   - Philosophy: philosophy.md
   - Phase 1 Plan: phase1-minimal-helpers.md
   - Phase 1 File Plan: phase1-file-by-file-plan.md
+  - Phase 1 API Draft: phase1-api-draft.md
   - Modules: modules.md
 plugins:
   - search
