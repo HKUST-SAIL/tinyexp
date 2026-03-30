@@ -1,6 +1,5 @@
 import datetime
 from dataclasses import dataclass, field
-from typing import Any
 
 import torch
 import torch.nn as nn
@@ -209,12 +208,20 @@ class Exp(TinyExp):
         lr_scheduler = self.lr_scheduler_cfg.build_lr_scheduler(ori_optimizer)
 
         module, optimizer = accelerator.prepare(ori_module, ori_optimizer)
-        start_epoch, global_step, best_metric = self._load_training_state_if_needed(
-            accelerator=accelerator,
-            module=accelerator.unwrap_model(module),
-            optimizer=optimizer,
-            scheduler=lr_scheduler,
-        )
+        start_epoch = 0
+        global_step = 0
+        best_metric = None
+        if self.resume_from:
+            checkpoint = self.checkpoint_cfg.load_checkpoint(
+                self.resume_from,
+                model=accelerator.unwrap_model(module),
+                optimizer=optimizer,
+                scheduler=lr_scheduler,
+                map_location=accelerator.device,
+            )
+            start_epoch = int(checkpoint.get("epoch", -1)) + 1
+            global_step = int(checkpoint.get("global_step", 0))
+            best_metric = checkpoint.get("best_metric")
 
         train_iter = iter(train_dataloader)
         if self.wandb_cfg.enable_wandb and accelerator.rank == 0:
@@ -284,22 +291,6 @@ class Exp(TinyExp):
                     )
 
             lr_scheduler.step()
-
-    def _load_training_state_if_needed(self, accelerator, module, optimizer, scheduler) -> tuple[int, int, Any]:
-        if not self.resume_from:
-            return 0, 0, None
-
-        checkpoint = self.checkpoint_cfg.load_checkpoint(
-            self.resume_from,
-            model=module,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            map_location=accelerator.device,
-        )
-        start_epoch = int(checkpoint.get("epoch", -1)) + 1
-        global_step = int(checkpoint.get("global_step", 0))
-        best_metric = checkpoint.get("best_metric")
-        return start_epoch, global_step, best_metric
 
 
 # import hydra
