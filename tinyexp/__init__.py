@@ -5,18 +5,20 @@ __license__ = "MIT"
 import os
 import sys
 from dataclasses import dataclass, field
-from typing import Optional
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
 
 from hydra.conf import HydraConf, RunDir
 from hydra.core.config_store import ConfigStore
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from omegaconf.listconfig import ListConfig
 
 from .exceptions import UnknownConfigurationKeyError
 from .utils.log_utils import tiny_logger_setup
 from .utils.ray_utils import simple_launch_exp
 
-__all__ = ["ConfigStore", "RedisCfgMixin", "TinyExp", "simple_launch_exp"]
+__all__ = ["CheckpointCfg", "ConfigStore", "RedisCfgMixin", "TinyExp", "simple_launch_exp"]
 
 
 @dataclass
@@ -46,6 +48,81 @@ def _default_exp_name() -> str:
     return "exp"
 
 
+def _is_main_process() -> bool:
+    return os.getenv("RANK", "0") == "0"
+
+
+@dataclass
+class CheckpointCfg:
+    last_ckpt_name: str = "last.ckpt"
+    best_ckpt_name: str = "best.ckpt"
+
+    def save_checkpoint(
+        self,
+        *,
+        run_dir: str,
+        name: str,
+        model=None,
+        optimizer=None,
+        scheduler=None,
+        epoch: Optional[int] = None,
+        global_step: Optional[int] = None,
+        best_metric: Optional[float] = None,
+        exp_name: str = "",
+        exp_class: str = "",
+        extra_state: Optional[dict[str, Any]] = None,
+    ) -> str:
+        import torch
+
+        save_path = Path(run_dir) / name
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+
+        checkpoint: dict[str, Any] = {
+            "epoch": epoch,
+            "global_step": global_step,
+            "best_metric": best_metric,
+            "meta": {
+                "exp_name": exp_name,
+                "exp_class": exp_class,
+                "saved_at": datetime.now(timezone.utc).isoformat(),
+            },
+        }
+        if model is not None:
+            checkpoint["model_state_dict"] = model.state_dict()
+        if optimizer is not None:
+            checkpoint["optimizer_state_dict"] = optimizer.state_dict()
+        if scheduler is not None:
+            checkpoint["scheduler_state_dict"] = scheduler.state_dict()
+        if extra_state is not None:
+            checkpoint.update(extra_state)
+
+        torch.save(checkpoint, save_path)
+        return str(save_path)
+
+    def load_checkpoint(
+        self,
+        path: str,
+        *,
+        model=None,
+        optimizer=None,
+        scheduler=None,
+        strict: bool = True,
+        map_location=None,
+    ) -> dict[str, Any]:
+        import torch
+
+        checkpoint = torch.load(path, map_location=map_location)
+
+        if model is not None and "model_state_dict" in checkpoint:
+            model.load_state_dict(checkpoint["model_state_dict"], strict=strict)
+        if optimizer is not None and "optimizer_state_dict" in checkpoint:
+            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        if scheduler is not None and "scheduler_state_dict" in checkpoint:
+            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+        return checkpoint
+
+
 @dataclass
 class TinyExp:
     """
@@ -72,6 +149,8 @@ class TinyExp:
 
     # log directory
     output_root: str = "./output"
+    mode: str = "train"
+    resume_from: str = ""
 
     # overridden configurations, only for internal use
     overrided_cfg: dict = field(default_factory=dict)
@@ -102,6 +181,25 @@ class TinyExp:
             return logger
 
     logger_cfg: LoggerCfg = field(default_factory=LoggerCfg)
+    checkpoint_cfg: CheckpointCfg = field(default_factory=CheckpointCfg)
+
+    def get_run_dir(self) -> str:
+        return os.path.join(self.output_root, self.exp_name)
+
+    def ensure_run_dir(self) -> str:
+        run_dir = self.get_run_dir()
+        Path(run_dir).mkdir(parents=True, exist_ok=True)
+        return run_dir
+
+    def dump_config(self, path: Optional[str] = None) -> str:
+        run_dir = self.ensure_run_dir()
+        dump_path = Path(path) if path is not None else Path(run_dir) / "config.yaml"
+
+        if _is_main_process():
+            cfg_dict = OmegaConf.to_container(OmegaConf.structured(self), resolve=True)
+            dump_path.write_text(OmegaConf.to_yaml(cfg_dict), encoding="utf-8")
+
+        return str(dump_path)
 
     def set_cfg(self, cfg_hydra, cfg_object=None):
         if cfg_object is None:
