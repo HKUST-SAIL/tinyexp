@@ -10,6 +10,7 @@ copyright: Maintained by <a href="https://zengarden.com">zengarden</a>.
 nav:
   - Home: index.md
   - Philosophy: philosophy.md
+  - Phase 1 Plan: phase1-minimal-helpers.md
   - Modules: modules.md
 plugins:
   - search
