@@ -28,40 +28,8 @@ class _HydraConfig(HydraConf):
     To avoid hydra output the config in unexpected directory.
     """
 
-    defaults: list[Any] = field(
-        default_factory=lambda: [
-            {"output": "default"},
-            {"launcher": "basic"},
-            {"sweeper": "basic"},
-            {"help": "default"},
-            {"hydra_help": "default"},
-            {"hydra_logging": "default"},
-            {"job_logging": "default"},
-            {"callbacks": None},
-        ]
-    )
     output_subdir: Optional[str] = None
     run: RunDir = field(default_factory=lambda: RunDir("./output"))
-
-
-def _ensure_hydra_env_default() -> None:
-    cs = ConfigStore.instance()
-    cur = cs.repo
-    for group in ("hydra", "env"):
-        next_cur = cur.get(group)
-        if not isinstance(next_cur, dict):
-            next_cur = {}
-            cur[group] = next_cur
-        cur = next_cur
-
-    if "default.yaml" not in cur:
-        cs.store(group="hydra/env", name="default", node={}, provider="tinyexp")
-
-
-# Some Hydra installations expect hydra/env/default during composition, but do
-# not register a built-in config for it. Only backfill it when missing so older
-# or fuller Hydra setups keep their own env config untouched.
-_ensure_hydra_env_default()
 
 
 def _default_exp_name() -> str:
