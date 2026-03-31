@@ -88,7 +88,6 @@ These belong at the experiment level because they describe run intent rather tha
 Recommended methods on `TinyExp`:
 
 - `get_run_dir() -> str`
-- `ensure_run_dir() -> str`
 - `dump_config(path: str | None = None) -> str`
 
 These are good fits for `TinyExp` because they are experiment-scoped rather than belonging to a single feature config.
@@ -99,7 +98,6 @@ Avoid adding many feature-specific top-level methods such as:
 
 - `save_checkpoint(...)`
 - `load_checkpoint(...)`
-- `maybe_resume(...)`
 
 Those are better expressed through a focused config component.
 
@@ -174,7 +172,7 @@ The MNIST example is:
 
 Expected updates:
 
-- call `self.ensure_run_dir()`
+- call `self.get_run_dir()`
 - build the logger using `self.logger_cfg.build_logger(...)`
 - call `self.dump_config()`
 - branch on `self.mode`
@@ -240,7 +238,6 @@ Phase 1 needs lightweight but meaningful coverage.
 Add or expand tests for:
 
 - `get_run_dir()`
-- `ensure_run_dir()`
 - `dump_config()`
 
 These can live in:
@@ -291,7 +288,6 @@ The order below minimizes risk and keeps the design easy to validate.
    - `mode`
    - `resume_from`
    - `get_run_dir()`
-   - `ensure_run_dir()`
    - `dump_config()`
    - `CheckpointCfg`
 2. add checkpoint-focused tests

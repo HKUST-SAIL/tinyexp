@@ -54,9 +54,6 @@ Recommended Phase 1 methods on `TinyExp`:
 def get_run_dir(self) -> str:
     ...
 
-def ensure_run_dir(self) -> str:
-    ...
-
 def dump_config(self, path: str | None = None) -> str:
     ...
 ```
@@ -192,15 +189,12 @@ Run directory behavior should remain simple in Phase 1.
 ```python
 def get_run_dir(self) -> str:
     ...
-
-def ensure_run_dir(self) -> str:
-    ...
 ```
 
 ### Expected behavior
 
 - `get_run_dir()` returns `os.path.join(self.output_root, self.exp_name)`
-- `ensure_run_dir()` creates the directory and returns it
+- methods that write files should create parent directories when needed
 
 Phase 1 should not add timestamped run folders, version managers, or heavier run registry behavior.
 
@@ -211,7 +205,7 @@ Below is the intended style for examples after Phase 1.
 ### Logger setup
 
 ```python
-run_dir = self.ensure_run_dir()
+run_dir = self.get_run_dir()
 logger = self.logger_cfg.build_logger(
     save_dir=run_dir,
     distributed_rank=accelerator.rank,

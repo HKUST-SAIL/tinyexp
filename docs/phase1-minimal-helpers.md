@@ -76,7 +76,6 @@ More policy-driven settings should stay in examples unless they prove broadly re
 The following methods are the proposed Phase 1 surface area:
 
 - `get_run_dir() -> str`
-- `ensure_run_dir() -> str`
 - `dump_config(path: str | None = None) -> str`
 - `log_metrics(metrics: dict, *, step: int | None = None, epoch: int | None = None, filename: str = "metrics.jsonl") -> None`
 
@@ -125,9 +124,11 @@ management system.
 
 `get_run_dir()` should return the default run directory for the current experiment.
 
-`ensure_run_dir()` should create that directory if needed and return it.
+Directory creation should happen in the method that actually writes files, such as logger setup,
+config dumping, or checkpoint saving.
 
-These helpers should not introduce a large naming or versioning system in Phase 1.
+This keeps `TinyExp` smaller and avoids a separate side-effect helper whose behavior can stay explicit
+at the write boundary.
 
 ### Config dumping
 
