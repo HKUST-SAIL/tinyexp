@@ -60,7 +60,7 @@ def test_resnet_run_val_mode_uses_checkpoint(tmp_path: Path, monkeypatch) -> Non
     assert called["val_dataloader"] is None
 
 
-def test_resnet_train_saves_checkpoint(tmp_path: Path, monkeypatch) -> None:
+def test_resnet_train_saves_last_and_best_checkpoints(tmp_path: Path, monkeypatch) -> None:
     exp = ResNetExp(output_root=str(tmp_path), exp_name="resnet_train")
 
     class DummyAccelerator:
@@ -94,7 +94,7 @@ def test_resnet_train_saves_checkpoint(tmp_path: Path, monkeypatch) -> None:
 
     def fake_save_checkpoint(**kwargs):
         saved.append(kwargs)
-        if len(saved) >= 1:
+        if len(saved) >= 2:
             raise StopIteration
         return str(tmp_path / "resnet_train" / "last.ckpt")
 
@@ -113,6 +113,9 @@ def test_resnet_train_saves_checkpoint(tmp_path: Path, monkeypatch) -> None:
     assert saved[0]["name"] == exp.checkpoint_cfg.last_ckpt_name
     assert saved[0]["epoch"] == 0
     assert saved[0]["global_step"] == 1
+    assert saved[0]["best_metric"] is None
+    assert saved[1]["name"] == exp.checkpoint_cfg.best_ckpt_name
+    assert saved[1]["best_metric"] == 0.5
 
 
 def test_resnet_train_resume_loads_checkpoint_state(tmp_path: Path, monkeypatch) -> None:
@@ -150,7 +153,7 @@ def test_resnet_train_resume_loads_checkpoint_state(tmp_path: Path, monkeypatch)
 
     def fake_load_checkpoint(path, **kwargs):
         load_calls.append({"path": path, **kwargs})
-        return {"epoch": 4, "global_step": 17}
+        return {"epoch": 4, "global_step": 17, "best_metric": 0.7}
 
     def fake_save_checkpoint(**kwargs):
         saved.append(kwargs)
@@ -172,3 +175,4 @@ def test_resnet_train_resume_loads_checkpoint_state(tmp_path: Path, monkeypatch)
     assert load_calls[0]["map_location"] == "cpu"
     assert saved[0]["epoch"] == 5
     assert saved[0]["global_step"] == 18
+    assert saved[0]["best_metric"] == 0.7

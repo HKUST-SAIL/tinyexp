@@ -391,6 +391,7 @@ class ResNetExp(TinyExp, RedisCfgMixin):
         lr_scheduler = self.lr_scheduler_cfg.build_lr_scheduler(optimizer)
         start_epoch = 0
         global_step = 0
+        best_metric = None
 
         if self.resume_from:
             checkpoint = self.checkpoint_cfg.load_checkpoint(
@@ -402,6 +403,7 @@ class ResNetExp(TinyExp, RedisCfgMixin):
             )
             start_epoch = int(checkpoint.get("epoch", -1)) + 1
             global_step = int(checkpoint.get("global_step", 0))
+            best_metric = checkpoint.get("best_metric")
 
         if self.wandb_cfg.enable_wandb and accelerator.rank == 0:
             self.wandb_cfg.build_wandb(
@@ -458,10 +460,24 @@ class ResNetExp(TinyExp, RedisCfgMixin):
                     scheduler=lr_scheduler,
                     epoch=global_epoch,
                     global_step=global_step,
-                    best_metric=eval_metric,
+                    best_metric=best_metric,
                     exp_name=self.exp_name,
                     exp_class=self.exp_class,
                 )
+                if best_metric is None or eval_metric > best_metric:
+                    best_metric = eval_metric
+                    self.checkpoint_cfg.save_checkpoint(
+                        run_dir=run_dir,
+                        name=self.checkpoint_cfg.best_ckpt_name,
+                        model=accelerator.unwrap_model(module),
+                        optimizer=optimizer,
+                        scheduler=lr_scheduler,
+                        epoch=global_epoch,
+                        global_step=global_step,
+                        best_metric=best_metric,
+                        exp_name=self.exp_name,
+                        exp_class=self.exp_class,
+                    )
 
 
 if __name__ == "__main__":
