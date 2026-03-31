@@ -95,7 +95,6 @@ TinyExp should provide thin, reusable helpers for common experiment chores, such
 
 - output directory setup
 - config dumping
-- lightweight metric logging
 - checkpoint save/load helpers exposed through focused config components
 - launcher compatibility
 

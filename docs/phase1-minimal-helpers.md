@@ -77,7 +77,6 @@ The following methods are the proposed Phase 1 surface area:
 
 - `get_run_dir() -> str`
 - `dump_config(path: str | None = None) -> str`
-- `log_metrics(metrics: dict, *, step: int | None = None, epoch: int | None = None, filename: str = "metrics.jsonl") -> None`
 
 These are helpers, not control-flow abstractions.
 
@@ -110,7 +109,6 @@ Phase 1 should establish simple, stable artifact conventions.
 The recommended default run layout is:
 
 - `output/<exp_name>/config.yaml`
-- `output/<exp_name>/metrics.jsonl`
 - `output/<exp_name>/last.ckpt`
 - `output/<exp_name>/best.ckpt`
 - `output/<exp_name>/log.txt`
@@ -139,19 +137,6 @@ Expected behavior:
 - default path is `<run_dir>/config.yaml`
 - output reflects current config state after overrides
 - writing should happen only from the main process when running distributed
-
-### Metric logging
-
-`log_metrics()` should append structured records to a local JSONL file.
-
-Expected behavior:
-
-- default file is `<run_dir>/metrics.jsonl`
-- each record should include the provided metrics
-- helper may also attach lightweight metadata such as timestamp, step, and epoch
-- writing should happen only from the main process
-
-This gives TinyExp a useful local record format without introducing a full tracker framework.
 
 ### Checkpoint helpers
 
@@ -234,7 +219,6 @@ Recommended test coverage:
 
 - unit tests for run directory creation
 - unit tests for config dumping
-- unit tests for metric logging
 - unit tests for checkpoint save/load
 - a small integration test for `mode=val`
 
@@ -246,11 +230,10 @@ Recommended implementation order:
 
 1. add run directory helpers
 2. add config dumping
-3. add metric logging
-4. add `CheckpointCfg` with save/load
-5. migrate `mnist_exp.py`
-6. add `mode=val`
-7. add tests
+3. add `CheckpointCfg` with save/load
+4. migrate `mnist_exp.py`
+5. add `mode=val`
+6. add tests
 
 This order keeps each change small and easy to validate.
 
@@ -260,7 +243,7 @@ Phase 1 is successful if TinyExp can do all of the following while still feeling
 
 - keep experiments centered around one explicit entrypoint
 - preserve user-owned training loops
-- save config and local metrics in a standard way
+- save config in a standard way
 - save and resume checkpoints with minimal boilerplate
 - support a simple validation flow from a checkpoint
 
