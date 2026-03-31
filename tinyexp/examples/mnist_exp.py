@@ -14,11 +14,6 @@ from tinyexp import TinyExp, store_and_run_exp
 from tinyexp.exceptions import UnknownAcceleratorTypeError
 
 
-class ResumeFromRequiredError(ValueError):
-    def __init__(self) -> None:
-        super().__init__("resume_from")
-
-
 class Net(nn.Module):
     def __init__(self) -> None:
         super().__init__()
@@ -157,7 +152,7 @@ class Exp(TinyExp):
             self._train(accelerator=accelerator, logger=logger, cfg_dict=cfg_dict, run_dir=run_dir)
         elif self.mode == "val":
             if not self.resume_from:
-                raise ResumeFromRequiredError
+                raise ValueError("resume_from is required when mode='val'")  # noqa: TRY003
             self._evaluate(accelerator=accelerator, logger=logger, module_or_module_path=self.resume_from)
         else:
             raise NotImplementedError(f"Mode {self.mode} is not implemented")

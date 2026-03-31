@@ -327,9 +327,8 @@ class ResNetExp(TinyExp, RedisCfgMixin):
 
     def run(self) -> None:
         accelerator = self.accelerator_cfg.build_accelerator()
-        logger = self.logger_cfg.build_logger(
-            save_dir=os.path.join(self.output_root, self.exp_name), distributed_rank=accelerator.rank
-        )
+        run_dir = self.get_run_dir()
+        logger = self.logger_cfg.build_logger(save_dir=run_dir, distributed_rank=accelerator.rank)
         cfg_dict = OmegaConf.to_container(OmegaConf.structured(self), resolve=True)
         del cfg_dict["hydra"]
         cfg_msg = OmegaConf.to_yaml(cfg_dict).strip().replace("\n", "\n    ")
@@ -337,6 +336,10 @@ class ResNetExp(TinyExp, RedisCfgMixin):
 
         if self.mode == "train":
             self._train(accelerator=accelerator, logger=logger, cfg_dict=cfg_dict)
+        elif self.mode == "val":
+            if not self.resume_from:
+                raise ValueError("resume_from is required when mode='val'")  # noqa: TRY003
+            self._evaluate(accelerator=accelerator, logger=logger, module_or_module_path=self.resume_from)
         else:
             raise NotImplementedError(f"Mode {self.mode} is not implemented")
 
