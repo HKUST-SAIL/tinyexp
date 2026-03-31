@@ -1,5 +1,4 @@
 import datetime
-import os
 from dataclasses import dataclass, field
 
 import torch
@@ -142,24 +141,30 @@ class Exp(TinyExp):
     # ------------------------------ bellowing is the execution part --------------------- #
     def run(self) -> None:
         accelerator = self.accelerator_cfg.build_accelerator()
-        logger = self.logger_cfg.build_logger(
-            save_dir=os.path.join(self.output_root, self.exp_name),
-            distributed_rank=accelerator.rank,
-        )
+        run_dir = self.get_run_dir()
+        logger = self.logger_cfg.build_logger(save_dir=run_dir, distributed_rank=accelerator.rank)
         cfg_dict = OmegaConf.to_container(OmegaConf.structured(self), resolve=True)
         del cfg_dict["hydra"]
         cfg_msg = OmegaConf.to_yaml(cfg_dict).strip().replace("\n", "\n    ")
         logger.info(f"-------- Configurations --------\n    {cfg_msg}")
 
         if self.mode == "train":
-            self._train(accelerator=accelerator, logger=logger, cfg_dict=cfg_dict)
+            self._train(accelerator=accelerator, logger=logger, cfg_dict=cfg_dict, run_dir=run_dir)
+        elif self.mode == "val":
+            if not self.resume_from:
+                raise ValueError("resume_from is required when mode='val'")  # noqa: TRY003
+            self._evaluate(accelerator=accelerator, logger=logger, module_or_module_path=self.resume_from)
         else:
             raise NotImplementedError(f"Mode {self.mode} is not implemented")
 
-    def _evaluate(self, accelerator, logger, module_or_module_path, val_dataloader=None) -> None:
+    def _evaluate(self, accelerator, logger, module_or_module_path, val_dataloader=None) -> float:
         if isinstance(module_or_module_path, str):
             module = Net()
-            module.load_state_dict(torch.load(module_or_module_path))
+            self.checkpoint_cfg.load_checkpoint(
+                module_or_module_path,
+                model=module,
+                map_location=accelerator.device,
+            )
             module = accelerator.prepare(module)
         else:
             module = module_or_module_path
@@ -187,7 +192,9 @@ class Exp(TinyExp):
         if self.wandb_cfg.enable_wandb and accelerator.is_main_process:
             wandb.log({"val_metric": eval_metric})
 
-    def _train(self, accelerator, logger, cfg_dict) -> None:
+        return eval_metric
+
+    def _train(self, accelerator, logger, cfg_dict, run_dir: str) -> None:
         train_dataloader = self.dataloader_cfg.build_train_dataloader(accelerator)
         val_dataloader = self.dataloader_cfg.build_val_dataloader(accelerator)
         ori_module = self.module_cfg.build_module()
@@ -195,6 +202,20 @@ class Exp(TinyExp):
         lr_scheduler = self.lr_scheduler_cfg.build_lr_scheduler(ori_optimizer)
 
         module, optimizer = accelerator.prepare(ori_module, ori_optimizer)
+        start_epoch = 0
+        global_step = 0
+        best_metric = None
+        if self.resume_from:
+            checkpoint = self.checkpoint_cfg.load_checkpoint(
+                self.resume_from,
+                model=accelerator.unwrap_model(module),
+                optimizer=optimizer,
+                scheduler=lr_scheduler,
+                map_location=accelerator.device,
+            )
+            start_epoch = int(checkpoint.get("epoch", -1)) + 1
+            global_step = int(checkpoint.get("global_step", 0))
+            best_metric = checkpoint.get("best_metric")
 
         train_iter = iter(train_dataloader)
         if self.wandb_cfg.enable_wandb and accelerator.rank == 0:
@@ -204,7 +225,7 @@ class Exp(TinyExp):
                 config=cfg_dict,
             )
 
-        for epoch in range(3):
+        for epoch in range(start_epoch, 3):
             module.train()
 
             for step in range(len(train_dataloader)):
@@ -221,6 +242,7 @@ class Exp(TinyExp):
                 optimizer.zero_grad()
                 accelerator.backward(loss)
                 optimizer.step()
+                global_step += 1
                 if (step + 1) % 20 == 0:
                     logger.info(f"epoch {epoch} loss: {loss.item(): .4f} lr: {optimizer.param_groups[0]['lr']: .4f}")
                     if self.wandb_cfg.enable_wandb and accelerator.rank == 0:
@@ -231,9 +253,36 @@ class Exp(TinyExp):
                                 "lr": optimizer.param_groups[0]["lr"],
                             }
                         )
-            self._evaluate(
+            eval_metric = self._evaluate(
                 accelerator=accelerator, logger=logger, module_or_module_path=module, val_dataloader=val_dataloader
             )
+            if accelerator.is_main_process:
+                self.checkpoint_cfg.save_checkpoint(
+                    run_dir=run_dir,
+                    name=self.checkpoint_cfg.last_ckpt_name,
+                    model=accelerator.unwrap_model(module),
+                    optimizer=optimizer,
+                    scheduler=lr_scheduler,
+                    epoch=epoch,
+                    global_step=global_step,
+                    best_metric=best_metric,
+                    exp_name=self.exp_name,
+                    exp_class=self.exp_class,
+                )
+                if best_metric is None or eval_metric > best_metric:
+                    best_metric = eval_metric
+                    self.checkpoint_cfg.save_checkpoint(
+                        run_dir=run_dir,
+                        name=self.checkpoint_cfg.best_ckpt_name,
+                        model=accelerator.unwrap_model(module),
+                        optimizer=optimizer,
+                        scheduler=lr_scheduler,
+                        epoch=epoch,
+                        global_step=global_step,
+                        best_metric=best_metric,
+                        exp_name=self.exp_name,
+                        exp_class=self.exp_class,
+                    )
 
             lr_scheduler.step()
 
