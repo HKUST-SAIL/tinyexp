@@ -119,6 +119,31 @@ If yes, it may belong in TinyExp.
 If it starts to own the user workflow, hide core control flow, or push the project toward a heavy trainer-style
 architecture, it probably does not belong in TinyExp.
 
+This rule should be applied strictly.
+
+TinyExp should not add a new helper, artifact, field, or abstraction just because it sounds generally useful or is a
+common pattern in other frameworks. A framework-level addition should only be kept when its value is clear in the
+current project, not as a placeholder for possible future needs.
+
+In practice, that means asking:
+
+- is there real repeated boilerplate across examples today?
+- does this introduce a genuinely useful capability, or only another way to express something already visible?
+- if this were removed, would users lose something important, or only a convenience wrapper?
+- is the benefit strong enough to justify one more method, field, file, or documented convention?
+
+If these questions do not have a strong answer, the feature should usually stay out of TinyExp.
+
+Examples of things that often fail this test are:
+
+- thin one-line wrapper helpers added only for style or lint appeasement
+- duplicate artifacts that do not add clear value over the experiment definition and logs
+- speculative schema fields added only for future-proofing before any real compatibility need exists
+
+For example, if the experiment class already defines the configuration and the runtime logger already records the
+effective config, that does not automatically justify a separate `dump_config()` helper or a default `config.yaml`
+artifact. Those should exist only if they solve a concrete current problem that the existing structure does not.
+
 ## Recommended Boundary
 
 ### TinyExp should own
@@ -149,6 +174,8 @@ When extending TinyExp, prefer:
 - recipe-style examples over framework-owned trainers
 - local clarity over generic indirection
 - composable building blocks over lifecycle machinery
+- removing weak abstractions rather than keeping them "just in case"
+- one clear representation of a concept over several overlapping ones
 
 In short:
 
