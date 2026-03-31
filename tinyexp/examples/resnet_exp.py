@@ -335,7 +335,7 @@ class ResNetExp(TinyExp, RedisCfgMixin):
         logger.info(f"-------- Configurations --------\n    {cfg_msg}")
 
         if self.mode == "train":
-            self._train(accelerator=accelerator, logger=logger, cfg_dict=cfg_dict)
+            self._train(accelerator=accelerator, logger=logger, cfg_dict=cfg_dict, run_dir=run_dir)
         elif self.mode == "val":
             if not self.resume_from:
                 raise ValueError("resume_from is required when mode='val'")  # noqa: TRY003
@@ -380,13 +380,28 @@ class ResNetExp(TinyExp, RedisCfgMixin):
         if self.wandb_cfg.enable_wandb and accelerator.is_main_process:
             wandb.log({"val_metric": eval_metric})
 
-    def _train(self, accelerator, logger, cfg_dict) -> None:
+        return eval_metric
+
+    def _train(self, accelerator, logger, cfg_dict, run_dir: str) -> None:
         train_dataloader = self.dataloader_cfg.build_train_dataloader(accelerator, self.redis_cache_cfg)
         val_dataloader = self.dataloader_cfg.build_val_dataloader(accelerator)
         ori_module = self.module_cfg.build_module()
         ori_optimizer = self.optimizer_cfg.build_optimizer(ori_module, train_dataloader, accelerator)
         module, optimizer = accelerator.prepare(ori_module, ori_optimizer)
         lr_scheduler = self.lr_scheduler_cfg.build_lr_scheduler(optimizer)
+        start_epoch = 0
+        global_step = 0
+
+        if self.resume_from:
+            checkpoint = self.checkpoint_cfg.load_checkpoint(
+                self.resume_from,
+                model=accelerator.unwrap_model(module),
+                optimizer=optimizer,
+                scheduler=lr_scheduler,
+                map_location=accelerator.device,
+            )
+            start_epoch = int(checkpoint.get("epoch", -1)) + 1
+            global_step = int(checkpoint.get("global_step", 0))
 
         if self.wandb_cfg.enable_wandb and accelerator.rank == 0:
             self.wandb_cfg.build_wandb(
@@ -394,9 +409,8 @@ class ResNetExp(TinyExp, RedisCfgMixin):
             )
 
         train_iter = iter(train_dataloader)
-        global_step = 0
 
-        for global_epoch in range(90):
+        for global_epoch in range(start_epoch, 90):
             module.train()
 
             epoch_start_time = time.time()
@@ -432,9 +446,22 @@ class ResNetExp(TinyExp, RedisCfgMixin):
                     )
 
             lr_scheduler.step()
-            self._evaluate(
+            eval_metric = self._evaluate(
                 accelerator=accelerator, logger=logger, module_or_module_path=module, val_dataloader=val_dataloader
             )
+            if accelerator.is_main_process:
+                self.checkpoint_cfg.save_checkpoint(
+                    run_dir=run_dir,
+                    name=self.checkpoint_cfg.last_ckpt_name,
+                    model=accelerator.unwrap_model(module),
+                    optimizer=optimizer,
+                    scheduler=lr_scheduler,
+                    epoch=global_epoch,
+                    global_step=global_step,
+                    best_metric=eval_metric,
+                    exp_name=self.exp_name,
+                    exp_class=self.exp_class,
+                )
 
 
 if __name__ == "__main__":
