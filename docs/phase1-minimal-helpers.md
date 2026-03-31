@@ -76,7 +76,6 @@ More policy-driven settings should stay in examples unless they prove broadly re
 The following methods are the proposed Phase 1 surface area:
 
 - `get_run_dir() -> str`
-- `dump_config(path: str | None = None) -> str`
 
 These are helpers, not control-flow abstractions.
 
@@ -108,7 +107,6 @@ Phase 1 should establish simple, stable artifact conventions.
 
 The recommended default run layout is:
 
-- `output/<exp_name>/config.yaml`
 - `output/<exp_name>/last.ckpt`
 - `output/<exp_name>/best.ckpt`
 - `output/<exp_name>/log.txt`
@@ -123,20 +121,10 @@ management system.
 `get_run_dir()` should return the default run directory for the current experiment.
 
 Directory creation should happen in the method that actually writes files, such as logger setup,
-config dumping, or checkpoint saving.
+or checkpoint saving.
 
 This keeps `TinyExp` smaller and avoids a separate side-effect helper whose behavior can stay explicit
 at the write boundary.
-
-### Config dumping
-
-`dump_config()` should write the effective experiment configuration to YAML.
-
-Expected behavior:
-
-- default path is `<run_dir>/config.yaml`
-- output reflects current config state after overrides
-- writing should happen only from the main process when running distributed
 
 ### Checkpoint helpers
 
@@ -218,7 +206,6 @@ Phase 1 should be backed by lightweight tests.
 Recommended test coverage:
 
 - unit tests for run directory creation
-- unit tests for config dumping
 - unit tests for checkpoint save/load
 - a small integration test for `mode=val`
 
@@ -229,11 +216,10 @@ The tests should stay CPU-first and deterministic.
 Recommended implementation order:
 
 1. add run directory helpers
-2. add config dumping
-3. add `CheckpointCfg` with save/load
-4. migrate `mnist_exp.py`
-5. add `mode=val`
-6. add tests
+2. add `CheckpointCfg` with save/load
+3. migrate `mnist_exp.py`
+4. add `mode=val`
+5. add tests
 
 This order keeps each change small and easy to validate.
 

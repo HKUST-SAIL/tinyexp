@@ -150,7 +150,6 @@ class Exp(TinyExp):
         logger = self.logger_cfg.build_logger(save_dir=run_dir, distributed_rank=accelerator.rank)
         cfg_dict = OmegaConf.to_container(OmegaConf.structured(self), resolve=True)
         del cfg_dict["hydra"]
-        self.dump_config()
         cfg_msg = OmegaConf.to_yaml(cfg_dict).strip().replace("\n", "\n    ")
         logger.info(f"-------- Configurations --------\n    {cfg_msg}")
 

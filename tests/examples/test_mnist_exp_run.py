@@ -21,7 +21,7 @@ def test_mnist_run_val_mode_requires_resume_from(tmp_path: Path, monkeypatch) ->
         exp.run()
 
 
-def test_mnist_run_val_mode_uses_checkpoint_and_dumps_config(tmp_path: Path, monkeypatch) -> None:
+def test_mnist_run_val_mode_uses_checkpoint(tmp_path: Path, monkeypatch) -> None:
     exp_for_ckpt = Exp(output_root=str(tmp_path), exp_name="mnist_val")
     checkpoint_path = exp_for_ckpt.checkpoint_cfg.save_checkpoint(
         run_dir=str(tmp_path / "mnist_val"),
@@ -55,4 +55,3 @@ def test_mnist_run_val_mode_uses_checkpoint_and_dumps_config(tmp_path: Path, mon
     assert called["accelerator"] is dummy_accelerator
     assert called["logger"] is dummy_logger
     assert called["module_or_module_path"] == checkpoint_path
-    assert (tmp_path / "mnist_val" / "config.yaml").is_file()

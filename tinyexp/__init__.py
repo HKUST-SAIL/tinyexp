@@ -12,7 +12,7 @@ from typing import Any, Optional
 import torch
 from hydra.conf import HydraConf, RunDir
 from hydra.core.config_store import ConfigStore
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 from omegaconf.listconfig import ListConfig
 
 from .exceptions import UnknownConfigurationKeyError, UnsupportedCheckpointFormatError
@@ -205,17 +205,6 @@ class TinyExp:
 
     def get_run_dir(self) -> str:
         return os.path.join(self.output_root, self.exp_name)
-
-    def dump_config(self, path: Optional[str] = None) -> str:
-        run_dir = self.get_run_dir()
-        dump_path = Path(path) if path is not None else Path(run_dir) / "config.yaml"
-
-        if _is_main_process():
-            dump_path.parent.mkdir(parents=True, exist_ok=True)
-            cfg_dict = OmegaConf.to_container(OmegaConf.structured(self), resolve=True)
-            dump_path.write_text(OmegaConf.to_yaml(cfg_dict), encoding="utf-8")
-
-        return str(dump_path)
 
     def set_cfg(self, cfg_hydra, cfg_object=None):
         if cfg_object is None:

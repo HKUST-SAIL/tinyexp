@@ -53,12 +53,9 @@ Recommended Phase 1 methods on `TinyExp`:
 ```python
 def get_run_dir(self) -> str:
     ...
-
-def dump_config(self, path: str | None = None) -> str:
-    ...
 ```
 
-These belong on `TinyExp` because they are experiment-scoped, not feature-scoped.
+This belongs on `TinyExp` because it is experiment-scoped, not feature-scoped.
 
 ## `CheckpointCfg` Draft
 
@@ -162,24 +159,6 @@ Notes:
 - `meta` should stay lightweight
 - `extra_state` can extend the structure without forcing premature abstraction
 
-## Config Dump Draft
-
-Configuration dumping should remain an experiment-level helper.
-
-### Draft method
-
-```python
-def dump_config(self, path: str | None = None) -> str:
-    ...
-```
-
-### Expected behavior
-
-- default path is `<run_dir>/config.yaml`
-- output reflects current configuration after Hydra overrides
-- dump should be safe to call from examples
-- distributed runs should avoid duplicate writes
-
 ## Run Directory Draft
 
 Run directory behavior should remain simple in Phase 1.
@@ -210,7 +189,6 @@ logger = self.logger_cfg.build_logger(
     save_dir=run_dir,
     distributed_rank=accelerator.rank,
 )
-self.dump_config()
 ```
 
 ### Explicit W&B usage
@@ -280,7 +258,6 @@ This is the intended balance:
 The following questions should stay open until the first implementation slice proves itself:
 
 - whether metrics deserve their own `MetricCfg`
-- whether config dumping should later move into a dedicated artifact cfg
 - whether `CheckpointCfg` should move into its own module
 - whether shared recipe base classes are worth introducing
 

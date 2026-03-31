@@ -94,7 +94,6 @@ Users should be able to:
 TinyExp should provide thin, reusable helpers for common experiment chores, such as:
 
 - output directory setup
-- config dumping
 - checkpoint save/load helpers exposed through focused config components
 - launcher compatibility
 

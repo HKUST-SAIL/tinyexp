@@ -21,7 +21,6 @@ one pass.
 The first implementation slice should focus on:
 
 - a stable run directory helper
-- explicit config dumping
 - a new `CheckpointCfg`
 - `mode=val` support through explicit checkpoint loading
 - a migration of the MNIST example to validate the design
@@ -88,9 +87,8 @@ These belong at the experiment level because they describe run intent rather tha
 Recommended methods on `TinyExp`:
 
 - `get_run_dir() -> str`
-- `dump_config(path: str | None = None) -> str`
 
-These are good fits for `TinyExp` because they are experiment-scoped rather than belonging to a single feature config.
+This is a good fit for `TinyExp` because it is experiment-scoped rather than belonging to a single feature config.
 
 ### What should not be added here
 
@@ -174,7 +172,6 @@ Expected updates:
 
 - call `self.get_run_dir()`
 - build the logger using `self.logger_cfg.build_logger(...)`
-- call `self.dump_config()`
 - branch on `self.mode`
 
 #### training should remain explicit
@@ -238,7 +235,6 @@ Phase 1 needs lightweight but meaningful coverage.
 Add or expand tests for:
 
 - `get_run_dir()`
-- `dump_config()`
 
 These can live in:
 
@@ -288,7 +284,6 @@ The order below minimizes risk and keeps the design easy to validate.
    - `mode`
    - `resume_from`
    - `get_run_dir()`
-   - `dump_config()`
    - `CheckpointCfg`
 2. add checkpoint-focused tests
 3. migrate `tinyexp/examples/mnist_exp.py`

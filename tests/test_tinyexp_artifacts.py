@@ -16,19 +16,6 @@ def test_get_run_dir(tmp_path: Path) -> None:
     assert exp.get_run_dir() == str(expected)
 
 
-def test_dump_config_writes_yaml(tmp_path: Path, monkeypatch) -> None:
-    monkeypatch.setenv("RANK", "0")
-    exp = TinyExp(output_root=str(tmp_path), exp_name="demo_exp", mode="val", resume_from="checkpoint.ckpt")
-
-    dumped = Path(exp.dump_config())
-
-    assert dumped == tmp_path / "demo_exp" / "config.yaml"
-    content = dumped.read_text(encoding="utf-8")
-    assert "exp_name: demo_exp" in content
-    assert "mode: val" in content
-    assert "resume_from: checkpoint.ckpt" in content
-
-
 def test_logger_cfg_creates_run_dir(tmp_path: Path) -> None:
     exp = TinyExp(output_root=str(tmp_path), exp_name="demo_exp")
     run_dir = Path(exp.get_run_dir())
