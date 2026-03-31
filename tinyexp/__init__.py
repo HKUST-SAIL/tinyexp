@@ -44,9 +44,24 @@ class _HydraConfig(HydraConf):
     run: RunDir = field(default_factory=lambda: RunDir("./output"))
 
 
-# Hydra 1.3.2 in this environment expects hydra/env/default during composition,
-# but does not register a built-in config for it.
-ConfigStore.instance().store(group="hydra/env", name="default", node={}, provider="tinyexp")
+def _ensure_hydra_env_default() -> None:
+    cs = ConfigStore.instance()
+    cur = cs.repo
+    for group in ("hydra", "env"):
+        next_cur = cur.get(group)
+        if not isinstance(next_cur, dict):
+            next_cur = {}
+            cur[group] = next_cur
+        cur = next_cur
+
+    if "default.yaml" not in cur:
+        cs.store(group="hydra/env", name="default", node={}, provider="tinyexp")
+
+
+# Some Hydra installations expect hydra/env/default during composition, but do
+# not register a built-in config for it. Only backfill it when missing so older
+# or fuller Hydra setups keep their own env config untouched.
+_ensure_hydra_env_default()
 
 
 def _default_exp_name() -> str:
