@@ -105,11 +105,6 @@ class RedisClusterManager:
     def __exit__(self, exc_type, exc, tb) -> None:  # type: ignore[no-untyped-def]
         self.stop_redis_cluster()
 
-    def __ray_terminate__(self) -> None:
-        """When this class is a Ray actor, Ray invokes this before destroying the actor."""
-        with contextlib.suppress(Exception):
-            self.stop_redis_cluster()
-
     def _wait_until_healthy(self, client: redis.Redis, *, port: int) -> None:
         deadline = time.monotonic() + self.startup_timeout_s
         last_error: Exception | None = None

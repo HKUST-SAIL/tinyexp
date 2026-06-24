@@ -16,22 +16,11 @@ from ..exceptions import InsufficientCPUError, InvalidWorkerCountError, UnknownE
 
 def _launch_with_ray(cfg: DictConfig, exp_class: type[Any]) -> None:
     ray.init()
-    redis_actor = None
     pg = None
     worker_group = []
 
     try:
         remote_exp = ray.remote(exp_class)
-
-        # -------------------- allocate resources for redis cache ----------------- #
-        cpu_need_list: list[int] = []
-        if cfg.mode == "train" and hasattr(cfg, "redis_cache_cfg") and cfg.redis_cache_cfg.redis_cache_enabled:
-            # hold actor list to avoid garbage collection, otherwise the actors will be garbage collected
-            cpu_need_list.append(cfg.redis_cache_cfg.redis_cluster_manager_cpus)
-            redis_actor = remote_exp.options(num_cpus=cfg.redis_cache_cfg.redis_cluster_manager_cpus).remote()
-
-            ray.get(redis_actor.set_cfg.remote(cfg))
-            ray.get(redis_actor.proxy_build_redis_cache.remote())
 
         # -------------------- check cpu count for run ----------------- #
         if cfg.mode not in {"train", "val", "help"}:
@@ -43,8 +32,8 @@ def _launch_with_ray(cfg: DictConfig, exp_class: type[Any]) -> None:
         needed_cpu = cfg.num_worker * needed_num_cpus_per_worker
         total_cpu = os.cpu_count() or 0
 
-        if needed_cpu + sum(cpu_need_list) > total_cpu:
-            raise InsufficientCPUError(total_cpu=total_cpu, needed_cpu=needed_cpu + sum(cpu_need_list))
+        if needed_cpu > total_cpu:
+            raise InsufficientCPUError(total_cpu=total_cpu, needed_cpu=needed_cpu)
 
         # -------------------- allocate resources for run ----------------- #
 
@@ -63,14 +52,6 @@ def _launch_with_ray(cfg: DictConfig, exp_class: type[Any]) -> None:
         ray.get([worker.set_cfg.remote(cfg) for worker in worker_group])
         ray.get([worker.run.remote() for worker in worker_group])
     finally:
-        for worker in worker_group:
-            with suppress(Exception):
-                ray.get(worker.__ray_terminate__.remote(), timeout=5)
-
-        if redis_actor is not None:
-            with suppress(Exception):
-                ray.get(redis_actor.__ray_terminate__.remote(), timeout=5)
-
         if pg is not None:
             with suppress(Exception):
                 ray.util.remove_placement_group(pg)
@@ -115,6 +96,13 @@ def _build_worker_env_vars(num_worker, rank, local_rank, master_addr, master_por
     # Use a stable loopback interface by default to avoid Gloo hostname resolution warnings.
     default_ifname = "lo0" if platform.system() == "Darwin" else "lo"
     env_vars["GLOO_SOCKET_IFNAME"] = os.getenv("GLOO_SOCKET_IFNAME", default_ifname)
+    for key in (
+        "TINYEXP_REDIS_CLUSTER_HOST",
+        "TINYEXP_REDIS_CLUSTER_PORTS",
+    ):
+        value = os.getenv(key)
+        if value is not None:
+            env_vars[key] = value
     return env_vars
 
 

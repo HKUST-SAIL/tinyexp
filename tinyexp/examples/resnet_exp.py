@@ -102,52 +102,73 @@ class LocalCachedImageFolder:
 
 
 class RedisCachedImageFolder:
-    def __init__(self, redis_ports: list, root: str, transform=None, target_transform=None):
+    def __init__(
+        self,
+        redis_host: str,
+        redis_ports: list[int],
+        root: str,
+        transform=None,
+        target_transform=None,
+    ):
         self.root = root
         self.transform = transform
         self.target_transform = target_transform
         self.dataset = datasets.ImageFolder(root)
-
-        # Simplified redis connection
-        self.redis_ports = redis_ports
         self.redis_clients = []
-        self.num_shards = len(redis_ports)
 
-        self._init_redis_connection()
+        self._init_redis_connection(redis_host, redis_ports)
         self.cache_misses = 0
         self.cache_hits = 0
         self.dataset_prefix = os.path.basename(root)[0]
 
-    def _init_redis_connection(self):
+    def _init_redis_connection(self, redis_host: str, redis_ports: list[int]):
         try:
+            is_standalone = redis_host == "127.0.0.1"
+            if is_standalone:
+                self.redis_clients = [
+                    redis.Redis(
+                        host=redis_host,
+                        port=int(redis_port),
+                        decode_responses=False,
+                        socket_connect_timeout=5,
+                        socket_timeout=5,
+                    )
+                    for redis_port in redis_ports
+                ]
+            else:
+                self.redis_clients = [
+                    redis.RedisCluster(
+                        host=redis_host,
+                        port=int(redis_ports[0]),
+                        decode_responses=False,
+                        socket_connect_timeout=5,
+                        socket_timeout=5,
+                    )
+                ]
             for redis_client in self.redis_clients:
-                redis_client.close()
-
-            # Simple Redis connection
-            for port in self.redis_ports:
-                redis_client = redis.StrictRedis(
-                    host="localhost", port=port, decode_responses=False, socket_connect_timeout=5, socket_timeout=5
-                )
                 redis_client.ping()
-                self.redis_clients.append(redis_client)
-
         except Exception as e:
             print(f"Redis connection failed: {e}")
             self.redis_clients = []
 
-    def _safe_redis_get(self, key):
+    def _redis_client_for_key(self, key):
         if not self.redis_clients:
             return None
-        redis_client = self.redis_clients[key % self.num_shards]
+        return self.redis_clients[int(key) % len(self.redis_clients)]
+
+    def _safe_redis_get(self, key):
+        redis_client = self._redis_client_for_key(key)
+        if redis_client is None:
+            return None
         try:
             return redis_client.get(key)
         except redis.exceptions.RedisError:
             return None
 
     def _safe_redis_set(self, key, value):
-        if not self.redis_clients:
+        redis_client = self._redis_client_for_key(key)
+        if redis_client is None:
             return False
-        redis_client = self.redis_clients[key % self.num_shards]
         try:
             return redis_client.set(key, value)
         except redis.exceptions.RedisError:
@@ -196,6 +217,7 @@ class RedisCachedImageFolder:
         for redis_client in self.redis_clients:
             with suppress(Exception):
                 redis_client.close()
+        self.redis_clients = []
 
 
 @dataclass(repr=False)
@@ -287,7 +309,8 @@ class ResNetExp(TinyExp, RedisCfgMixin):
             transform = transform_template_imagenet(is_train=True)
             if redis_cache_cfg.redis_cache_enabled:
                 ds_train = RedisCachedImageFolder(
-                    redis_ports=redis_cache_cfg.redis_cache_shard_ports,
+                    redis_host=redis_cache_cfg.redis_cluster_host,
+                    redis_ports=list(redis_cache_cfg.redis_cluster_ports),
                     root=os.path.join(self.data_root, "train"),
                     transform=transform,
                 )

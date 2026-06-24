@@ -7,7 +7,47 @@ import pytest
 import torch
 import torch.nn as nn
 
-from tinyexp.examples.resnet_exp import ResNetExp
+from tinyexp.examples.resnet_exp import RedisCachedImageFolder, ResNetExp
+
+
+def test_redis_cached_image_folder_uses_standalone_clients_for_localhost(tmp_path: Path, monkeypatch) -> None:
+    train_root = tmp_path / "train" / "class0"
+    train_root.mkdir(parents=True)
+    (train_root / "sample.jpg").write_bytes(b"not-an-image")
+    connections: list[tuple[str, int]] = []
+
+    class FakeRedis:
+        def __init__(self, *, host, port, **kwargs):
+            connections.append((host, port))
+
+        def ping(self):
+            return True
+
+    monkeypatch.setattr("tinyexp.examples.resnet_exp.redis.Redis", FakeRedis)
+
+    RedisCachedImageFolder(redis_host="127.0.0.1", redis_ports=[7000, 7001], root=str(tmp_path / "train"))
+
+    assert connections == [("127.0.0.1", 7000), ("127.0.0.1", 7001)]
+
+
+def test_redis_cached_image_folder_uses_cluster_client_for_non_localhost(tmp_path: Path, monkeypatch) -> None:
+    train_root = tmp_path / "train" / "class0"
+    train_root.mkdir(parents=True)
+    (train_root / "sample.jpg").write_bytes(b"not-an-image")
+    connections: list[tuple[str, int]] = []
+
+    class FakeRedisCluster:
+        def __init__(self, *, host, port, **kwargs):
+            connections.append((host, port))
+
+        def ping(self):
+            return True
+
+    monkeypatch.setattr("tinyexp.examples.resnet_exp.redis.RedisCluster", FakeRedisCluster)
+
+    RedisCachedImageFolder(redis_host="10.0.0.1", redis_ports=[7000, 7001], root=str(tmp_path / "train"))
+
+    assert connections == [("10.0.0.1", 7000)]
 
 
 def test_resnet_run_val_mode_requires_resume_from(tmp_path: Path, monkeypatch) -> None:
