@@ -12,37 +12,22 @@ import redis
 
 
 class RedisClusterConfigError(ValueError):
-    """Invalid configuration for RedisClusterManager."""
+    """Invalid arguments to :class:`RedisClusterManager` (e.g. ports, memory)."""
 
 
-class EmptyRedisPortsError(RedisClusterConfigError):
-    def __init__(self) -> None:
-        super().__init__("ports must not be empty")
+class RedisClusterStartupError(RuntimeError):
+    """Servers failed to start, or :meth:`RedisClusterManager.__enter__` could not bring them up."""
 
-
-class DuplicateRedisPortsError(RedisClusterConfigError):
-    def __init__(self, ports: Sequence[int]) -> None:
-        self.ports = list(ports)
-        super().__init__(f"ports must be unique, got {self.ports!r}")
-
-
-class InvalidRedisPortError(RedisClusterConfigError):
-    def __init__(self, port: int) -> None:
-        self.port = port
-        super().__init__(f"Invalid port {port!r}, expected 1..65535")
-
-
-class InvalidRedisMaxMemoryError(RedisClusterConfigError):
-    def __init__(self, max_memory_per_port_gb: float) -> None:
-        self.max_memory_per_port_gb = max_memory_per_port_gb
-        super().__init__(f"max_memory_per_port must be > 0 GB, got {max_memory_per_port_gb!r}")
-
-
-class RedisShardStartupError(RuntimeError):
-    def __init__(self, port: int, last_error: Exception | None) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        port: int | None = None,
+        last_error: Exception | None = None,
+    ) -> None:
+        super().__init__(message)
         self.port = port
         self.last_error = last_error
-        super().__init__(f"Redis shard on port {port} failed to start: {last_error}")
 
 
 class RedisClusterManager:
@@ -65,18 +50,24 @@ class RedisClusterManager:
             host: Host/interface to bind to.
             startup_timeout_s: Max seconds to wait for each shard to become healthy.
             log_dir: If provided, write `redis-server` stdout/stderr to `redis-<port>.log` under this directory.
+
+        Using ``with RedisClusterManager(...)`` calls :meth:`start_redis_cluster` in :meth:`__enter__`; if startup
+        fails, :exc:`RedisClusterStartupError` is raised and the context body does not run. Direct calls to
+        :meth:`start_redis_cluster` still return a ``bool`` without raising.
         """
         normalized_ports = [int(p) for p in ports]
         if not normalized_ports:
-            raise EmptyRedisPortsError
+            raise RedisClusterConfigError("ports must not be empty")  # noqa: TRY003
         if len(set(normalized_ports)) != len(normalized_ports):
-            raise DuplicateRedisPortsError(normalized_ports)
+            raise RedisClusterConfigError(f"ports must be unique, got {normalized_ports!r}")  # noqa: TRY003
         for port in normalized_ports:
             if port <= 0 or port > 65535:
-                raise InvalidRedisPortError(port)
+                raise RedisClusterConfigError(f"Invalid port {port!r}, expected 1..65535")  # noqa: TRY003
 
         if max_memory_per_port <= 0:
-            raise InvalidRedisMaxMemoryError(max_memory_per_port)
+            raise RedisClusterConfigError(  # noqa: TRY003
+                f"max_memory_per_port must be > 0 GB, got {max_memory_per_port!r}"
+            )
 
         self.redis_processes: list[subprocess.Popen[Any]] = []
         self.redis_clients: list[redis.Redis] = []
@@ -88,6 +79,7 @@ class RedisClusterManager:
         self.max_memory_per_port_bytes = self._gb_to_bytes(self.max_memory_per_port_gb)
         self.startup_timeout_s = float(startup_timeout_s)
         self.log_dir = Path(log_dir) if log_dir is not None else None
+        self._last_startup_failure: Exception | None = None
 
     @staticmethod
     def _gb_to_bytes(gb: float) -> int:
@@ -99,11 +91,24 @@ class RedisClusterManager:
             self.stop_redis_cluster()
 
     def __enter__(self) -> RedisClusterManager:
-        self.start_redis_cluster()
+        if not self.start_redis_cluster():
+            failure = self._last_startup_failure
+            self._last_startup_failure = None
+            if failure is None:
+                raise RedisClusterStartupError("Failed to start Redis cluster.")  # noqa: TRY003
+            if isinstance(failure, RedisClusterStartupError):
+                raise failure
+            raise RedisClusterStartupError(str(failure)) from failure
+        self._last_startup_failure = None
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:  # type: ignore[no-untyped-def]
         self.stop_redis_cluster()
+
+    def __ray_terminate__(self) -> None:
+        """When this class is a Ray actor, Ray invokes this before destroying the actor."""
+        with contextlib.suppress(Exception):
+            self.stop_redis_cluster()
 
     def _wait_until_healthy(self, client: redis.Redis, *, port: int) -> None:
         deadline = time.monotonic() + self.startup_timeout_s
@@ -116,7 +121,11 @@ class RedisClusterManager:
                 time.sleep(0.1)
             else:
                 return
-        raise RedisShardStartupError(port=port, last_error=last_error)
+        raise RedisClusterStartupError(  # noqa: TRY003
+            f"Redis shard on port {port} failed to start: {last_error}",
+            port=port,
+            last_error=last_error,
+        )
 
     def start_redis_cluster(self) -> bool:
         """
@@ -126,9 +135,13 @@ class RedisClusterManager:
             bool: True if all Redis servers started successfully, False otherwise.
         """
         self.stop_redis_cluster()
+        self._last_startup_failure = None
 
         redis_server_path = shutil.which("redis-server")
         if redis_server_path is None:
+            self._last_startup_failure = RedisClusterStartupError(
+                "redis-server command not found in PATH; install Redis before using this context manager.",
+            )
             print("redis-server command not found. Please install it before enabling Redis cache.")
             return False
 
@@ -181,11 +194,12 @@ class RedisClusterManager:
                 print(f"Redis shard {i} started on port {port}")
 
         except Exception as e:
+            self._last_startup_failure = e
             print(f"Failed to start Redis cluster: {e}")
             self.stop_redis_cluster()
-            print(e)
             return False
         else:
+            self._last_startup_failure = None
             return True
 
     def stop_redis_cluster(self):

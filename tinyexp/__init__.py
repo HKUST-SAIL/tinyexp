@@ -4,6 +4,7 @@ __license__ = "MIT"
 
 import os
 import sys
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -232,8 +233,19 @@ class TinyExp:
 
 @dataclass
 class RedisCfgMixin:
+    """Supplies :attr:`redis_cache_cfg` plus thin Ray entrypoints on the *experiment* object (see below)."""
+
     @dataclass
     class RedisCacheCfg:
+        """
+        Hydra-overridable options live in dataclass fields below.
+
+        After :meth:`build_redis_cache`, use :attr:`redis_cluster_manager` to access the live
+        :class:`~tinyexp.utils.redis_utils.RedisClusterManager` (stored on the instance, not as a config field).
+        Call :meth:`teardown_redis_cache` for a deterministic stop; otherwise :class:`~tinyexp.utils.redis_utils.RedisClusterManager`
+        may still be cleaned up via ``__del__`` when references drop.
+        """
+
         redis_cache_enabled: bool = True
         redis_cache_shard_ports: ListConfig = field(
             default_factory=lambda: ListConfig(
@@ -249,24 +261,53 @@ class RedisCfgMixin:
         redis_cache_max_memory: int = 160  # Maximum memory is 160GB, according to the ImageNet dataset size
         redis_cluster_manager_cpus: int = 10
 
-        def build_redis_cache(self):
-            if self.redis_cache_enabled:
-                from tinyexp.utils.redis_utils import RedisClusterManager
+        @property
+        def redis_cluster_manager(self) -> Any:
+            """Live manager after a successful :meth:`build_redis_cache`; not a Hydra field."""
+            return getattr(self, "_redis_cluster_manager", None)
 
-                redis_cluster_manager = RedisClusterManager(
-                    ports=self.redis_cache_shard_ports,
-                    max_memory_per_port=self.redis_cache_max_memory // len(self.redis_cache_shard_ports),
-                )
-                return redis_cluster_manager.start_redis_cluster()
-            return True
+        def build_redis_cache(self) -> bool:
+            if not self.redis_cache_enabled:
+                self._clear_redis_cluster_manager()
+                return True
+            self.teardown_redis_cache()
+            from tinyexp.utils.redis_utils import RedisClusterManager
+
+            n = len(self.redis_cache_shard_ports)
+            mgr = RedisClusterManager(
+                ports=list(self.redis_cache_shard_ports),
+                max_memory_per_port=self.redis_cache_max_memory // n,
+            )
+            ok = mgr.start_redis_cluster()
+            if ok:
+                object.__setattr__(self, "_redis_cluster_manager", mgr)
+            else:
+                self._clear_redis_cluster_manager()
+            return ok
+
+        def teardown_redis_cache(self) -> None:
+            mgr = getattr(self, "_redis_cluster_manager", None)
+            if mgr is None:
+                return
+            with suppress(Exception):
+                mgr.stop_redis_cluster()
+            self._clear_redis_cluster_manager()
+
+        def _clear_redis_cluster_manager(self) -> None:
+            if hasattr(self, "_redis_cluster_manager"):
+                object.__delattr__(self, "_redis_cluster_manager")
 
     redis_cache_cfg: RedisCacheCfg = field(default_factory=RedisCacheCfg)
 
-    def proxy_build_redis_cache(self):
-        """
-        Hard-coded method to build Redis cache since ray actor need
-        """
+    # Ray schedules methods on the actor handle's class (the experiment), not on nested objects like
+    # ``redis_cache_cfg``. These two bodies stay minimal: real logic lives on :class:`RedisCacheCfg`.
+    def proxy_build_redis_cache(self) -> bool:
+        """``ray.get(actor.proxy_build_redis_cache.remote())`` — forwards to :meth:`RedisCacheCfg.build_redis_cache`."""
         return self.redis_cache_cfg.build_redis_cache()
+
+    def __ray_terminate__(self) -> None:
+        """Ray calls this on the actor before teardown; forwards to :meth:`RedisCacheCfg.teardown_redis_cache`."""
+        self.redis_cache_cfg.teardown_redis_cache()
 
 
 def store_and_run_exp(exp_class: type[TinyExp]) -> None:
