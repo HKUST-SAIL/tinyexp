@@ -1,3 +1,64 @@
+"""Run an experiment with a Redis cache lifecycle owned by this wrapper.
+
+The wrapper reads ``redis_cache_cfg`` from the target experiment class, starts the
+needed Redis processes, injects the final Redis connection config back into the
+child command as Hydra overrides, waits for the child command to finish, and then
+cleans up the Redis processes it started.
+
+The target command should be a Python script or module that contains exactly one
+experiment class inheriting ``RedisCfgMixin``. This lets the wrapper instantiate
+the experiment config and apply the same ``redis_cache_cfg.*`` overrides before
+it decides which Redis topology to start.
+
+Single-machine standalone Redis
+-------------------------------
+The default ``redis_cache_cfg.redis_rendezvous_world_size=1`` starts standalone
+Redis servers on the local machine. ``redis_cluster_ports`` may contain multiple
+ports; all of them are started and then passed to the experiment. Datasets such
+as ``RedisCachedImageFolder`` can use the full port list for client-side sharding
+and higher local concurrency.
+
+Example::
+
+    uv run python scripts/run_with_redis.py -- \
+        python tinyexp/examples/resnet_exp.py \
+        'redis_cache_cfg.redis_cluster_ports=[7200,7201,7202]'
+
+Multi-machine Redis Cluster
+---------------------------
+Set ``redis_cache_cfg.redis_rendezvous_world_size`` to the number of workers and
+set ``redis_cache_cfg.redis_cluster_host`` to the rendezvous/master host. Every
+worker should run the same command and may use the same ``redis_cluster_ports``.
+Ports only need to be free on each worker host/pod; Redis Cluster node identity
+is ``host:port``.
+
+Example for two machines, using the same command on both workers::
+
+    python scripts/run_with_redis.py -- \
+        python train.py \
+        redis_cache_cfg.redis_cluster_host=143.89.242.96 \
+        redis_cache_cfg.redis_rendezvous_world_size=2 \
+        'redis_cache_cfg.redis_cluster_ports=[7300,7301,7302]'
+
+In Kubernetes, this is the intended shape as well: all pods can run the same
+command, with ``redis_cluster_host`` pointing to the chosen rendezvous address or
+service and ``redis_rendezvous_world_size`` matching the number of participating
+pods.
+
+Important notes
+---------------
+* Redis options are configured through ``redis_cache_cfg`` only. The old
+  ``TINYEXP_REDIS_*`` environment variables are intentionally not used.
+* Quote list-style Hydra overrides in shells such as zsh, for example
+  ``'redis_cache_cfg.redis_cluster_ports=[7300,7301,7302]'``.
+* The child command sees the final Redis startup node through injected
+  ``redis_cache_cfg.redis_cluster_host`` and ``redis_cache_cfg.redis_cluster_ports``
+  overrides. Original host/ports overrides are removed before injection to avoid
+  duplicate conflicting values.
+* This wrapper owns Redis cleanup. When the child command exits, Redis processes
+  started by the wrapper are stopped.
+"""
+
 from __future__ import annotations
 
 import importlib
@@ -32,7 +93,10 @@ def main(argv: list[str]) -> int:  # noqa: C901
     if argv[:1] == ["--"]:
         argv = argv[1:]
     if not argv:
-        print("Usage: python scripts/run_with_redis.py -- <command> [args...]", file=sys.stderr)
+        print(
+            "Usage: python scripts/run_with_redis.py -- <command> [args...]",
+            file=sys.stderr,
+        )
         return 2
 
     redis_cache_cfg = build_redis_cache_cfg(argv)
@@ -49,7 +113,10 @@ def main(argv: list[str]) -> int:  # noqa: C901
         redis_status = True
         world_size = int(redis_cache_cfg.redis_rendezvous_world_size)
         if world_size < 1:
-            print("redis_cache_cfg.redis_rendezvous_world_size must be >= 1", file=sys.stderr)
+            print(
+                "redis_cache_cfg.redis_rendezvous_world_size must be >= 1",
+                file=sys.stderr,
+            )
             return 2
 
         if redis_cache_cfg.redis_cache_enabled and world_size > 1:
@@ -70,7 +137,10 @@ def main(argv: list[str]) -> int:  # noqa: C901
                 f"redis_cache_cfg.redis_cluster_ports=[{','.join(str(port) for port in startup_ports)}]",
             ]
             app_arg_start = 3 if len(argv) >= 3 and argv[1] == "-m" else 2
-            redis_override_prefixes = ("redis_cache_cfg.redis_cluster_host=", "redis_cache_cfg.redis_cluster_ports=")
+            redis_override_prefixes = (
+                "redis_cache_cfg.redis_cluster_host=",
+                "redis_cache_cfg.redis_cluster_ports=",
+            )
             argv = [
                 arg
                 for index, arg in enumerate(argv)
@@ -117,7 +187,10 @@ def build_redis_cache_cfg(argv: list[str]) -> Any:
             exp.exp_class = f"{exp_classes[0].__module__}.{exp_classes[0].__qualname__}"
 
     if exp is None:
-        print("Could not infer experiment config; using RedisCfgMixin defaults", file=sys.stderr)
+        print(
+            "Could not infer experiment config; using RedisCfgMixin defaults",
+            file=sys.stderr,
+        )
         return RedisCfgMixin().redis_cache_cfg
 
     overrides = [arg for arg in argv[1:] if arg.startswith("redis_cache_cfg.")]
@@ -132,7 +205,12 @@ def start_local_redis(redis_cache_cfg: Any, started_nodes: list[tuple[str, int]]
     max_memory_bytes = max(1, int((redis_cache_cfg.redis_cache_max_memory / len(ports)) * (1024**3)))
     local_started_nodes: list[tuple[str, int]] = []
     for port in ports:
-        if not start_redis_node(host=host, port=port, max_memory_bytes=max_memory_bytes, cluster_enabled=False):
+        if not start_redis_node(
+            host=host,
+            port=port,
+            max_memory_bytes=max_memory_bytes,
+            cluster_enabled=False,
+        ):
             cleanup_started_nodes(local_started_nodes)
             return None
         local_started_nodes.append((host, port))
@@ -162,7 +240,10 @@ def start_rendezvous_redis_cluster(  # noqa: C901
 
     node_host = os.environ.get("POD_IP")
     if node_host is None:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock, suppress(OSError):
+        with (
+            socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock,
+            suppress(OSError),
+        ):
             sock.connect((rendezvous_host, rendezvous_port))
             node_host = sock.getsockname()[0]
     if not node_host or node_host.startswith("127."):
@@ -174,7 +255,12 @@ def start_rendezvous_redis_cluster(  # noqa: C901
     max_memory_bytes = max(1, int((redis_cache_cfg.redis_cache_max_memory / node_count) * (1024**3)))
     local_started_nodes: list[tuple[str, int]] = []
     for port in ports:
-        if not start_redis_node(host=node_host, port=port, max_memory_bytes=max_memory_bytes, cluster_enabled=True):
+        if not start_redis_node(
+            host=node_host,
+            port=port,
+            max_memory_bytes=max_memory_bytes,
+            cluster_enabled=True,
+        ):
             cleanup_started_nodes(local_started_nodes)
             return None
         local_started_nodes.append((node_host, port))
@@ -197,7 +283,10 @@ def start_rendezvous_redis_cluster(  # noqa: C901
             host = payload["host"]
             worker_ports = [int(port) for port in payload["ports"]]
             with lock:
-                nodes[f"{host}:{','.join(str(port) for port in worker_ports)}"] = (host, worker_ports)
+                nodes[f"{host}:{','.join(str(port) for port in worker_ports)}"] = (
+                    host,
+                    worker_ports,
+                )
                 if not ready and not error and len(nodes) >= world_size:
                     addresses = [
                         f"{node_host}:{port}" for node_host, node_ports in nodes.values() for port in node_ports
@@ -215,13 +304,22 @@ def start_rendezvous_redis_cluster(  # noqa: C901
                         error = f"redis-cli cluster create failed for {addresses}"
                     else:
                         startup_host, startup_ports = next(iter(nodes.values()))
-                        ready.update({"startup_host": startup_host, "startup_ports": startup_ports})
+                        ready.update(
+                            {
+                                "startup_host": startup_host,
+                                "startup_ports": startup_ports,
+                            }
+                        )
                 if error:
                     response = {"status": "error", "message": error}
                 elif ready:
                     response = {"status": "ready", **ready}
                 else:
-                    response = {"status": "waiting", "registered": len(nodes), "world_size": world_size}
+                    response = {
+                        "status": "waiting",
+                        "registered": len(nodes),
+                        "world_size": world_size,
+                    }
             body = json.dumps(response).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -237,7 +335,10 @@ def start_rendezvous_redis_cluster(  # noqa: C901
         server = ThreadingHTTPServer((rendezvous_host, rendezvous_port), Handler)
     if server is not None:
         threading.Thread(target=server.serve_forever, daemon=True).start()
-        print(f"Redis rendezvous master listening on {rendezvous_host}:{rendezvous_port}", flush=True)
+        print(
+            f"Redis rendezvous master listening on {rendezvous_host}:{rendezvous_port}",
+            flush=True,
+        )
 
     url = f"http://{rendezvous_host}:{rendezvous_port}/register"
     payload = json.dumps({"host": node_host, "ports": ports}).encode()
@@ -245,7 +346,10 @@ def start_rendezvous_redis_cluster(  # noqa: C901
     while time.monotonic() < deadline:
         try:
             request = urllib.request.Request(  # noqa: S310
-                url, data=payload, headers={"Content-Type": "application/json"}, method="POST"
+                url,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
             )
             with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310
                 result = json.loads(response.read())
@@ -254,12 +358,18 @@ def start_rendezvous_redis_cluster(  # noqa: C901
             continue
         if result["status"] == "ready":
             startup_ports = [int(port) for port in result["startup_ports"]]
-            print(f"Redis Cluster startup node: {result['startup_host']}:{startup_ports[0]}", flush=True)
+            print(
+                f"Redis Cluster startup node: {result['startup_host']}:{startup_ports[0]}",
+                flush=True,
+            )
             return result["startup_host"], startup_ports
         if result["status"] == "error":
             print(f"Redis rendezvous failed: {result['message']}", file=sys.stderr)
             return None
-        print(f"Redis rendezvous waiting: {result['registered']}/{result['world_size']} workers registered", flush=True)
+        print(
+            f"Redis rendezvous waiting: {result['registered']}/{result['world_size']} workers registered",
+            flush=True,
+        )
         time.sleep(1)
     print(f"Redis rendezvous timed out after {timeout_s}s", file=sys.stderr)
     return None

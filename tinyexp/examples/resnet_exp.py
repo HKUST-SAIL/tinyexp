@@ -138,8 +138,9 @@ class RedisCachedImageFolder:
             else:
                 self.redis_clients = [
                     redis.RedisCluster(
-                        host=redis_host,
-                        port=int(redis_ports[0]),
+                        startup_nodes=[
+                            redis.cluster.ClusterNode(redis_host, int(redis_port)) for redis_port in redis_ports
+                        ],
                         decode_responses=False,
                         socket_connect_timeout=5,
                         socket_timeout=5,
@@ -334,7 +335,10 @@ class ResNetExp(TinyExp, RedisCfgMixin):
             ds_val = LocalCachedImageFolder(root=os.path.join(self.data_root, "val"), transform=transform)
             # ds_val = datasets.ImageFolder(root=os.path.join(self.data_root, "val"), transform=transform)
             sampler = torch.utils.data.distributed.DistributedSampler(
-                ds_val, num_replicas=accelerator.world_size, rank=accelerator.rank, shuffle=False
+                ds_val,
+                num_replicas=accelerator.world_size,
+                rank=accelerator.rank,
+                shuffle=False,
             )
             val_kwargs = {
                 "batch_size": self.val_batch_size_per_device,
@@ -358,11 +362,20 @@ class ResNetExp(TinyExp, RedisCfgMixin):
         logger.info(f"-------- Configurations --------\n    {cfg_msg}")
 
         if self.mode == "train":
-            self._train(accelerator=accelerator, logger=logger, cfg_dict=cfg_dict, run_dir=run_dir)
+            self._train(
+                accelerator=accelerator,
+                logger=logger,
+                cfg_dict=cfg_dict,
+                run_dir=run_dir,
+            )
         elif self.mode == "val":
             if not self.resume_from:
                 raise ValueError("resume_from is required when mode='val'")  # noqa: TRY003
-            self._evaluate(accelerator=accelerator, logger=logger, module_or_module_path=self.resume_from)
+            self._evaluate(
+                accelerator=accelerator,
+                logger=logger,
+                module_or_module_path=self.resume_from,
+            )
         else:
             raise NotImplementedError(f"Mode {self.mode} is not implemented")
 
@@ -430,7 +443,10 @@ class ResNetExp(TinyExp, RedisCfgMixin):
 
         if self.wandb_cfg.enable_wandb and accelerator.rank == 0:
             self.wandb_cfg.build_wandb(
-                accelerator=accelerator, config=cfg_dict, project="Baselines", name=self.__class__.__name__
+                accelerator=accelerator,
+                config=cfg_dict,
+                project="Baselines",
+                name=self.__class__.__name__,
             )
 
         train_iter = iter(train_dataloader)
@@ -472,7 +488,10 @@ class ResNetExp(TinyExp, RedisCfgMixin):
 
             lr_scheduler.step()
             eval_metric = self._evaluate(
-                accelerator=accelerator, logger=logger, module_or_module_path=module, val_dataloader=val_dataloader
+                accelerator=accelerator,
+                logger=logger,
+                module_or_module_path=module,
+                val_dataloader=val_dataloader,
             )
             if accelerator.is_main_process:
                 self.checkpoint_cfg.save_checkpoint(

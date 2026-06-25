@@ -73,7 +73,10 @@ def test_rendezvous_mode_uses_exp_ports(tmp_path: Path, monkeypatch) -> None:
         captured["argv"] = args
         return type("P", (), {"wait": lambda self: 0})()
 
-    monkeypatch.setattr("scripts.run_with_redis.start_rendezvous_redis_cluster", fake_start_rendezvous_redis_cluster)
+    monkeypatch.setattr(
+        "scripts.run_with_redis.start_rendezvous_redis_cluster",
+        fake_start_rendezvous_redis_cluster,
+    )
     monkeypatch.setattr("scripts.run_with_redis.subprocess.Popen", fake_popen)
 
     assert (
@@ -90,5 +93,5 @@ def test_rendezvous_mode_uses_exp_ports(tmp_path: Path, monkeypatch) -> None:
     )
     assert captured["world_size"] == 2
     assert captured["ports"] == [7010, 7011]
-    assert "redis_cache_cfg.redis_cluster_host=10.0.0.1" in captured["argv"]
-    assert "redis_cache_cfg.redis_cluster_ports=[7010,7011]" in captured["argv"]
+    assert captured["argv"].count("redis_cache_cfg.redis_cluster_host=10.0.0.1") == 1
+    assert captured["argv"].count("redis_cache_cfg.redis_cluster_ports=[7010,7011]") == 1
