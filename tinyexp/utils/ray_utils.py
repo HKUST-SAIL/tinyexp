@@ -96,13 +96,6 @@ def _build_worker_env_vars(num_worker, rank, local_rank, master_addr, master_por
     # Use a stable loopback interface by default to avoid Gloo hostname resolution warnings.
     default_ifname = "lo0" if platform.system() == "Darwin" else "lo"
     env_vars["GLOO_SOCKET_IFNAME"] = os.getenv("GLOO_SOCKET_IFNAME", default_ifname)
-    for key in (
-        "TINYEXP_REDIS_CLUSTER_HOST",
-        "TINYEXP_REDIS_CLUSTER_PORTS",
-    ):
-        value = os.getenv(key)
-        if value is not None:
-            env_vars[key] = value
     return env_vars
 
 

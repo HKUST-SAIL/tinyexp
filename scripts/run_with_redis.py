@@ -43,6 +43,7 @@ def main(argv: list[str]) -> int:  # noqa: C901
 
     started_nodes: list[tuple[str, int]] = []
     env = os.environ.copy()
+    startup_node: tuple[str, list[int]] | None = None
 
     try:
         redis_status = True
@@ -52,23 +53,30 @@ def main(argv: list[str]) -> int:  # noqa: C901
             return 2
 
         if redis_cache_cfg.redis_cache_enabled and world_size > 1:
-            redis_status = start_rendezvous_redis_cluster(redis_cache_cfg, world_size, started_nodes, env)
+            startup_node = start_rendezvous_redis_cluster(redis_cache_cfg, world_size, started_nodes)
+            redis_status = startup_node is not None
         elif redis_cache_cfg.redis_cache_enabled:
-            redis_status = start_local_redis(redis_cache_cfg, started_nodes, env)
+            startup_node = start_local_redis(redis_cache_cfg, started_nodes)
+            redis_status = startup_node is not None
 
         print(f"Redis status:\033[32m{redis_status}\033[0m", flush=True)
         if not redis_status:
             return 1
 
-        redis_host = env.get("TINYEXP_REDIS_CLUSTER_HOST")
-        redis_ports = env.get("TINYEXP_REDIS_CLUSTER_PORTS")
-        if redis_host and redis_ports:
+        if startup_node is not None:
+            startup_host, startup_ports = startup_node
             overrides = [
-                f"redis_cache_cfg.redis_cluster_host={redis_host}",
-                f"redis_cache_cfg.redis_cluster_ports=[{redis_ports}]",
+                f"redis_cache_cfg.redis_cluster_host={startup_host}",
+                f"redis_cache_cfg.redis_cluster_ports=[{','.join(str(port) for port in startup_ports)}]",
+            ]
+            app_arg_start = 3 if len(argv) >= 3 and argv[1] == "-m" else 2
+            redis_override_prefixes = ("redis_cache_cfg.redis_cluster_host=", "redis_cache_cfg.redis_cluster_ports=")
+            argv = [
+                arg
+                for index, arg in enumerate(argv)
+                if index < app_arg_start or not arg.startswith(redis_override_prefixes)
             ]
             insert_at = len(argv)
-            app_arg_start = 3 if len(argv) >= 3 and argv[1] == "-m" else 2
             for index, arg in enumerate(argv[app_arg_start:], start=app_arg_start):
                 if arg.startswith("--"):
                     insert_at = index
@@ -118,7 +126,7 @@ def build_redis_cache_cfg(argv: list[str]) -> Any:
     return exp.redis_cache_cfg
 
 
-def start_local_redis(redis_cache_cfg: Any, started_nodes: list[tuple[str, int]], env: dict[str, str]) -> bool:
+def start_local_redis(redis_cache_cfg: Any, started_nodes: list[tuple[str, int]]) -> tuple[str, list[int]] | None:
     host = redis_cache_cfg.redis_cluster_host
     ports = [int(port) for port in redis_cache_cfg.redis_cluster_ports]
     max_memory_bytes = max(1, int((redis_cache_cfg.redis_cache_max_memory / len(ports)) * (1024**3)))
@@ -126,23 +134,21 @@ def start_local_redis(redis_cache_cfg: Any, started_nodes: list[tuple[str, int]]
     for port in ports:
         if not start_redis_node(host=host, port=port, max_memory_bytes=max_memory_bytes, cluster_enabled=False):
             cleanup_started_nodes(local_started_nodes)
-            return False
+            return None
         local_started_nodes.append((host, port))
         print(f"Redis server started on {host}:{port}", flush=True)
     started_nodes.extend(local_started_nodes)
-    env["TINYEXP_REDIS_CLUSTER_HOST"] = host
-    env["TINYEXP_REDIS_CLUSTER_PORTS"] = ",".join(str(port) for port in ports)
-    return True
+    return host, ports
 
 
 def start_rendezvous_redis_cluster(  # noqa: C901
-    redis_cache_cfg: Any, world_size: int, started_nodes: list[tuple[str, int]], env: dict[str, str]
-) -> bool:
+    redis_cache_cfg: Any, world_size: int, started_nodes: list[tuple[str, int]]
+) -> tuple[str, list[int]] | None:
     ports = [int(port) for port in redis_cache_cfg.redis_cluster_ports]
     node_count = world_size * len(ports)
     if node_count < 3:
         print("Redis Cluster requires at least 3 master nodes", file=sys.stderr)
-        return False
+        return None
 
     rendezvous_host = redis_cache_cfg.redis_cluster_host
     if rendezvous_host == "127.0.0.1":
@@ -150,7 +156,7 @@ def start_rendezvous_redis_cluster(  # noqa: C901
             "redis_cache_cfg.redis_cluster_host must be set to the master host when rendezvous world size > 1",
             file=sys.stderr,
         )
-        return False
+        return None
     rendezvous_port = REDIS_RENDEZVOUS_PORT
     timeout_s = REDIS_RENDEZVOUS_TIMEOUT_S
 
@@ -170,7 +176,7 @@ def start_rendezvous_redis_cluster(  # noqa: C901
     for port in ports:
         if not start_redis_node(host=node_host, port=port, max_memory_bytes=max_memory_bytes, cluster_enabled=True):
             cleanup_started_nodes(local_started_nodes)
-            return False
+            return None
         local_started_nodes.append((node_host, port))
         print(f"Redis Cluster node started on {node_host}:{port}", flush=True)
     started_nodes.extend(local_started_nodes)
@@ -247,17 +253,16 @@ def start_rendezvous_redis_cluster(  # noqa: C901
             time.sleep(1)
             continue
         if result["status"] == "ready":
-            env["TINYEXP_REDIS_CLUSTER_HOST"] = result["startup_host"]
-            env["TINYEXP_REDIS_CLUSTER_PORTS"] = ",".join(str(port) for port in result["startup_ports"])
-            print(f"Redis Cluster startup node: {result['startup_host']}:{result['startup_ports'][0]}", flush=True)
-            return True
+            startup_ports = [int(port) for port in result["startup_ports"]]
+            print(f"Redis Cluster startup node: {result['startup_host']}:{startup_ports[0]}", flush=True)
+            return result["startup_host"], startup_ports
         if result["status"] == "error":
             print(f"Redis rendezvous failed: {result['message']}", file=sys.stderr)
-            return False
+            return None
         print(f"Redis rendezvous waiting: {result['registered']}/{result['world_size']} workers registered", flush=True)
         time.sleep(1)
     print(f"Redis rendezvous timed out after {timeout_s}s", file=sys.stderr)
-    return False
+    return None
 
 
 def start_redis_node(*, host: str, port: int, max_memory_bytes: int, cluster_enabled: bool) -> bool:

@@ -27,11 +27,3 @@ def test_build_worker_env_vars_uses_default_ifname(monkeypatch: pytest.MonkeyPat
     monkeypatch.delenv("GLOO_SOCKET_IFNAME", raising=False)
     env_vars = _build_worker_env_vars(num_worker=2, rank=1, local_rank=1, master_addr="127.0.0.1", master_port=12345)
     assert env_vars["GLOO_SOCKET_IFNAME"] in {"lo0", "lo"}
-
-
-def test_build_worker_env_vars_forwards_redis_config(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TINYEXP_REDIS_CLUSTER_HOST", "10.0.0.1")
-    monkeypatch.setenv("TINYEXP_REDIS_CLUSTER_PORTS", "7000,7001")
-    env_vars = _build_worker_env_vars(num_worker=2, rank=1, local_rank=1, master_addr="127.0.0.1", master_port=12345)
-    assert env_vars["TINYEXP_REDIS_CLUSTER_HOST"] == "10.0.0.1"
-    assert env_vars["TINYEXP_REDIS_CLUSTER_PORTS"] == "7000,7001"

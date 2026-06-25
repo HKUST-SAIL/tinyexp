@@ -64,12 +64,10 @@ def test_rendezvous_mode_uses_exp_ports(tmp_path: Path, monkeypatch) -> None:
     )
     captured = {}
 
-    def fake_start_rendezvous_redis_cluster(redis_cache_cfg, world_size, started_nodes, env):
+    def fake_start_rendezvous_redis_cluster(redis_cache_cfg, world_size, started_nodes):
         captured["world_size"] = world_size
         captured["ports"] = list(redis_cache_cfg.redis_cluster_ports)
-        env["TINYEXP_REDIS_CLUSTER_HOST"] = "10.0.0.1"
-        env["TINYEXP_REDIS_CLUSTER_PORTS"] = "7010,7011"
-        return True
+        return "10.0.0.1", [7010, 7011]
 
     def fake_popen(args, **kwargs):
         captured["argv"] = args

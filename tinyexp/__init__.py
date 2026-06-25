@@ -244,18 +244,9 @@ class RedisCfgMixin:
         """
 
         redis_cache_enabled: bool = True
-        redis_cluster_host: str = field(
-            default_factory=lambda: os.environ.get("TINYEXP_REDIS_CLUSTER_HOST", "127.0.0.1")
-        )
+        redis_cluster_host: str = "127.0.0.1"
         redis_cluster_ports: ListConfig = field(
-            default_factory=lambda: ListConfig(
-                [
-                    int(port)
-                    for port in os.environ.get("TINYEXP_REDIS_CLUSTER_PORTS", "7000,7001,7002,7003,7004,7005").split(
-                        ","
-                    )
-                ]
-            )
+            default_factory=lambda: ListConfig([7000, 7001, 7002, 7003, 7004, 7005])
         )
         redis_cache_max_memory: int = 160  # Maximum memory is 160GB, according to the ImageNet dataset size
         redis_rendezvous_world_size: int = 1
