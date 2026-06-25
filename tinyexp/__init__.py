@@ -258,6 +258,7 @@ class RedisCfgMixin:
             )
         )
         redis_cache_max_memory: int = 160  # Maximum memory is 160GB, according to the ImageNet dataset size
+        redis_rendezvous_world_size: int = 1
 
     redis_cache_cfg: RedisCacheCfg = field(default_factory=RedisCacheCfg)
 

@@ -1,0 +1,25 @@
+{
+  "exclude": [
+    "**/__pycache__",
+    "dist",
+    "build",
+    ".venv/**",
+    "venv/**",
+    "**/site-packages/**"
+  ],
+  "executionEnvironments": [
+    {
+      "pythonVersion": "3.10",
+      "root": "."
+    }
+  ],
+  "include": [
+    "tinyexp",
+    "tests"
+  ],
+  "pythonVersion": "3.10",
+  "typeCheckingMode": "standard",
+  "useLibraryCodeForTypes": true,
+  "venv": ".venv",
+  "venvPath": "."
+}
