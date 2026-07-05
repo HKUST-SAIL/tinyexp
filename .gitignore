@@ -149,3 +149,6 @@ output*/
 **/output*/
 wandb/
 **/wandb/
+
+# Local/private launch adapters and machine-specific scripts.
+local/

@@ -155,6 +155,7 @@ class TinyExp:
     # ---------------- luancher configuration ---------------- #
     num_worker: int = -1  # Number of workers, -1 means to be determined by the user
     num_gpus_per_worker: float = 1.0  # Number of GPUs per worker, should be a float value between 0 and 1.
+    ray_placement_strategy: str = "PACK"
 
     # Fully qualified import path for the experiment class, e.g. "tinyexp.examples.mnist_exp.Exp".
     # It is used in Hydra config store to instantiate the experiment class, and in store_and_run_exp, the exp_class will be automatically set to the fully qualified import path of the experiment class.

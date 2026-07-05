@@ -1,5 +1,4 @@
 import os
-import platform
 import socket
 from contextlib import suppress
 from typing import Any
@@ -30,7 +29,7 @@ def _launch_with_ray(cfg: DictConfig, exp_class: type[Any]) -> None:
             needed_num_cpus_per_worker += cfg.dataloader_cfg.train_data_worker_per_gpu
 
         needed_cpu = cfg.num_worker * needed_num_cpus_per_worker
-        total_cpu = os.cpu_count() or 0
+        total_cpu = int(ray.cluster_resources().get("CPU", 0))
 
         if needed_cpu > total_cpu:
             raise InsufficientCPUError(total_cpu=total_cpu, needed_cpu=needed_cpu)
@@ -41,11 +40,13 @@ def _launch_with_ray(cfg: DictConfig, exp_class: type[Any]) -> None:
             num_worker=cfg.num_worker,
             num_gpus_per_worker=cfg.num_gpus_per_worker,
             num_cpus_per_worker=needed_num_cpus_per_worker,
+            strategy=cfg.ray_placement_strategy,
         )
         options_list = get_num_worker_options(
             pg,
             cfg.num_worker,
             gpu_ratio=cfg.num_gpus_per_worker,
+            num_cpus_per_worker=needed_num_cpus_per_worker,
         )
         worker_group = [remote_exp.options(**options).remote() for options in options_list]
 
@@ -61,15 +62,15 @@ def _launch_with_ray(cfg: DictConfig, exp_class: type[Any]) -> None:
                 ray.shutdown()
 
 
-def get_placement_group(num_worker, num_gpus_per_worker=1, num_cpus_per_worker=10):
-    """Create and return a placement group for GPU allocation."""
+def get_placement_group(num_worker, num_gpus_per_worker=1, num_cpus_per_worker=10, strategy="PACK"):
+    """Create and return a placement group for worker allocation."""
     bundles = [{"CPU": num_cpus_per_worker, "GPU": num_gpus_per_worker} for _ in range(num_worker)]
-    pg = placement_group(bundles=bundles, strategy="STRICT_PACK")
+    pg = placement_group(bundles=bundles, strategy=strategy)
     ray.get(pg.ready())
     return pg
 
 
-def get_worker_options(gpu_ratio, pg, rank, local_rank, num_worker, master_addr, master_port):
+def get_worker_options(gpu_ratio, num_cpus, pg, rank, local_rank, num_worker, master_addr, master_port):
     """Create options for Ray workers."""
     env_vars = _build_worker_env_vars(
         num_worker=num_worker,
@@ -81,6 +82,7 @@ def get_worker_options(gpu_ratio, pg, rank, local_rank, num_worker, master_addr,
     return {
         "runtime_env": {"env_vars": env_vars},
         "scheduling_strategy": PlacementGroupSchedulingStrategy(placement_group=pg, placement_group_bundle_index=rank),
+        "num_cpus": num_cpus,
         "num_gpus": gpu_ratio,
     }
 
@@ -93,9 +95,8 @@ def _build_worker_env_vars(num_worker, rank, local_rank, master_addr, master_por
         "MASTER_PORT": str(master_port),
         "LOCAL_RANK": str(local_rank),
     }
-    # Use a stable loopback interface by default to avoid Gloo hostname resolution warnings.
-    default_ifname = "lo0" if platform.system() == "Darwin" else "lo"
-    env_vars["GLOO_SOCKET_IFNAME"] = os.getenv("GLOO_SOCKET_IFNAME", default_ifname)
+    if os.getenv("GLOO_SOCKET_IFNAME"):
+        env_vars["GLOO_SOCKET_IFNAME"] = os.environ["GLOO_SOCKET_IFNAME"]
     return env_vars
 
 
@@ -108,13 +109,16 @@ def get_network_config():
     return master_addr, master_port
 
 
-def get_num_worker_options(pg, num_worker, gpu_ratio=1.0):
+def get_num_worker_options(pg, num_worker, gpu_ratio=1.0, num_cpus_per_worker=None):
     """Create options for multiple Ray workers with GPU allocation."""
+
+    if num_cpus_per_worker is None:
+        num_cpus_per_worker = pg.bundle_specs[0].get("CPU", 0)
 
     master_addr, master_port = get_network_config()
     options_list = []
     for i in range(num_worker):
-        options = get_worker_options(gpu_ratio, pg, i, i, num_worker, master_addr, master_port)
+        options = get_worker_options(gpu_ratio, num_cpus_per_worker, pg, i, i, num_worker, master_addr, master_port)
         options_list.append(options)
     return options_list
 
