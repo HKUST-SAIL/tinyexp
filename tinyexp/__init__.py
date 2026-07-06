@@ -12,7 +12,7 @@ from typing import Any, Optional
 import torch
 from hydra.conf import HydraConf, RunDir
 from hydra.core.config_store import ConfigStore
-from omegaconf import DictConfig
+from omegaconf import DictConfig, OmegaConf
 from omegaconf.listconfig import ListConfig
 
 from .exceptions import UnknownConfigurationKeyError, UnsupportedCheckpointFormatError
@@ -47,10 +47,6 @@ def _default_exp_name() -> str:
         return os.path.splitext(os.path.basename(argv0))[0]
 
     return "exp"
-
-
-def _is_main_process() -> bool:
-    return os.getenv("RANK", "0") == "0"
 
 
 @dataclass
@@ -173,7 +169,7 @@ class TinyExp:
     resume_from: str = ""
 
     # overridden configurations, only for internal use
-    overrided_cfg: dict = field(default_factory=dict)
+    overrided_cfg: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def __repr__(self):
         # Customize the representation of the Exp object for cleaner Ray logs.
@@ -219,16 +215,28 @@ class TinyExp:
                 else:
                     # Otherwise, set the attribute directly
                     ori_value = getattr(cfg_object, key, None)
-                    INDENT = "    "
                     if ori_value != value:
-                        if os.getenv("RANK", 0) == 0 or os.getenv("RANK", 0) == "0":
-                            print(f"{INDENT}{key}: {value} <-- {ori_value}(original)")
-                            # print(f"Override {key} from {ori_value} to {value} in {cfg_object.__class__.__name__}")
+                        self.overrided_cfg[key] = {"value": value, "original": ori_value}
                         setattr(cfg_object, key, value)
-                        self.overrided_cfg[key] = value
             else:
                 raise UnknownConfigurationKeyError(key)
         return cfg_object
+
+    def print_cfg(self, logger, show_overrided: bool = True):  # type: ignore[no-untyped-def]
+        if show_overrided and self.overrided_cfg:
+            override_lines = [
+                f"    {key}: {item['value']} <-- {item['original']}(original)"
+                for key, item in self.overrided_cfg.items()
+            ]
+            override_msg = "\n".join(override_lines)
+            logger.info(f"-------- Overridden Configurations --------\n{override_msg}")
+
+        cfg_dict = OmegaConf.to_container(OmegaConf.structured(self), resolve=True)
+        del cfg_dict["hydra"]
+        del cfg_dict["overrided_cfg"]
+        cfg_msg = OmegaConf.to_yaml(cfg_dict).strip().replace("\n", "\n    ")
+        logger.info(f"-------- Configurations --------\n    {cfg_msg}")
+        return cfg_dict
 
 
 @dataclass

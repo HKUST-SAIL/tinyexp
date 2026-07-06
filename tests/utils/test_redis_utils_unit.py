@@ -31,8 +31,8 @@ class _FakeRayRedisActor:
         self.get_db_sizes = _FakeRemoteMethod(self._get_db_sizes)
         self.stop = _FakeRemoteMethod(self._stop)
 
-    def _start(self, ports, max_memory_per_port, log_dir, cluster_enabled):  # type: ignore[no-untyped-def]
-        self._captured["start_args"].append((list(ports), max_memory_per_port, log_dir, cluster_enabled))
+    def _start(self, ports, max_memory_per_port, log_dir, cluster_enabled, log_startup):  # type: ignore[no-untyped-def]
+        self._captured["start_args"].append((list(ports), max_memory_per_port, log_dir, cluster_enabled, log_startup))
         return {"host": self.host, "ports": list(ports)}
 
     def _get_db_sizes(self):  # type: ignore[no-untyped-def]
@@ -200,8 +200,8 @@ def test_ray_redis_cluster_manager_starts_pinned_actors_and_creates_cluster(monk
     assert [strategy.node_id for strategy in captured["strategies"]] == ["node-a", "node-b"]
     assert [strategy.soft for strategy in captured["strategies"]] == [False, False]
     assert captured["start_args"] == [
-        ([7000, 7001, 7002], 10.0, None, True),
-        ([7000, 7001, 7002], 10.0, None, True),
+        ([7000, 7001, 7002], 10.0, None, True, False),
+        ([7000, 7001, 7002], 10.0, None, True, False),
     ]
     assert captured["commands"] == [
         [
@@ -247,7 +247,7 @@ def test_ray_redis_cluster_manager_standalone_starts_on_all_alive_nodes(monkeypa
     startup_host, startup_ports, world_size = manager.start(cluster_enabled=False)
 
     assert [strategy.node_id for strategy in captured["strategies"]] == ["node-worker", "node-head"]
-    assert captured["start_args"] == [([7000, 7001], 5.0, None, False), ([7000, 7001], 5.0, None, False)]
+    assert captured["start_args"] == [([7000, 7001], 5.0, None, False, False), ([7000, 7001], 5.0, None, False, False)]
     assert captured["commands"] == []
     assert startup_host == "127.0.0.1"
     assert startup_ports == [7000, 7001]

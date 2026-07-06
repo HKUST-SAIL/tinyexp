@@ -5,7 +5,7 @@ from pathlib import Path
 from scripts.run_with_redis import build_redis_cache_cfg, main
 
 
-def test_build_redis_cache_cfg_uses_exp_class_overrides(tmp_path: Path) -> None:
+def _write_demo_exp(tmp_path: Path) -> Path:
     exp_file = tmp_path / "demo_exp.py"
     exp_file.write_text(
         "from dataclasses import dataclass\n"
@@ -14,6 +14,16 @@ def test_build_redis_cache_cfg_uses_exp_class_overrides(tmp_path: Path) -> None:
         "class DemoExp(TinyExp, RedisCfgMixin):\n"
         "    pass\n"
     )
+    return exp_file
+
+
+class _FinishedProcess:
+    def wait(self) -> int:
+        return 0
+
+
+def test_build_redis_cache_cfg_uses_exp_class_overrides(tmp_path: Path) -> None:
+    exp_file = _write_demo_exp(tmp_path)
 
     redis_cache_cfg = build_redis_cache_cfg(
         [
@@ -30,15 +40,8 @@ def test_build_redis_cache_cfg_uses_exp_class_overrides(tmp_path: Path) -> None:
     assert redis_cache_cfg.redis_rendezvous_world_size == 2
 
 
-def test_rendezvous_mode_requires_non_local_master_host(tmp_path: Path, monkeypatch) -> None:
-    exp_file = tmp_path / "demo_exp.py"
-    exp_file.write_text(
-        "from dataclasses import dataclass\n"
-        "from tinyexp import RedisCfgMixin, TinyExp\n"
-        "@dataclass\n"
-        "class DemoExp(TinyExp, RedisCfgMixin):\n"
-        "    pass\n"
-    )
+def test_rendezvous_mode_requires_non_local_master_host(tmp_path: Path) -> None:
+    exp_file = _write_demo_exp(tmp_path)
 
     assert (
         main(
@@ -53,15 +56,49 @@ def test_rendezvous_mode_requires_non_local_master_host(tmp_path: Path, monkeypa
     )
 
 
-def test_rendezvous_mode_uses_exp_ports(tmp_path: Path, monkeypatch) -> None:
-    exp_file = tmp_path / "demo_exp.py"
-    exp_file.write_text(
-        "from dataclasses import dataclass\n"
-        "from tinyexp import RedisCfgMixin, TinyExp\n"
-        "@dataclass\n"
-        "class DemoExp(TinyExp, RedisCfgMixin):\n"
-        "    pass\n"
+def test_run_with_redis_appends_connection_overrides_for_torchrun_command(tmp_path: Path, monkeypatch) -> None:
+    exp_file = _write_demo_exp(tmp_path)
+    captured = {}
+
+    def fake_start_local_redis(redis_cache_cfg, started_nodes):
+        captured["startup_ports"] = list(redis_cache_cfg.redis_cluster_ports)
+        return "127.0.0.1", [7012, 7013]
+
+    def fake_popen(args, **kwargs):
+        captured["argv"] = args
+        return _FinishedProcess()
+
+    monkeypatch.setattr("scripts.run_with_redis.start_local_redis", fake_start_local_redis)
+    monkeypatch.setattr("scripts.run_with_redis.subprocess.Popen", fake_popen)
+
+    assert (
+        main(
+            [
+                "torchrun",
+                "--standalone",
+                "--nnodes=1",
+                "--nproc_per_node=2",
+                str(exp_file),
+                "redis_cache_cfg.redis_cluster_ports=[7012,7013]",
+                "redis_cache_cfg.redis_cache_enabled=true",
+                "redis_cache_cfg.redis_rendezvous_world_size=1",
+                "output_root=/tmp/out",
+            ]
+        )
+        == 0
     )
+
+    assert captured["startup_ports"] == [7012, 7013]
+    assert captured["argv"][-2:] == [
+        "redis_cache_cfg.redis_cluster_host=127.0.0.1",
+        "redis_cache_cfg.redis_cluster_ports=[7012,7013]",
+    ]
+    assert captured["argv"].count("redis_cache_cfg.redis_cluster_ports=[7012,7013]") == 1
+    assert captured["argv"].index("--nproc_per_node=2") < captured["argv"].index(str(exp_file))
+
+
+def test_rendezvous_mode_uses_exp_ports(tmp_path: Path, monkeypatch) -> None:
+    exp_file = _write_demo_exp(tmp_path)
     captured = {}
 
     def fake_start_rendezvous_redis_cluster(redis_cache_cfg, world_size, started_nodes):
@@ -71,7 +108,7 @@ def test_rendezvous_mode_uses_exp_ports(tmp_path: Path, monkeypatch) -> None:
 
     def fake_popen(args, **kwargs):
         captured["argv"] = args
-        return type("P", (), {"wait": lambda self: 0})()
+        return _FinishedProcess()
 
     monkeypatch.setattr(
         "scripts.run_with_redis.start_rendezvous_redis_cluster",

@@ -219,18 +219,23 @@ def simple_launch_exp(cfg: DictConfig) -> None:
         YELLOW = "\033[93m"
         INDENT = "    "  # 4 spaces
 
-        print(f"{YELLOW}==> Experiment Configurations (Available Configs):{RESET}")
-        print(INDENT + OmegaConf.to_yaml(cfg).strip().replace("\n", f"\n{INDENT}"))
-        print(f"{YELLOW}==> Overridden Configurations:{RESET}")
+        print(f"{YELLOW}==> Experiment Configurations (Available Configs):{RESET}", flush=True)
+        print(INDENT + OmegaConf.to_yaml(cfg).strip().replace("\n", f"\n{INDENT}"), flush=True)
         exp_instance = exp_class()
         exp_instance.set_cfg(cfg)
-        print("\n")
+
+        class _StdoutLogger:
+            def info(self, message):  # type: ignore[no-untyped-def]
+                print(message, flush=True)
+
+        exp_instance.print_cfg(_StdoutLogger())
+        print("\n", flush=True)
         return
 
     launcher = get_launcher()
 
     if _should_print_launcher():
-        print(f"==> use launcher:{launcher}")
+        print(f"==> use launcher:{launcher}", flush=True)
 
     if launcher == "python":
         _launch_with_ray(cfg, exp_class)

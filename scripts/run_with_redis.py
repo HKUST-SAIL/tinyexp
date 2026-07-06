@@ -87,9 +87,34 @@ from tinyexp import RedisCfgMixin
 
 REDIS_RENDEZVOUS_PORT = 26379
 REDIS_RENDEZVOUS_TIMEOUT_S = 600
+_REDIS_CONNECTION_OVERRIDE_PREFIXES = (
+    "redis_cache_cfg.redis_cluster_host=",
+    "redis_cache_cfg.redis_cluster_ports=",
+)
 
 
-def main(argv: list[str]) -> int:  # noqa: C901
+def _load_python_file(module_path: Path):  # type: ignore[no-untyped-def]
+    spec = importlib.util.spec_from_file_location(f"_tinyexp_run_with_redis_{module_path.stem}", module_path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_experiment_module(argv: list[str]):  # type: ignore[no-untyped-def]
+    if len(argv) >= 3 and Path(argv[0]).name.startswith("python") and argv[1] == "-m":
+        return importlib.import_module(argv[2])
+
+    for arg in argv:
+        module_path = Path(arg)
+        if module_path.suffix == ".py" and module_path.is_file():
+            return _load_python_file(module_path.resolve())
+
+    return None
+
+
+def main(argv: list[str]) -> int:
     if argv[:1] == ["--"]:
         argv = argv[1:]
     if not argv:
@@ -136,22 +161,8 @@ def main(argv: list[str]) -> int:  # noqa: C901
                 f"redis_cache_cfg.redis_cluster_host={startup_host}",
                 f"redis_cache_cfg.redis_cluster_ports=[{','.join(str(port) for port in startup_ports)}]",
             ]
-            app_arg_start = 3 if len(argv) >= 3 and argv[1] == "-m" else 2
-            redis_override_prefixes = (
-                "redis_cache_cfg.redis_cluster_host=",
-                "redis_cache_cfg.redis_cluster_ports=",
-            )
-            argv = [
-                arg
-                for index, arg in enumerate(argv)
-                if index < app_arg_start or not arg.startswith(redis_override_prefixes)
-            ]
-            insert_at = len(argv)
-            for index, arg in enumerate(argv[app_arg_start:], start=app_arg_start):
-                if arg.startswith("--"):
-                    insert_at = index
-                    break
-            argv = [*argv[:insert_at], *overrides, *argv[insert_at:]]
+            argv = [arg for arg in argv if not arg.startswith(_REDIS_CONNECTION_OVERRIDE_PREFIXES)]
+            argv = [*argv, *overrides]
 
         print(f"Running command: {shlex.join(argv)}", flush=True)
         process = subprocess.Popen(argv, env=env)  # noqa: S603
@@ -166,16 +177,7 @@ def main(argv: list[str]) -> int:  # noqa: C901
 
 def build_redis_cache_cfg(argv: list[str]) -> Any:
     exp = None
-    module = None
-    if len(argv) >= 2 and Path(argv[0]).name.startswith("python"):
-        if argv[1] == "-m" and len(argv) >= 3:
-            module = importlib.import_module(argv[2])
-        elif argv[1].endswith(".py"):
-            module_path = Path(argv[1]).resolve()
-            spec = importlib.util.spec_from_file_location(f"_tinyexp_run_with_redis_{module_path.stem}", module_path)
-            if spec is not None and spec.loader is not None:
-                module = importlib.util.module_from_spec(spec)
-                spec.loader.exec_module(module)
+    module = _load_experiment_module(argv)
     if module is not None:
         exp_classes = [
             obj
@@ -193,7 +195,7 @@ def build_redis_cache_cfg(argv: list[str]) -> Any:
         )
         return RedisCfgMixin().redis_cache_cfg
 
-    overrides = [arg for arg in argv[1:] if arg.startswith("redis_cache_cfg.")]
+    overrides = [arg for arg in argv if arg.startswith("redis_cache_cfg.")]
     if overrides:
         exp.set_cfg(OmegaConf.from_dotlist(overrides))
     return exp.redis_cache_cfg

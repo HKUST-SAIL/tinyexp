@@ -6,7 +6,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import wandb
-from omegaconf import OmegaConf
 from torch.optim.lr_scheduler import StepLR
 from torchvision import datasets, transforms
 
@@ -143,10 +142,7 @@ class Exp(TinyExp):
         accelerator = self.accelerator_cfg.build_accelerator()
         run_dir = self.get_run_dir()
         logger = self.logger_cfg.build_logger(save_dir=run_dir, distributed_rank=accelerator.rank)
-        cfg_dict = OmegaConf.to_container(OmegaConf.structured(self), resolve=True)
-        del cfg_dict["hydra"]
-        cfg_msg = OmegaConf.to_yaml(cfg_dict).strip().replace("\n", "\n    ")
-        logger.info(f"-------- Configurations --------\n    {cfg_msg}")
+        cfg_dict = self.print_cfg(logger)
 
         if self.mode == "train":
             self._train(accelerator=accelerator, logger=logger, cfg_dict=cfg_dict, run_dir=run_dir)

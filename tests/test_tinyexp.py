@@ -61,12 +61,36 @@ def test_exp_name_defaults_to_exp_for_dash_c(monkeypatch: pytest.MonkeyPatch) ->
 def test_set_cfg_overrides_exp_name(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RANK", "1")  # avoid noisy stdout prints during tests
     exp = TinyExp()
+    original_exp_name = exp.exp_name
 
     cfg = OmegaConf.create({"exp_name": "my_exp"})
     exp.set_cfg(cfg)
 
     assert exp.exp_name == "my_exp"
-    assert exp.overrided_cfg["exp_name"] == "my_exp"
+    assert exp.overrided_cfg["exp_name"] == {"value": "my_exp", "original": original_exp_name}
+
+
+def test_print_cfg_can_show_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RANK", "0")
+    exp = TinyExp()
+    original_exp_name = exp.exp_name
+    exp.set_cfg(OmegaConf.create({"exp_name": "my_exp"}))
+
+    assert exp.exp_name == "my_exp"
+    assert exp.overrided_cfg["exp_name"] == {"value": "my_exp", "original": original_exp_name}
+
+    messages = []
+    cfg_dict = exp.print_cfg(types.SimpleNamespace(info=lambda message: messages.append(message)))
+    assert messages[0].startswith("-------- Overridden Configurations --------\n    exp_name: my_exp <-- ")
+    assert messages[1].startswith("-------- Configurations --------\n")
+    assert "overrided_cfg:" not in messages[1]
+    assert cfg_dict["exp_name"] == "my_exp"
+    assert "overrided_cfg" not in cfg_dict
+
+    messages.clear()
+    exp.print_cfg(types.SimpleNamespace(info=lambda message: messages.append(message)), show_overrided=False)
+    assert len(messages) == 1
+    assert messages[0].startswith("-------- Configurations --------\n")
 
 
 def test_set_cfg_overrides_nested(monkeypatch: pytest.MonkeyPatch) -> None:

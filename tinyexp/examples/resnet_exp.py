@@ -10,7 +10,6 @@ import torch
 import torch.nn as nn
 import torchvision.models as models
 import wandb
-from omegaconf import OmegaConf
 from PIL import Image
 from torch.optim import SGD
 from torch.optim.lr_scheduler import StepLR
@@ -357,10 +356,7 @@ class ResNetExp(TinyExp, RedisCfgMixin):
         accelerator = self.accelerator_cfg.build_accelerator()
         run_dir = self.get_run_dir()
         logger = self.logger_cfg.build_logger(save_dir=run_dir, distributed_rank=accelerator.rank)
-        cfg_dict = OmegaConf.to_container(OmegaConf.structured(self), resolve=True)
-        del cfg_dict["hydra"]
-        cfg_msg = OmegaConf.to_yaml(cfg_dict).strip().replace("\n", "\n    ")
-        logger.info(f"-------- Configurations --------\n    {cfg_msg}")
+        cfg_dict = self.print_cfg(logger)
 
         if self.mode == "train":
             self._train(

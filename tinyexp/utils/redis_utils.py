@@ -45,6 +45,7 @@ class RedisClusterManager:
         startup_timeout_s: float = 15.0,
         log_dir: str | Path | None = None,
         cluster_enabled: bool = False,
+        log_startup: bool = True,
     ) -> None:
         """
         Initialize RedisClusterManager with specified ports and max memory per port.
@@ -87,6 +88,7 @@ class RedisClusterManager:
         self.startup_timeout_s = float(startup_timeout_s)
         self.log_dir = Path(log_dir) if log_dir is not None else None
         self.cluster_enabled = bool(cluster_enabled)
+        self.log_startup = bool(log_startup)
         self._last_startup_failure: Exception | None = None
         self._cluster_dir: tempfile.TemporaryDirectory[str] | None = None
 
@@ -224,7 +226,8 @@ class RedisClusterManager:
                 self._wait_until_healthy(redis_client, port=port)
                 self.redis_clients.append(redis_client)
 
-                print(f"Redis shard {i} started on port {port}")
+                if self.log_startup:
+                    print(f"Redis shard {i} started on port {port}", flush=True)
 
         except Exception as e:
             self._last_startup_failure = e
@@ -310,7 +313,12 @@ class _RayRedisNodeActor:
         self._node_host: str | None = None
 
     def start(
-        self, ports: list[int], max_memory_per_port: float, log_dir: str | None, cluster_enabled: bool
+        self,
+        ports: list[int],
+        max_memory_per_port: float,
+        log_dir: str | None,
+        cluster_enabled: bool,
+        log_startup: bool,
     ) -> dict[str, Any]:
         node_ip = _get_node_ip_address()
         self._node_host = node_ip
@@ -321,6 +329,7 @@ class _RayRedisNodeActor:
             host=redis_host,
             log_dir=log_dir,
             cluster_enabled=cluster_enabled,
+            log_startup=log_startup,
         )
         if not self._manager.start_redis_cluster():
             failure = self._manager._last_startup_failure
@@ -394,10 +403,12 @@ class RayRedisClusterManager:
                         max_memory_per_port,
                         str(self.log_dir) if self.log_dir else None,
                         cluster_enabled,
+                        False,
                     )
                 )
 
             redis_nodes = ray.get(start_refs)
+            self._log_started_nodes(redis_nodes)
             startup_host = str(redis_nodes[0]["host"])
             startup_ports = [int(port) for port in redis_nodes[0]["ports"]]
             if cluster_enabled:
@@ -409,6 +420,12 @@ class RayRedisClusterManager:
             raise
         world_size = len(redis_nodes) if cluster_enabled else 1
         return startup_host, startup_ports, world_size
+
+    @staticmethod
+    def _log_started_nodes(redis_nodes: list[dict[str, Any]]) -> None:
+        for node in redis_nodes:
+            for i, port in enumerate(node["ports"]):
+                print(f"Redis shard {i} started on port {port}", flush=True)
 
     @staticmethod
     def _validate_node_hosts(redis_nodes: list[dict[str, Any]]) -> None:

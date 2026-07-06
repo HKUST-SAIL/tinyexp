@@ -6,7 +6,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 import torch.nn as nn
-from omegaconf import ListConfig
+from omegaconf import ListConfig, OmegaConf
 
 from tinyexp.examples.resnet_exp import RedisCachedImageFolder, ResNetExp
 
@@ -168,6 +168,23 @@ def test_resnet_run_val_mode_requires_resume_from(tmp_path: Path, monkeypatch) -
 
     with pytest.raises(ValueError, match="resume_from"):
         exp.run()
+
+
+def test_resnet_run_logs_overrides_with_experiment_logger(tmp_path: Path, monkeypatch) -> None:
+    exp = ResNetExp(mode="val", resume_from="")
+    exp.set_cfg(OmegaConf.create({"output_root": str(tmp_path), "exp_name": "resnet_val"}))
+
+    dummy_accelerator = SimpleNamespace(rank=0, device="cpu", is_main_process=True)
+    messages = []
+    dummy_logger = SimpleNamespace(info=lambda message: messages.append(message))
+
+    monkeypatch.setattr(exp.accelerator_cfg, "build_accelerator", lambda: dummy_accelerator)
+    monkeypatch.setattr(exp.logger_cfg, "build_logger", lambda **kwargs: dummy_logger)
+
+    with pytest.raises(ValueError, match="resume_from"):
+        exp.run()
+
+    assert any(message.startswith("-------- Overridden Configurations --------\n") for message in messages)
 
 
 def test_resnet_run_val_mode_uses_checkpoint(tmp_path: Path, monkeypatch) -> None:
