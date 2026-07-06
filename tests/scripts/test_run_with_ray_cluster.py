@@ -19,13 +19,20 @@ def run_command(args: list[str], env: dict[str, str] | None = None) -> subproces
     )
 
 
-def test_run_ray_cluster_shell_syntax() -> None:
-    assert run_command(["bash", "-n", "scripts/run_ray_cluster.sh"]).returncode == 0
+def test_run_with_ray_cluster_python_syntax() -> None:
+    assert run_command([sys.executable, "-m", "py_compile", "scripts/run_with_ray_cluster.py"]).returncode == 0
 
 
-def test_run_ray_cluster_single_node_passthrough_ignores_custom_env() -> None:
+def test_run_with_ray_cluster_single_node_passthrough_ignores_custom_env() -> None:
     result = run_command(
-        ["bash", "scripts/run_ray_cluster.sh", "--", sys.executable, "-c", "print('passthrough-ok')"],
+        [
+            sys.executable,
+            "scripts/run_with_ray_cluster.py",
+            "--",
+            sys.executable,
+            "-c",
+            "print('passthrough-ok')",
+        ],
         env={"RAY_CLUSTER_NODE_COUNT": "bad"},
     )
 
@@ -34,8 +41,18 @@ def test_run_ray_cluster_single_node_passthrough_ignores_custom_env() -> None:
     assert "single-node job detected" in result.stderr
 
 
-def test_run_ray_cluster_multi_node_requires_head_addr() -> None:
-    result = run_command(["bash", "scripts/run_ray_cluster.sh", "--node-count", "2", "--", "echo", "unused"])
+def test_run_with_ray_cluster_multi_node_requires_head_addr() -> None:
+    result = run_command(
+        [
+            sys.executable,
+            "scripts/run_with_ray_cluster.py",
+            "--node-count",
+            "2",
+            "--",
+            "echo",
+            "unused",
+        ]
+    )
 
     assert result.returncode == 2
     assert "--head-addr is required" in result.stderr
