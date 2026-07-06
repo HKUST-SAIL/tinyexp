@@ -31,7 +31,7 @@ def test_redis_cached_image_folder_uses_standalone_clients_for_localhost(tmp_pat
     assert connections == [("127.0.0.1", 7000), ("127.0.0.1", 7001)]
 
 
-def test_redis_cached_image_folder_uses_cluster_client_for_non_localhost(tmp_path: Path, monkeypatch) -> None:
+def test_redis_cached_image_folder_uses_cluster_client_for_multi_machine_cache(tmp_path: Path, monkeypatch) -> None:
     train_root = tmp_path / "train" / "class0"
     train_root.mkdir(parents=True)
     (train_root / "sample.jpg").write_bytes(b"not-an-image")
@@ -46,12 +46,37 @@ def test_redis_cached_image_folder_uses_cluster_client_for_non_localhost(tmp_pat
 
     monkeypatch.setattr("tinyexp.examples.resnet_exp.redis.RedisCluster", FakeRedisCluster)
 
+    RedisCachedImageFolder(
+        redis_host="10.0.0.1",
+        redis_ports=[7000, 7001],
+        root=str(tmp_path / "train"),
+        redis_world_size=2,
+    )
+
+    assert connections == [("10.0.0.1", 7000), ("10.0.0.1", 7001)]
+
+
+def test_redis_cached_image_folder_uses_standalone_clients_when_world_size_is_one(tmp_path: Path, monkeypatch) -> None:
+    train_root = tmp_path / "train" / "class0"
+    train_root.mkdir(parents=True)
+    (train_root / "sample.jpg").write_bytes(b"not-an-image")
+    connections: list[tuple[str, int]] = []
+
+    class FakeRedis:
+        def __init__(self, *, host, port, **kwargs):
+            connections.append((host, port))
+
+        def ping(self):
+            return True
+
+    monkeypatch.setattr("tinyexp.examples.resnet_exp.redis.Redis", FakeRedis)
+
     RedisCachedImageFolder(redis_host="10.0.0.1", redis_ports=[7000, 7001], root=str(tmp_path / "train"))
 
     assert connections == [("10.0.0.1", 7000), ("10.0.0.1", 7001)]
 
 
-def test_redis_cached_image_folder_shards_localhost_keys_across_ports(tmp_path: Path, monkeypatch) -> None:
+def test_redis_cached_image_folder_shards_standalone_keys_across_ports(tmp_path: Path, monkeypatch) -> None:
     train_root = tmp_path / "train" / "class0"
     train_root.mkdir(parents=True)
     (train_root / "sample0.jpg").write_bytes(b"not-an-image")
@@ -95,11 +120,12 @@ def test_resnet_dataloader_passes_complete_redis_cfg_to_cached_folder(
     captured: dict[str, object] = {}
 
     class FakeRedisCachedImageFolder:
-        def __init__(self, *, redis_host, redis_ports, root, transform):
+        def __init__(self, *, redis_host, redis_ports, root, transform, redis_world_size):
             captured["redis_host"] = redis_host
             captured["redis_ports"] = redis_ports
             captured["root"] = root
             captured["transform"] = transform
+            captured["redis_world_size"] = redis_world_size
 
         def __len__(self):
             return 1
@@ -120,12 +146,14 @@ def test_resnet_dataloader_passes_complete_redis_cfg_to_cached_folder(
         redis_cache_enabled=True,
         redis_cluster_host="10.0.0.1",
         redis_cluster_ports=ListConfig([7300, 7301, 7302]),
+        redis_rendezvous_world_size=2,
     )
 
     dataloader_cfg.build_train_dataloader(accelerator=SimpleNamespace(), redis_cache_cfg=redis_cache_cfg)
 
     assert captured["redis_host"] == "10.0.0.1"
     assert captured["redis_ports"] == [7300, 7301, 7302]
+    assert captured["redis_world_size"] == 2
     assert captured["root"] == "/imagenet/train"
 
 
@@ -244,6 +272,99 @@ def test_resnet_train_saves_last_and_best_checkpoints(tmp_path: Path, monkeypatc
     assert saved[0]["best_metric"] is None
     assert saved[1]["name"] == exp.checkpoint_cfg.best_ckpt_name
     assert saved[1]["best_metric"] == 0.5
+
+
+def test_resnet_train_stops_at_max_train_epochs(tmp_path: Path, monkeypatch) -> None:
+    exp = ResNetExp(output_root=str(tmp_path), exp_name="resnet_train", max_train_epochs=2)
+
+    class DummyAccelerator:
+        rank = 0
+        device = "cpu"
+        is_main_process = True
+        world_size = 1
+
+        def prepare(self, module, optimizer):
+            return module, optimizer
+
+        def unwrap_model(self, module):
+            return module
+
+        def backward(self, loss):
+            loss.backward()
+
+    train_batch = [(torch.randn(2, 2), torch.tensor([0, 1]))]
+    val_batch = [(torch.randn(2, 2), torch.tensor([0, 1]))]
+
+    monkeypatch.setattr(
+        exp.dataloader_cfg,
+        "build_train_dataloader",
+        lambda accelerator, redis_cache_cfg: train_batch,
+    )
+    monkeypatch.setattr(exp.dataloader_cfg, "build_val_dataloader", lambda accelerator: val_batch)
+    monkeypatch.setattr(exp.module_cfg, "build_module", lambda: nn.Linear(2, 2))
+    monkeypatch.setattr(
+        exp.optimizer_cfg,
+        "build_optimizer",
+        lambda module, dataloader, accelerator: torch.optim.SGD(module.parameters(), lr=0.1),
+    )
+    monkeypatch.setattr(exp, "_evaluate", lambda **kwargs: 0.5)
+    saved: list[dict[str, object]] = []
+    monkeypatch.setattr(exp.checkpoint_cfg, "save_checkpoint", lambda **kwargs: saved.append(kwargs))
+
+    exp._train(
+        accelerator=DummyAccelerator(),
+        logger=SimpleNamespace(info=lambda *args, **kwargs: None),
+        cfg_dict={},
+        run_dir=str(tmp_path / "resnet_train"),
+    )
+
+    assert [item["epoch"] for item in saved] == [0, 0, 1]
+    assert [item["global_step"] for item in saved] == [1, 1, 2]
+
+
+def test_resnet_train_stops_at_max_train_steps(tmp_path: Path, monkeypatch) -> None:
+    exp = ResNetExp(output_root=str(tmp_path), exp_name="resnet_train", max_train_steps=1)
+
+    class DummyAccelerator:
+        rank = 0
+        device = "cpu"
+        is_main_process = True
+        world_size = 1
+
+        def prepare(self, module, optimizer):
+            return module, optimizer
+
+        def unwrap_model(self, module):
+            return module
+
+        def backward(self, loss):
+            loss.backward()
+
+    train_batch = [(torch.randn(2, 2), torch.tensor([0, 1]))]
+
+    monkeypatch.setattr(
+        exp.dataloader_cfg,
+        "build_train_dataloader",
+        lambda accelerator, redis_cache_cfg: train_batch,
+    )
+    monkeypatch.setattr(exp.dataloader_cfg, "build_val_dataloader", lambda accelerator: [])
+    monkeypatch.setattr(exp.module_cfg, "build_module", lambda: nn.Linear(2, 2))
+    monkeypatch.setattr(
+        exp.optimizer_cfg,
+        "build_optimizer",
+        lambda module, dataloader, accelerator: torch.optim.SGD(module.parameters(), lr=0.1),
+    )
+    monkeypatch.setattr(exp, "_evaluate", lambda **kwargs: pytest.fail("eval should not run"))
+    monkeypatch.setattr(
+        exp.checkpoint_cfg, "save_checkpoint", lambda **kwargs: pytest.fail("checkpoint should not save")
+    )
+
+    exp._train(
+        accelerator=DummyAccelerator(),
+        logger=SimpleNamespace(info=lambda *args, **kwargs: None),
+        cfg_dict={},
+        run_dir=str(tmp_path / "resnet_train"),
+    )
 
 
 def test_resnet_train_resume_loads_checkpoint_state(tmp_path: Path, monkeypatch) -> None:

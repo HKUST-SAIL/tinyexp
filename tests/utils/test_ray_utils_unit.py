@@ -1,8 +1,15 @@
 from __future__ import annotations
 
 import pytest
+from omegaconf import OmegaConf
 
-from tinyexp.utils.ray_utils import _build_worker_env_vars, _should_print_launcher, get_launcher, get_placement_group
+from tinyexp.utils.ray_utils import (
+    _build_worker_env_vars,
+    _maybe_start_ray_redis_cache,
+    _should_print_launcher,
+    get_launcher,
+    get_placement_group,
+)
 
 
 def test_get_launcher_defaults_to_python() -> None:
@@ -43,11 +50,37 @@ def test_get_placement_group_defaults_to_pack(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr("tinyexp.utils.ray_utils.placement_group", fake_placement_group)
     monkeypatch.setattr("tinyexp.utils.ray_utils.ray.get", lambda ref: ref)
+    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.is_initialized", lambda: False)
 
     get_placement_group(num_worker=2, num_gpus_per_worker=0, num_cpus_per_worker=3)
 
     assert captured == {
         "bundles": [{"CPU": 3, "GPU": 0}, {"CPU": 3, "GPU": 0}],
+        "strategy": "PACK",
+    }
+
+
+def test_get_placement_group_pins_first_bundle_to_head_when_ray_initialized(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = {}
+
+    class FakePlacementGroup:
+        def ready(self):
+            return "ready"
+
+    def fake_placement_group(bundles, strategy):
+        captured["bundles"] = bundles
+        captured["strategy"] = strategy
+        return FakePlacementGroup()
+
+    monkeypatch.setattr("tinyexp.utils.ray_utils.placement_group", fake_placement_group)
+    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.get", lambda ref: ref)
+    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.is_initialized", lambda: True)
+    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.cluster_resources", lambda: {"node:__internal_head__": 1.0})
+
+    get_placement_group(num_worker=2, num_gpus_per_worker=1, num_cpus_per_worker=3)
+
+    assert captured == {
+        "bundles": [{"CPU": 3, "GPU": 1, "node:__internal_head__": 0.001}, {"CPU": 3, "GPU": 1}],
         "strategy": "PACK",
     }
 
@@ -69,3 +102,110 @@ def test_get_placement_group_accepts_explicit_strategy(monkeypatch: pytest.Monke
     get_placement_group(num_worker=2, strategy="SPREAD")
 
     assert captured["strategy"] == "SPREAD"
+
+
+def test_maybe_start_ray_redis_cache_returns_none_without_redis_cfg() -> None:
+    assert _maybe_start_ray_redis_cache(OmegaConf.create({})) is None
+
+
+def test_maybe_start_ray_redis_cache_returns_none_when_disabled() -> None:
+    cfg = OmegaConf.create({"redis_cache_cfg": {"redis_cache_enabled": False}})
+    assert _maybe_start_ray_redis_cache(cfg) is None
+
+
+def test_maybe_start_ray_redis_cache_starts_standalone_for_world_size_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    created = []
+    captured = {}
+
+    class FakeRayRedisClusterManager:
+        def __init__(self, redis_cache_cfg) -> None:  # type: ignore[no-untyped-def]
+            self.redis_cache_cfg = redis_cache_cfg
+            created.append(self)
+
+        def start(self, *, cluster_enabled: bool) -> tuple[str, list[int], int]:
+            captured["cluster_enabled"] = cluster_enabled
+            return "10.0.0.1", [7000], 1
+
+    monkeypatch.setattr("tinyexp.utils.ray_utils.RayRedisClusterManager", FakeRayRedisClusterManager)
+
+    cfg = OmegaConf.create(
+        {
+            "redis_cache_cfg": {
+                "redis_cache_enabled": True,
+                "redis_cluster_host": "127.0.0.1",
+                "redis_cluster_ports": [7000],
+                "redis_rendezvous_world_size": 1,
+            }
+        }
+    )
+
+    manager = _maybe_start_ray_redis_cache(cfg)
+
+    assert manager is created[0]
+    assert captured["cluster_enabled"] is False
+    assert cfg.redis_cache_cfg.redis_cluster_host == "10.0.0.1"
+    assert list(cfg.redis_cache_cfg.redis_cluster_ports) == [7000]
+    assert cfg.redis_cache_cfg.redis_rendezvous_world_size == 1
+
+
+def test_maybe_start_ray_redis_cache_returns_none_for_external_cluster_cfg() -> None:
+    cfg = OmegaConf.create(
+        {
+            "redis_cache_cfg": {
+                "redis_cache_enabled": True,
+                "redis_cluster_host": "10.0.0.1",
+                "redis_cluster_ports": [7000, 7001, 7002],
+                "redis_rendezvous_world_size": 2,
+            }
+        }
+    )
+
+    assert _maybe_start_ray_redis_cache(cfg) is None
+
+
+def test_maybe_start_ray_redis_cache_rejects_invalid_world_size() -> None:
+    cfg = OmegaConf.create(
+        {
+            "redis_cache_cfg": {
+                "redis_cache_enabled": True,
+                "redis_cluster_ports": [7000],
+                "redis_rendezvous_world_size": 0,
+            }
+        }
+    )
+
+    with pytest.raises(ValueError, match="redis_rendezvous_world_size"):
+        _maybe_start_ray_redis_cache(cfg)
+
+
+def test_maybe_start_ray_redis_cache_writes_resolved_cfg_for_auto_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    created = []
+
+    class FakeRayRedisClusterManager:
+        def __init__(self, redis_cache_cfg) -> None:  # type: ignore[no-untyped-def]
+            self.redis_cache_cfg = redis_cache_cfg
+            created.append(self)
+
+        def start(self, *, cluster_enabled: bool) -> tuple[str, list[int], int]:
+            assert cluster_enabled is True
+            return "10.0.0.1", [7000, 7001, 7002], 2
+
+    monkeypatch.setattr("tinyexp.utils.ray_utils.RayRedisClusterManager", FakeRayRedisClusterManager)
+
+    cfg = OmegaConf.create(
+        {
+            "redis_cache_cfg": {
+                "redis_cache_enabled": True,
+                "redis_cluster_host": "127.0.0.1",
+                "redis_cluster_ports": [7000],
+                "redis_rendezvous_world_size": -1,
+            }
+        }
+    )
+
+    manager = _maybe_start_ray_redis_cache(cfg)
+
+    assert manager is created[0]
+    assert cfg.redis_cache_cfg.redis_cluster_host == "10.0.0.1"
+    assert list(cfg.redis_cache_cfg.redis_cluster_ports) == [7000, 7001, 7002]
+    assert cfg.redis_cache_cfg.redis_rendezvous_world_size == 2

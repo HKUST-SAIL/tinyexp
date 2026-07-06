@@ -240,8 +240,9 @@ class RedisCfgMixin:
         """
         Hydra-overridable options live in dataclass fields below.
 
-        Single-machine runs use a local standalone Redis server. Multi-machine runs use Redis Cluster.
-        Redis lifecycle is owned by ``scripts/run_with_redis.py``.
+        Single-machine runs use standalone Redis. Multi-machine runs can use Redis Cluster.
+        Redis lifecycle is owned by the launcher: ``scripts/run_with_redis.py`` for
+        wrapper-based runs, or Ray-managed Redis for Ray launches.
         """
 
         redis_cache_enabled: bool = True
@@ -250,6 +251,10 @@ class RedisCfgMixin:
             default_factory=lambda: ListConfig([7000, 7001, 7002, 7003, 7004, 7005])
         )
         redis_cache_max_memory: int = 160  # Maximum memory is 160GB, according to the ImageNet dataset size
+
+        # 1: standalone Redis. In Ray launches, this starts one local Redis per alive Ray node.
+        # -1: Ray-managed Redis Cluster using the alive Ray nodes.
+        # >1: externally managed Redis Cluster rendezvous world size.
         redis_rendezvous_world_size: int = 1
 
     redis_cache_cfg: RedisCacheCfg = field(default_factory=RedisCacheCfg)

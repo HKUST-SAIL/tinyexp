@@ -11,11 +11,41 @@ from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from ..exceptions import InsufficientCPUError, InvalidWorkerCountError, UnknownExperimentModeError, UnknownLauncherError
+from .redis_utils import RayRedisClusterManager
+
+_RAY_HEAD_NODE_RESOURCE = "node:__internal_head__"
+# Ray node resources are capacity-1 logical labels. A tiny fractional request pins
+# bundle 0 to the head node without meaningfully consuming CPU/GPU resources.
+_RAY_NODE_RESOURCE_PIN = 0.001
+
+
+def _maybe_start_ray_redis_cache(cfg: DictConfig) -> RayRedisClusterManager | None:
+    redis_cache_cfg = getattr(cfg, "redis_cache_cfg", None)
+    if redis_cache_cfg is None or not bool(getattr(redis_cache_cfg, "redis_cache_enabled", False)):
+        return None
+
+    requested_world_size = int(getattr(redis_cache_cfg, "redis_rendezvous_world_size", 1))
+    if requested_world_size == 1:
+        cluster_enabled = False
+    elif requested_world_size == -1:
+        cluster_enabled = True
+    elif requested_world_size > 1:
+        return None
+    else:
+        raise ValueError("redis_rendezvous_world_size must be -1, 1, or > 1")  # noqa: TRY003
+
+    manager = RayRedisClusterManager(redis_cache_cfg)
+    startup_host, startup_ports, world_size = manager.start(cluster_enabled=cluster_enabled)
+    redis_cache_cfg.redis_cluster_host = startup_host
+    redis_cache_cfg.redis_cluster_ports = startup_ports
+    redis_cache_cfg.redis_rendezvous_world_size = world_size
+    return manager
 
 
 def _launch_with_ray(cfg: DictConfig, exp_class: type[Any]) -> None:
     ray.init()
     pg = None
+    redis_manager = None
     worker_group = []
 
     try:
@@ -33,6 +63,8 @@ def _launch_with_ray(cfg: DictConfig, exp_class: type[Any]) -> None:
 
         if needed_cpu > total_cpu:
             raise InsufficientCPUError(total_cpu=total_cpu, needed_cpu=needed_cpu)
+
+        redis_manager = _maybe_start_ray_redis_cache(cfg)
 
         # -------------------- allocate resources for run ----------------- #
 
@@ -57,6 +89,10 @@ def _launch_with_ray(cfg: DictConfig, exp_class: type[Any]) -> None:
             with suppress(Exception):
                 ray.util.remove_placement_group(pg)
 
+        if redis_manager is not None:
+            with suppress(Exception):
+                redis_manager.stop()
+
         if ray.is_initialized():
             with suppress(Exception):
                 ray.shutdown()
@@ -65,6 +101,11 @@ def _launch_with_ray(cfg: DictConfig, exp_class: type[Any]) -> None:
 def get_placement_group(num_worker, num_gpus_per_worker=1, num_cpus_per_worker=10, strategy="PACK"):
     """Create and return a placement group for worker allocation."""
     bundles = [{"CPU": num_cpus_per_worker, "GPU": num_gpus_per_worker} for _ in range(num_worker)]
+    cluster_resources = ray.cluster_resources() if ray.is_initialized() else {}
+    if num_worker > 1 and _RAY_HEAD_NODE_RESOURCE in cluster_resources:
+        # PyTorch env:// starts TCPStore on rank 0 at MASTER_ADDR. get_network_config()
+        # uses the Ray head address, so rank 0's bundle must be scheduled on the head.
+        bundles[0][_RAY_HEAD_NODE_RESOURCE] = _RAY_NODE_RESOURCE_PIN
     pg = placement_group(bundles=bundles, strategy=strategy)
     ray.get(pg.ready())
     return pg

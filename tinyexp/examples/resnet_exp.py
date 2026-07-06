@@ -109,6 +109,7 @@ class RedisCachedImageFolder:
         root: str,
         transform=None,
         target_transform=None,
+        redis_world_size: int = 1,
     ):
         self.root = root
         self.transform = transform
@@ -116,15 +117,14 @@ class RedisCachedImageFolder:
         self.dataset = datasets.ImageFolder(root)
         self.redis_clients = []
 
-        self._init_redis_connection(redis_host, redis_ports)
+        self._init_redis_connection(redis_host, redis_ports, redis_world_size=redis_world_size)
         self.cache_misses = 0
         self.cache_hits = 0
         self.dataset_prefix = os.path.basename(root)[0]
 
-    def _init_redis_connection(self, redis_host: str, redis_ports: list[int]):
+    def _init_redis_connection(self, redis_host: str, redis_ports: list[int], *, redis_world_size: int):
         try:
-            is_standalone = redis_host == "127.0.0.1"
-            if is_standalone:
+            if redis_world_size <= 1:
                 self.redis_clients = [
                     redis.Redis(
                         host=redis_host,
@@ -314,6 +314,7 @@ class ResNetExp(TinyExp, RedisCfgMixin):
                     redis_ports=list(redis_cache_cfg.redis_cluster_ports),
                     root=os.path.join(self.data_root, "train"),
                     transform=transform,
+                    redis_world_size=int(redis_cache_cfg.redis_rendezvous_world_size),
                 )
             else:
                 ds_train = datasets.ImageFolder(root=os.path.join(self.data_root, "train"), transform=transform)
