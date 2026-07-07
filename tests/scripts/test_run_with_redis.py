@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import signal
+import subprocess
 from pathlib import Path
 
-from scripts.run_with_redis import build_redis_cache_cfg, main
+from scripts import run_with_redis
+from scripts.run_with_redis import build_redis_cache_cfg, main, stop_child_process
 
 
 def _write_demo_exp(tmp_path: Path) -> Path:
@@ -19,6 +22,7 @@ def _write_demo_exp(tmp_path: Path) -> Path:
 
 class _FinishedProcess:
     def __init__(self) -> None:
+        self.pid = 12345
         self.returncode = 0
 
     def wait(self, timeout=None) -> int:  # type: ignore[no-untyped-def]
@@ -88,6 +92,7 @@ def test_run_with_redis_appends_connection_overrides_for_torchrun_command(tmp_pa
 
     def fake_popen(args, **kwargs):
         captured["argv"] = args
+        captured["popen_kwargs"] = kwargs
         return _FinishedProcess()
 
     monkeypatch.setattr("scripts.run_with_redis.start_local_redis", fake_start_local_redis)
@@ -119,6 +124,7 @@ def test_run_with_redis_appends_connection_overrides_for_torchrun_command(tmp_pa
     assert captured["argv"].count("redis_cache_cfg.redis_cluster_ports=[7012,7013]") == 1
     assert captured["argv"].count("redis_cache_cfg.redis_rendezvous_world_size=1") == 1
     assert captured["argv"].index("--nproc_per_node=2") < captured["argv"].index(str(exp_file))
+    assert captured["popen_kwargs"]["start_new_session"] is True
 
 
 def test_rendezvous_mode_uses_exp_ports(tmp_path: Path, monkeypatch) -> None:
@@ -145,6 +151,7 @@ def test_rendezvous_mode_uses_exp_ports(tmp_path: Path, monkeypatch) -> None:
 
     def fake_popen(args, **kwargs):
         captured["argv"] = args
+        captured["popen_kwargs"] = kwargs
         return _FinishedProcess()
 
     monkeypatch.setattr(
@@ -187,3 +194,34 @@ def test_rendezvous_mode_uses_exp_ports(tmp_path: Path, monkeypatch) -> None:
     assert captured["argv"].count("redis_cache_cfg.redis_rendezvous_world_size=2") == 1
     assert "redis_cache_cfg.redis_cluster_host=old" not in captured["argv"]
     assert "redis_cache_cfg.redis_rendezvous_world_size=99" not in captured["argv"]
+    assert captured["popen_kwargs"]["start_new_session"] is True
+
+
+def test_stop_child_process_signals_process_group_and_kills_on_timeout(
+    monkeypatch,
+) -> None:
+    calls = []
+
+    class HangingProcess:
+        pid = 24680
+
+        def poll(self):  # type: ignore[no-untyped-def]
+            return None
+
+        def wait(self, timeout=None):  # type: ignore[no-untyped-def]
+            raise subprocess.TimeoutExpired("child", timeout)
+
+        def send_signal(self, signum):  # type: ignore[no-untyped-def]
+            calls.append(("send_signal", signum))
+
+        def kill(self):  # type: ignore[no-untyped-def]
+            calls.append(("kill", signal.SIGKILL))
+
+    def fake_killpg(pid, signum):  # type: ignore[no-untyped-def]
+        calls.append((pid, signum))
+
+    monkeypatch.setattr(run_with_redis.os, "killpg", fake_killpg)
+
+    stop_child_process(HangingProcess(), signal.SIGTERM, timeout_s=0)
+
+    assert calls == [(24680, signal.SIGTERM), (24680, signal.SIGKILL)]

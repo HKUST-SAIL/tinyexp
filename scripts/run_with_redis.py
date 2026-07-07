@@ -208,7 +208,11 @@ def main(argv: list[str]) -> int:
             command = [*command, *overrides]
 
         print(f"Running command: {shlex.join(command)}", flush=True)
-        CHILD_PROCESS = subprocess.Popen(command, env=os.environ.copy())  # noqa: S603
+        CHILD_PROCESS = subprocess.Popen(  # noqa: S603
+            command,
+            env=os.environ.copy(),
+            start_new_session=True,
+        )
         exit_code = CHILD_PROCESS.wait()
         if startup_node is not None and world_size > 1:
             wait_for_rendezvous_finish(
@@ -729,15 +733,44 @@ def wait_for_redis(host: str, port: int) -> bool:
     return False
 
 
+def signal_process_group(process: subprocess.Popen[Any], signum: int) -> None:
+    pid = getattr(process, "pid", None)
+    killpg = getattr(os, "killpg", None)
+    if pid is not None and killpg is not None:
+        with suppress(ProcessLookupError, PermissionError):
+            killpg(int(pid), signum)
+            return
+    with suppress(ProcessLookupError, PermissionError):
+        process.send_signal(signum)
+
+
+def kill_process_group(process: subprocess.Popen[Any]) -> None:
+    pid = getattr(process, "pid", None)
+    killpg = getattr(os, "killpg", None)
+    if pid is not None and killpg is not None:
+        with suppress(ProcessLookupError, PermissionError):
+            killpg(int(pid), signal.SIGKILL)
+            return
+    with suppress(ProcessLookupError, PermissionError):
+        process.kill()
+
+
+def stop_child_process(process: subprocess.Popen[Any], signum: int, timeout_s: int = 30) -> None:
+    if process.poll() is not None:
+        return
+    signal_process_group(process, signum)
+    try:
+        process.wait(timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        if process.poll() is None:
+            kill_process_group(process)
+            with suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=5)
+
+
 def handle_signal(signum: int, _frame: object) -> None:
-    if CHILD_PROCESS is not None and CHILD_PROCESS.poll() is None:
-        with suppress(ProcessLookupError):
-            CHILD_PROCESS.send_signal(signum)
-        with suppress(subprocess.TimeoutExpired):
-            CHILD_PROCESS.wait(timeout=30)
-        if CHILD_PROCESS.poll() is None:
-            with suppress(ProcessLookupError):
-                CHILD_PROCESS.kill()
+    if CHILD_PROCESS is not None:
+        stop_child_process(CHILD_PROCESS, signum)
     cleanup_started_nodes(STARTED_NODES)
     raise SystemExit(128 + signum)
 
