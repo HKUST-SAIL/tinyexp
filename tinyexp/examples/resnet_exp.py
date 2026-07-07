@@ -223,6 +223,8 @@ class RedisCachedImageFolder:
 @dataclass(repr=False)
 class ResNetExp(TinyExp, RedisCfgMixin):
     mode: str = "train"
+    max_train_epochs: int = 90
+    max_train_steps: int = -1
 
     @dataclass
     class AcceleratorCfg:
@@ -447,7 +449,7 @@ class ResNetExp(TinyExp, RedisCfgMixin):
 
         train_iter = iter(train_dataloader)
 
-        for global_epoch in range(start_epoch, 90):
+        for global_epoch in range(start_epoch, self.max_train_epochs):
             module.train()
 
             epoch_start_time = time.time()
@@ -468,6 +470,9 @@ class ResNetExp(TinyExp, RedisCfgMixin):
                 accelerator.backward(loss)
                 optimizer.step()
                 global_step += 1
+
+                if 0 < self.max_train_steps <= global_step:
+                    return
 
                 if global_step % 20 == 0:
                     epoch_elapsed_time = time.time() - epoch_start_time

@@ -1,3 +1,5 @@
+from contextlib import suppress
+
 import pytest
 import ray
 import torch
@@ -40,19 +42,36 @@ class TestDDPAcceleratorWithRay:
         pg = get_placement_group(
             num_worker=num_workers,
             num_gpus_per_worker=1.0,  # Each worker gets 1 GPU
-            num_cpus_per_worker=4,  # Each worker gets 1 CPU
+            num_cpus_per_worker=4,
         )
         gpu_per_actor = 0.2
+        cpus_per_actor = 1
 
-        options_list1 = get_num_worker_options(pg, num_workers, gpu_ratio=gpu_per_actor)
-        worker_group1 = [DDPAcceleratorProxy.options(**options).remote() for options in options_list1]
-        run_futures1 = [worker.test_reduce_sum.remote() for worker in worker_group1]
+        worker_group = []
+        try:
+            options_list1 = get_num_worker_options(
+                pg,
+                num_workers,
+                gpu_ratio=gpu_per_actor,
+                num_cpus_per_worker=cpus_per_actor,
+            )
+            worker_group1 = [DDPAcceleratorProxy.options(**options).remote() for options in options_list1]
 
-        options_list2 = get_num_worker_options(pg, num_workers, gpu_ratio=gpu_per_actor)
-        worker_group2 = [DDPAcceleratorProxy.options(**options).remote() for options in options_list2]
-        run_futures2 = [worker.test_reduce_sum.remote() for worker in worker_group2]
+            options_list2 = get_num_worker_options(
+                pg,
+                num_workers,
+                gpu_ratio=gpu_per_actor,
+                num_cpus_per_worker=cpus_per_actor,
+            )
+            worker_group2 = [DDPAcceleratorProxy.options(**options).remote() for options in options_list2]
 
-        results1 = ray.get(run_futures1)
-        results2 = ray.get(run_futures2)
-        assert all(results1)
-        assert all(results2)
+            worker_group = worker_group1 + worker_group2
+            run_futures = [worker.test_reduce_sum.remote() for worker in worker_group]
+
+            results = ray.get(run_futures, timeout=60)
+            assert all(results)
+        finally:
+            for worker in worker_group:
+                with suppress(Exception):
+                    ray.kill(worker, no_restart=True)
+            ray.util.remove_placement_group(pg)
