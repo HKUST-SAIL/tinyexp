@@ -176,7 +176,7 @@ class TinyExp:
     hydra: _HydraConfig = field(default_factory=_HydraConfig)
 
     # ---------------- luancher configuration ---------------- #
-    ray_num_worker: int = -1  # Number of Ray workers, -1 means it must be set by the experiment or CLI.
+    ray_num_worker: int = -1  # Number of Ray workers, -1 means using all Ray cluster GPU resources.
     ray_num_gpus_per_worker: float = 1.0  # Number of GPUs per Ray worker, should be a float value between 0 and 1.
     ray_placement_strategy: str = "PACK"
 

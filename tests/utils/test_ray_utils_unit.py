@@ -18,8 +18,40 @@ def test_get_launcher_defaults_to_python() -> None:
     assert get_launcher() == "python"
 
 
-def test_launch_with_ray_rejects_invalid_ray_worker_count() -> None:
+def test_launch_with_ray_rejects_invalid_ray_worker_count_without_starting_ray(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     cfg = OmegaConf.create({"ray_num_worker": 0})
+    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.init", lambda: pytest.fail("ray.init should not be called"))
+
+    with pytest.raises(InvalidWorkerCountError, match="Number of workers"):
+        _launch_with_ray(cfg, object)
+
+
+def test_launch_with_ray_resolves_auto_worker_count_from_cluster_gpus(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = OmegaConf.create({"ray_num_worker": -1})
+
+    def stop_after_resolution(exp_class):  # type: ignore[no-untyped-def]
+        raise RuntimeError("resolved")
+
+    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.init", lambda: None)
+    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.remote", stop_after_resolution)
+    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.cluster_resources", lambda: {"GPU": 2.0})
+    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.is_initialized", lambda: True)
+    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.shutdown", lambda: None)
+
+    with pytest.raises(RuntimeError, match="resolved"):
+        _launch_with_ray(cfg, object)
+
+    assert cfg.ray_num_worker == 2
+
+
+def test_launch_with_ray_rejects_missing_cluster_gpus(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = OmegaConf.create({"ray_num_worker": -1})
+    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.init", lambda: None)
+    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.cluster_resources", lambda: {"CPU": 8.0})
+    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.is_initialized", lambda: True)
+    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.shutdown", lambda: None)
 
     with pytest.raises(InvalidWorkerCountError, match="Number of workers"):
         _launch_with_ray(cfg, object)

@@ -223,7 +223,6 @@ class RedisCachedImageFolder:
 @dataclass(repr=False)
 class ResNetExp(TinyExp, RedisCfgMixin):
     mode: str = "train"
-    ray_num_worker: int = torch.cuda.device_count()
 
     @dataclass
     class AcceleratorCfg:

@@ -48,15 +48,26 @@ def _maybe_start_ray_redis_cache(cfg: DictConfig) -> RayRedisClusterManager | No
 
 
 def _launch_with_ray(cfg: DictConfig, exp_class: type[Any]) -> None:
-    if cfg.ray_num_worker <= 0:
-        raise InvalidWorkerCountError(cfg.ray_num_worker)
+    ray_num_worker = int(cfg.ray_num_worker)
+    if ray_num_worker < -1 or ray_num_worker == 0:
+        raise InvalidWorkerCountError(ray_num_worker)
 
-    ray.init()
     pg = None
     redis_manager = None
     worker_group = []
 
+    ray.init()
     try:
+        if ray_num_worker == -1:
+            ray_num_worker = int(ray.cluster_resources().get("GPU", 0))
+            if ray_num_worker <= 0:
+                raise InvalidWorkerCountError(ray_num_worker)
+            print(
+                f"==> ray_num_worker is -1, using all Ray cluster GPU resources: {ray_num_worker}",
+                flush=True,
+            )
+        cfg.ray_num_worker = ray_num_worker
+
         remote_exp = ray.remote(exp_class)
 
         # -------------------- check cpu count for run ----------------- #
