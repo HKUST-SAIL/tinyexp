@@ -18,6 +18,42 @@ def test_get_launcher_defaults_to_python() -> None:
     assert get_launcher() == "python"
 
 
+def test_get_launcher_ignores_torchrun_in_hydra_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeProcess:
+        pid = 123
+
+        def cmdline(self):
+            return ["python", "tinyexp/examples/resnet_exp.py", "exp_name=resnet_run_with_redis_torchrun_simple"]
+
+        def name(self):
+            return "python"
+
+        def parent(self):
+            return None
+
+    monkeypatch.setattr("tinyexp.utils.ray_utils.psutil.Process", lambda pid: FakeProcess())
+
+    assert get_launcher() == "python"
+
+
+def test_get_launcher_detects_torchrun_executable(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeProcess:
+        pid = 123
+
+        def cmdline(self):
+            return ["torchrun", "--standalone", "tinyexp/examples/resnet_exp.py"]
+
+        def name(self):
+            return "torchrun"
+
+        def parent(self):
+            return None
+
+    monkeypatch.setattr("tinyexp.utils.ray_utils.psutil.Process", lambda pid: FakeProcess())
+
+    assert get_launcher() == "torchrun"
+
+
 def test_launch_with_ray_rejects_invalid_ray_worker_count_without_starting_ray(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

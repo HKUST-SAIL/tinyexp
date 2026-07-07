@@ -208,18 +208,18 @@ def get_launcher():
         process_chain.append(parent)
         current_process = parent
 
-    # Check if there is torchrun or python in the process chain
     for proc in process_chain:
         try:
-            cmd_line = " ".join(proc.cmdline())
+            cmdline = proc.cmdline()
             proc_name = proc.name()
-            # print(cmd_line, proc_name)
-            if "torchrun" in cmd_line or "torchrun" in proc_name:
-                return "torchrun"
-            if "accelerate" in cmd_line or "accelerate" in proc_name:
-                return "accelerate"
         except (psutil.AccessDenied, psutil.NoSuchProcess, PermissionError):
             continue
+
+        executable = os.path.basename(cmdline[0]) if cmdline else proc_name
+        if executable == "torchrun" or proc_name == "torchrun" or "torch.distributed.run" in cmdline:
+            return "torchrun"
+        if executable == "accelerate" or proc_name == "accelerate" or "accelerate.commands.launch" in cmdline:
+            return "accelerate"
 
     return "python"
 
