@@ -10,7 +10,12 @@ from omegaconf import DictConfig
 from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from ..exceptions import InsufficientCPUError, InvalidWorkerCountError, UnknownExperimentModeError, UnknownLauncherError
+from ..exceptions import (
+    InsufficientCPUError,
+    InvalidWorkerCountError,
+    UnknownExperimentModeError,
+    UnknownLauncherError,
+)
 from .redis_utils import RayRedisClusterManager
 
 _RAY_HEAD_NODE_RESOURCE = "node:__internal_head__"
@@ -43,6 +48,9 @@ def _maybe_start_ray_redis_cache(cfg: DictConfig) -> RayRedisClusterManager | No
 
 
 def _launch_with_ray(cfg: DictConfig, exp_class: type[Any]) -> None:
+    if cfg.ray_num_worker <= 0:
+        raise InvalidWorkerCountError(cfg.ray_num_worker)
+
     ray.init()
     pg = None
     redis_manager = None
@@ -58,7 +66,7 @@ def _launch_with_ray(cfg: DictConfig, exp_class: type[Any]) -> None:
         if cfg.mode == "train":
             needed_num_cpus_per_worker += cfg.dataloader_cfg.train_data_worker_per_gpu
 
-        needed_cpu = cfg.num_worker * needed_num_cpus_per_worker
+        needed_cpu = cfg.ray_num_worker * needed_num_cpus_per_worker
         total_cpu = int(ray.cluster_resources().get("CPU", 0))
 
         if needed_cpu > total_cpu:
@@ -69,15 +77,15 @@ def _launch_with_ray(cfg: DictConfig, exp_class: type[Any]) -> None:
         # -------------------- allocate resources for run ----------------- #
 
         pg = get_placement_group(
-            num_worker=cfg.num_worker,
-            num_gpus_per_worker=cfg.num_gpus_per_worker,
+            num_worker=cfg.ray_num_worker,
+            num_gpus_per_worker=cfg.ray_num_gpus_per_worker,
             num_cpus_per_worker=needed_num_cpus_per_worker,
             strategy=cfg.ray_placement_strategy,
         )
         options_list = get_num_worker_options(
             pg,
-            cfg.num_worker,
-            gpu_ratio=cfg.num_gpus_per_worker,
+            cfg.ray_num_worker,
+            gpu_ratio=cfg.ray_num_gpus_per_worker,
             num_cpus_per_worker=needed_num_cpus_per_worker,
         )
         worker_group = [remote_exp.options(**options).remote() for options in options_list]
@@ -159,7 +167,16 @@ def get_num_worker_options(pg, num_worker, gpu_ratio=1.0, num_cpus_per_worker=No
     master_addr, master_port = get_network_config()
     options_list = []
     for i in range(num_worker):
-        options = get_worker_options(gpu_ratio, num_cpus_per_worker, pg, i, i, num_worker, master_addr, master_port)
+        options = get_worker_options(
+            gpu_ratio,
+            num_cpus_per_worker,
+            pg,
+            i,
+            i,
+            num_worker,
+            master_addr,
+            master_port,
+        )
         options_list.append(options)
     return options_list
 
@@ -206,9 +223,6 @@ def simple_launch_exp(cfg: DictConfig) -> None:
     This is a template for launching a experiment with hydra config.
     The launcher can be torchrun(multi-process), accelerate(multi-process), or python(ray).
     """
-    if cfg.num_worker <= 0:
-        raise InvalidWorkerCountError(cfg.num_worker)
-
     exp_class = hydra.utils.get_class(cfg.exp_class)
 
     if cfg.mode == "help":
@@ -219,8 +233,14 @@ def simple_launch_exp(cfg: DictConfig) -> None:
         YELLOW = "\033[93m"
         INDENT = "    "  # 4 spaces
 
-        print(f"{YELLOW}==> Experiment Configurations (Available Configs):{RESET}", flush=True)
-        print(INDENT + OmegaConf.to_yaml(cfg).strip().replace("\n", f"\n{INDENT}"), flush=True)
+        print(
+            f"{YELLOW}==> Experiment Configurations (Available Configs):{RESET}",
+            flush=True,
+        )
+        print(
+            INDENT + OmegaConf.to_yaml(cfg).strip().replace("\n", f"\n{INDENT}"),
+            flush=True,
+        )
         exp_instance = exp_class()
         exp_instance.set_cfg(cfg)
 

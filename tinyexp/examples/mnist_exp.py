@@ -48,8 +48,8 @@ class Net(nn.Module):
 
 @dataclass(repr=False)
 class Exp(TinyExp):
-    num_worker: int = 2
-    num_gpus_per_worker: float = 0.0
+    ray_num_worker: int = 2
+    ray_num_gpus_per_worker: float = 0.0
     mode: str = "train"
 
     @dataclass
@@ -145,11 +145,20 @@ class Exp(TinyExp):
         cfg_dict = self.print_cfg(logger)
 
         if self.mode == "train":
-            self._train(accelerator=accelerator, logger=logger, cfg_dict=cfg_dict, run_dir=run_dir)
+            self._train(
+                accelerator=accelerator,
+                logger=logger,
+                cfg_dict=cfg_dict,
+                run_dir=run_dir,
+            )
         elif self.mode == "val":
             if not self.resume_from:
                 raise ValueError("resume_from is required when mode='val'")  # noqa: TRY003
-            self._evaluate(accelerator=accelerator, logger=logger, module_or_module_path=self.resume_from)
+            self._evaluate(
+                accelerator=accelerator,
+                logger=logger,
+                module_or_module_path=self.resume_from,
+            )
         else:
             raise NotImplementedError(f"Mode {self.mode} is not implemented")
 
@@ -250,7 +259,10 @@ class Exp(TinyExp):
                             }
                         )
             eval_metric = self._evaluate(
-                accelerator=accelerator, logger=logger, module_or_module_path=module, val_dataloader=val_dataloader
+                accelerator=accelerator,
+                logger=logger,
+                module_or_module_path=module,
+                val_dataloader=val_dataloader,
             )
             if accelerator.is_main_process:
                 self.checkpoint_cfg.save_checkpoint(

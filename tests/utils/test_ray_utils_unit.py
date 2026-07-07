@@ -3,8 +3,10 @@ from __future__ import annotations
 import pytest
 from omegaconf import OmegaConf
 
+from tinyexp.exceptions import InvalidWorkerCountError
 from tinyexp.utils.ray_utils import (
     _build_worker_env_vars,
+    _launch_with_ray,
     _maybe_start_ray_redis_cache,
     _should_print_launcher,
     get_launcher,
@@ -16,6 +18,13 @@ def test_get_launcher_defaults_to_python() -> None:
     assert get_launcher() == "python"
 
 
+def test_launch_with_ray_rejects_invalid_ray_worker_count() -> None:
+    cfg = OmegaConf.create({"ray_num_worker": 0})
+
+    with pytest.raises(InvalidWorkerCountError, match="Number of workers"):
+        _launch_with_ray(cfg, object)
+
+
 def test_should_print_launcher_based_on_rank(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("RANK", raising=False)
     assert _should_print_launcher() is True
@@ -24,13 +33,17 @@ def test_should_print_launcher_based_on_rank(monkeypatch: pytest.MonkeyPatch) ->
     assert _should_print_launcher() is False
 
 
-def test_build_worker_env_vars_prefers_user_defined_ifname(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_worker_env_vars_prefers_user_defined_ifname(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("GLOO_SOCKET_IFNAME", "eth9")
     env_vars = _build_worker_env_vars(num_worker=2, rank=1, local_rank=1, master_addr="127.0.0.1", master_port=12345)
     assert env_vars["GLOO_SOCKET_IFNAME"] == "eth9"
 
 
-def test_build_worker_env_vars_omits_ifname_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_worker_env_vars_omits_ifname_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("GLOO_SOCKET_IFNAME", raising=False)
     env_vars = _build_worker_env_vars(num_worker=2, rank=1, local_rank=1, master_addr="127.0.0.1", master_port=12345)
     assert "GLOO_SOCKET_IFNAME" not in env_vars
@@ -60,7 +73,9 @@ def test_get_placement_group_defaults_to_pack(monkeypatch: pytest.MonkeyPatch) -
     }
 
 
-def test_get_placement_group_pins_first_bundle_to_head_when_ray_initialized(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_placement_group_pins_first_bundle_to_head_when_ray_initialized(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured = {}
 
     class FakePlacementGroup:
@@ -75,17 +90,25 @@ def test_get_placement_group_pins_first_bundle_to_head_when_ray_initialized(monk
     monkeypatch.setattr("tinyexp.utils.ray_utils.placement_group", fake_placement_group)
     monkeypatch.setattr("tinyexp.utils.ray_utils.ray.get", lambda ref: ref)
     monkeypatch.setattr("tinyexp.utils.ray_utils.ray.is_initialized", lambda: True)
-    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.cluster_resources", lambda: {"node:__internal_head__": 1.0})
+    monkeypatch.setattr(
+        "tinyexp.utils.ray_utils.ray.cluster_resources",
+        lambda: {"node:__internal_head__": 1.0},
+    )
 
     get_placement_group(num_worker=2, num_gpus_per_worker=1, num_cpus_per_worker=3)
 
     assert captured == {
-        "bundles": [{"CPU": 3, "GPU": 1, "node:__internal_head__": 0.001}, {"CPU": 3, "GPU": 1}],
+        "bundles": [
+            {"CPU": 3, "GPU": 1, "node:__internal_head__": 0.001},
+            {"CPU": 3, "GPU": 1},
+        ],
         "strategy": "PACK",
     }
 
 
-def test_get_placement_group_accepts_explicit_strategy(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_placement_group_accepts_explicit_strategy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     captured = {}
 
     class FakePlacementGroup:
@@ -113,7 +136,9 @@ def test_maybe_start_ray_redis_cache_returns_none_when_disabled() -> None:
     assert _maybe_start_ray_redis_cache(cfg) is None
 
 
-def test_maybe_start_ray_redis_cache_starts_standalone_for_world_size_one(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_maybe_start_ray_redis_cache_starts_standalone_for_world_size_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     created = []
     captured = {}
 
@@ -178,7 +203,9 @@ def test_maybe_start_ray_redis_cache_rejects_invalid_world_size() -> None:
         _maybe_start_ray_redis_cache(cfg)
 
 
-def test_maybe_start_ray_redis_cache_writes_resolved_cfg_for_auto_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_maybe_start_ray_redis_cache_writes_resolved_cfg_for_auto_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     created = []
 
     class FakeRayRedisClusterManager:

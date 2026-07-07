@@ -19,7 +19,13 @@ from .exceptions import UnknownConfigurationKeyError, UnsupportedCheckpointForma
 from .utils.log_utils import tiny_logger_setup
 from .utils.ray_utils import simple_launch_exp
 
-__all__ = ["CheckpointCfg", "ConfigStore", "RedisCfgMixin", "TinyExp", "simple_launch_exp"]
+__all__ = [
+    "CheckpointCfg",
+    "ConfigStore",
+    "RedisCfgMixin",
+    "TinyExp",
+    "simple_launch_exp",
+]
 
 
 @dataclass
@@ -99,7 +105,16 @@ class CheckpointCfg:
             raise TypeError(f"Checkpoint at {path} must be a dict, got {type(checkpoint).__name__}.")  # noqa: TRY003
 
         if (
-            not any(key in checkpoint for key in ("epoch", "global_step", "best_metric", "meta", "extra_state"))
+            not any(
+                key in checkpoint
+                for key in (
+                    "epoch",
+                    "global_step",
+                    "best_metric",
+                    "meta",
+                    "extra_state",
+                )
+            )
             and "model_state_dict" not in checkpoint
         ):
             raise UnsupportedCheckpointFormatError(path)
@@ -107,7 +122,13 @@ class CheckpointCfg:
         return checkpoint
 
     def _load_required_state(
-        self, checkpoint: dict[str, Any], *, model=None, optimizer=None, scheduler=None, strict: bool = True
+        self,
+        checkpoint: dict[str, Any],
+        *,
+        model=None,
+        optimizer=None,
+        scheduler=None,
+        strict: bool = True,
     ) -> None:
         if model is not None:
             if "model_state_dict" not in checkpoint:
@@ -133,7 +154,13 @@ class CheckpointCfg:
         map_location=None,
     ) -> dict[str, Any]:
         checkpoint = self._validate_checkpoint_payload(path, torch.load(path, map_location=map_location))
-        self._load_required_state(checkpoint, model=model, optimizer=optimizer, scheduler=scheduler, strict=strict)
+        self._load_required_state(
+            checkpoint,
+            model=model,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            strict=strict,
+        )
 
         return checkpoint
 
@@ -149,8 +176,8 @@ class TinyExp:
     hydra: _HydraConfig = field(default_factory=_HydraConfig)
 
     # ---------------- luancher configuration ---------------- #
-    num_worker: int = -1  # Number of workers, -1 means to be determined by the user
-    num_gpus_per_worker: float = 1.0  # Number of GPUs per worker, should be a float value between 0 and 1.
+    ray_num_worker: int = -1  # Number of Ray workers, -1 means it must be set by the experiment or CLI.
+    ray_num_gpus_per_worker: float = 1.0  # Number of GPUs per Ray worker, should be a float value between 0 and 1.
     ray_placement_strategy: str = "PACK"
 
     # Fully qualified import path for the experiment class, e.g. "tinyexp.examples.mnist_exp.Exp".
@@ -191,7 +218,13 @@ class TinyExp:
 
     @dataclass
     class LoggerCfg:
-        def build_logger(self, save_dir: str, distributed_rank: int = 0, filename: str = "log.txt", mode: str = "a"):
+        def build_logger(
+            self,
+            save_dir: str,
+            distributed_rank: int = 0,
+            filename: str = "log.txt",
+            mode: str = "a",
+        ):
             Path(save_dir).mkdir(parents=True, exist_ok=True)
             logger = tiny_logger_setup(save_dir, distributed_rank, filename, mode)
             logger.info(f"==> log file: {os.path.join(save_dir, filename)}")
@@ -216,7 +249,10 @@ class TinyExp:
                     # Otherwise, set the attribute directly
                     ori_value = getattr(cfg_object, key, None)
                     if ori_value != value:
-                        self.overrided_cfg[key] = {"value": value, "original": ori_value}
+                        self.overrided_cfg[key] = {
+                            "value": value,
+                            "original": ori_value,
+                        }
                         setattr(cfg_object, key, value)
             else:
                 raise UnknownConfigurationKeyError(key)
