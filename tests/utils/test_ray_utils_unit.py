@@ -27,9 +27,15 @@ def test_get_launcher_detects_torchrun_env(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_get_launcher_detects_torchelastic_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TORCHELASTIC_RUN_ID", "none")
+    monkeypatch.setenv("TORCHELASTIC_RUN_ID", "01863564-2461-4a49-9c96-0984a091986f")
 
     assert get_launcher() == "torchrun"
+
+
+def test_get_launcher_ignores_empty_torchelastic_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TORCHELASTIC_RUN_ID", "none")
+
+    assert get_launcher() == "python"
 
 
 def test_get_launcher_detects_accelerate_env(monkeypatch: pytest.MonkeyPatch) -> None:

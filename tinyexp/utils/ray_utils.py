@@ -201,11 +201,15 @@ def get_launcher() -> str:
         "ACCELERATE_MIXED_PRECISION",
         "ACCELERATE_DYNAMO_BACKEND",
     )
+    torchelastic_run_id = os.getenv("TORCHELASTIC_RUN_ID")
+    has_torchelastic_run_id = torchelastic_run_id not in (None, "", "none")
+    has_rank_env = (
+        os.getenv("LOCAL_RANK") is not None and os.getenv("RANK") is not None and os.getenv("WORLD_SIZE") is not None
+    )
+
     if any(os.getenv(key) is not None for key in accelerate_env_keys):
         return "accelerate"
-    if os.getenv("TORCHELASTIC_RUN_ID") or (
-        os.getenv("LOCAL_RANK") is not None and os.getenv("RANK") is not None and os.getenv("WORLD_SIZE") is not None
-    ):
+    elif has_torchelastic_run_id or has_rank_env:
         return "torchrun"
 
     # Get the current process
