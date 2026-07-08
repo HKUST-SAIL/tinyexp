@@ -33,7 +33,7 @@ import urllib.request
 from contextlib import suppress
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import redis
 from omegaconf import OmegaConf
@@ -82,7 +82,7 @@ def env_uint(name: str, default: int) -> int:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="scripts/run_with_redis.py",
+        prog="tinyexp-run-with-redis",
         description="Start Redis, inject redis_cache_cfg overrides, then run <command>.",
     )
     parser.add_argument(
@@ -229,7 +229,7 @@ def main(argv: list[str]) -> int:
 
 
 def build_redis_cache_cfg(argv: list[str]) -> Any:
-    exp = None
+    exp: Any | None = None
     module = _load_experiment_module(argv)
     if module is not None:
         exp_classes = [
@@ -238,7 +238,7 @@ def build_redis_cache_cfg(argv: list[str]) -> Any:
             if inspect.isclass(obj) and issubclass(obj, RedisCfgMixin) and obj is not RedisCfgMixin
         ]
         if len(exp_classes) == 1:
-            exp = exp_classes[0]()
+            exp = cast(Any, exp_classes[0]())
             exp.exp_class = f"{exp_classes[0].__module__}.{exp_classes[0].__qualname__}"
 
     overrides = [arg for arg in argv if arg.startswith("redis_cache_cfg.")]
@@ -419,7 +419,7 @@ def start_rendezvous_server(  # noqa: C901
                             error = f"Redis Cluster did not become ready at {startup_host}:{startup_ports}"
 
                 if error:
-                    response = {"status": "error", "message": error}
+                    response: dict[str, Any] = {"status": "error", "message": error}
                 elif ready:
                     response = {"status": "ready", **ready}
                 else:
@@ -775,5 +775,9 @@ def handle_signal(signum: int, _frame: object) -> None:
     raise SystemExit(128 + signum)
 
 
+def cli() -> None:
+    raise SystemExit(main(sys.argv[1:]))
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    cli()

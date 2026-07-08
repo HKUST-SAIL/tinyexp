@@ -40,6 +40,10 @@ Homepage = "https://zengarden.github.io/TinyExp/"
 Repository = "https://github.com/zengarden/TinyExp"
 Documentation = "https://zengarden.github.io/TinyExp/"
 
+[project.scripts]
+tinyexp-run-with-redis = "tinyexp.cli.run_with_redis:cli"
+tinyexp-run-with-ray-cluster = "tinyexp.cli.run_with_ray_cluster:cli"
+
 [dependency-groups]
 dev = [
     "pytest>=7.2.0",
@@ -151,9 +155,11 @@ skip_empty = true
 branch = true
 source = ["tinyexp"]
 omit = [
-    # Example scripts are not part of the library API surface and are exercised via subprocesses.
+    # Example scripts and launch helpers are exercised via focused subprocess/unit tests.
     "tinyexp/examples/*",
+    "tinyexp/cli/*",
     "*/tinyexp/examples/*",
+    "*/tinyexp/cli/*",
     "*/working_dir_files/_ray_pkg_*/tinyexp/examples/*",
     "*/runtime_resources/working_dir_files/_ray_pkg_*/tinyexp/examples/*",
 ]

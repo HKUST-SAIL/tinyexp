@@ -285,7 +285,7 @@ class RedisCfgMixin:
         Hydra-overridable options live in dataclass fields below.
 
         Single-machine runs use standalone Redis. Multi-machine runs can use Redis Cluster.
-        Redis lifecycle is owned by the launcher: ``scripts/run_with_redis.py`` for
+        Redis lifecycle is owned by the launcher: ``tinyexp-run-with-redis`` for
         wrapper-based runs, or Ray-managed Redis for Ray launches.
         """
 

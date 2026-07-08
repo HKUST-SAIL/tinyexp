@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import signal
 import subprocess
+import sys
 from pathlib import Path
 
-from scripts import run_with_redis
-from scripts.run_with_redis import build_redis_cache_cfg, main, stop_child_process
+from tinyexp.cli import run_with_redis
+from tinyexp.cli.run_with_redis import build_redis_cache_cfg, main, stop_child_process
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def _write_demo_exp(tmp_path: Path) -> Path:
@@ -30,6 +33,23 @@ class _FinishedProcess:
 
     def poll(self) -> int:
         return self.returncode
+
+
+def test_run_with_redis_python_syntax() -> None:
+    assert (
+        subprocess.run(  # noqa: S603
+            [sys.executable, "-m", "py_compile", "tinyexp/cli/run_with_redis.py"],
+            cwd=ROOT,
+            check=False,
+        ).returncode
+        == 0
+    )
+
+
+def test_project_scripts_define_redis_command() -> None:
+    pyproject = (ROOT / "pyproject.toml").read_text()
+
+    assert 'tinyexp-run-with-redis = "tinyexp.cli.run_with_redis:cli"' in pyproject
 
 
 def test_build_redis_cache_cfg_uses_exp_class_overrides(tmp_path: Path) -> None:
@@ -95,8 +115,8 @@ def test_run_with_redis_appends_connection_overrides_for_torchrun_command(tmp_pa
         captured["popen_kwargs"] = kwargs
         return _FinishedProcess()
 
-    monkeypatch.setattr("scripts.run_with_redis.start_local_redis", fake_start_local_redis)
-    monkeypatch.setattr("scripts.run_with_redis.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("tinyexp.cli.run_with_redis.start_local_redis", fake_start_local_redis)
+    monkeypatch.setattr("tinyexp.cli.run_with_redis.subprocess.Popen", fake_popen)
 
     assert (
         main(
@@ -155,10 +175,10 @@ def test_rendezvous_mode_uses_exp_ports(tmp_path: Path, monkeypatch) -> None:
         return _FinishedProcess()
 
     monkeypatch.setattr(
-        "scripts.run_with_redis.start_rendezvous_redis_cluster",
+        "tinyexp.cli.run_with_redis.start_rendezvous_redis_cluster",
         fake_start_rendezvous_redis_cluster,
     )
-    monkeypatch.setattr("scripts.run_with_redis.subprocess.Popen", fake_popen)
+    monkeypatch.setattr("tinyexp.cli.run_with_redis.subprocess.Popen", fake_popen)
 
     assert (
         main(

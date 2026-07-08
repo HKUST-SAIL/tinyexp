@@ -50,7 +50,7 @@ def positive_int(value: str) -> int:
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog="scripts/run_with_ray_cluster.py",
+        prog="tinyexp-run-with-ray-cluster",
         description="Start a static Ray cluster, then run <command> on node-rank 0.",
     )
     parser.add_argument(
@@ -295,5 +295,9 @@ def main(argv: list[str]) -> int:
         cleanup_ray()
 
 
+def cli() -> None:
+    raise SystemExit(main(sys.argv[1:]))
+
+
 if __name__ == "__main__":
-    sys.exit(main(sys.argv[1:]))
+    cli()

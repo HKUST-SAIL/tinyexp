@@ -20,14 +20,21 @@ def run_command(args: list[str], env: dict[str, str] | None = None) -> subproces
 
 
 def test_run_with_ray_cluster_python_syntax() -> None:
-    assert run_command([sys.executable, "-m", "py_compile", "scripts/run_with_ray_cluster.py"]).returncode == 0
+    assert run_command([sys.executable, "-m", "py_compile", "tinyexp/cli/run_with_ray_cluster.py"]).returncode == 0
+
+
+def test_project_scripts_define_ray_cluster_command() -> None:
+    pyproject = (ROOT / "pyproject.toml").read_text()
+
+    assert 'tinyexp-run-with-ray-cluster = "tinyexp.cli.run_with_ray_cluster:cli"' in pyproject
 
 
 def test_run_with_ray_cluster_single_node_passthrough_ignores_custom_env() -> None:
     result = run_command(
         [
             sys.executable,
-            "scripts/run_with_ray_cluster.py",
+            "-m",
+            "tinyexp.cli.run_with_ray_cluster",
             "--",
             sys.executable,
             "-c",
@@ -45,7 +52,8 @@ def test_run_with_ray_cluster_multi_node_requires_head_addr() -> None:
     result = run_command(
         [
             sys.executable,
-            "scripts/run_with_ray_cluster.py",
+            "-m",
+            "tinyexp.cli.run_with_ray_cluster",
             "--node-count",
             "2",
             "--",
