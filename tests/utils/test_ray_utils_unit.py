@@ -18,6 +18,26 @@ def test_get_launcher_defaults_to_python() -> None:
     assert get_launcher() == "python"
 
 
+def test_get_launcher_detects_torchrun_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("LOCAL_RANK", "0")
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setenv("WORLD_SIZE", "2")
+
+    assert get_launcher() == "torchrun"
+
+
+def test_get_launcher_detects_torchelastic_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("TORCHELASTIC_RUN_ID", "none")
+
+    assert get_launcher() == "torchrun"
+
+
+def test_get_launcher_detects_accelerate_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ACCELERATE_PROCESS_INDEX", "0")
+
+    assert get_launcher() == "accelerate"
+
+
 def test_get_launcher_ignores_torchrun_in_hydra_override(monkeypatch: pytest.MonkeyPatch) -> None:
     class FakeProcess:
         pid = 123

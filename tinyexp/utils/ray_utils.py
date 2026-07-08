@@ -192,7 +192,15 @@ def get_num_worker_options(pg, num_worker, gpu_ratio=1.0, num_cpus_per_worker=No
     return options_list
 
 
-def get_launcher():
+def get_launcher() -> str:
+    # torchrun/accelerate may be wrapped by tools like uv, so environment variables are the most reliable signal.
+    if os.getenv("TORCHELASTIC_RUN_ID") or (
+        os.getenv("LOCAL_RANK") is not None and os.getenv("RANK") is not None and os.getenv("WORLD_SIZE") is not None
+    ):
+        return "torchrun"
+    if os.getenv("ACCELERATE_USE_CPU") is not None or os.getenv("ACCELERATE_PROCESS_INDEX") is not None:
+        return "accelerate"
+
     # Get the current process
     current_process = psutil.Process(os.getpid())
     process_chain = [current_process]
