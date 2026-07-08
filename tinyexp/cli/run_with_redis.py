@@ -235,7 +235,10 @@ def build_redis_cache_cfg(argv: list[str]) -> Any:
         exp_classes = [
             obj
             for obj in vars(module).values()
-            if inspect.isclass(obj) and issubclass(obj, RedisCfgMixin) and obj is not RedisCfgMixin
+            if inspect.isclass(obj)
+            and obj.__module__ == module.__name__
+            and issubclass(obj, RedisCfgMixin)
+            and obj is not RedisCfgMixin
         ]
         if len(exp_classes) == 1:
             exp = cast(Any, exp_classes[0]())

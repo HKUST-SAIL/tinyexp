@@ -86,6 +86,36 @@ def test_build_redis_cache_cfg_applies_overrides_to_default_config() -> None:
     assert redis_cache_cfg.redis_rendezvous_world_size == 2
 
 
+def test_build_redis_cache_cfg_uses_local_exp_class_over_imported_base(tmp_path: Path, monkeypatch) -> None:
+    base_file = tmp_path / "base_exp_module.py"
+    base_file.write_text(
+        "from dataclasses import dataclass, field\n"
+        "from tinyexp import RedisCfgMixin, TinyExp\n"
+        "@dataclass\n"
+        "class BaseExp(TinyExp, RedisCfgMixin):\n"
+        "    @dataclass\n"
+        "    class RedisCacheCfg(RedisCfgMixin.RedisCacheCfg):\n"
+        "        redis_cache_max_memory: int = 111\n"
+        "    redis_cache_cfg: RedisCacheCfg = field(default_factory=RedisCacheCfg)\n"
+    )
+    exp_file = tmp_path / "child_exp.py"
+    exp_file.write_text(
+        "from dataclasses import dataclass, field\n"
+        "from base_exp_module import BaseExp as ImportedBaseExp\n"
+        "@dataclass\n"
+        "class ChildExp(ImportedBaseExp):\n"
+        "    @dataclass\n"
+        "    class RedisCacheCfg(ImportedBaseExp.RedisCacheCfg):\n"
+        "        redis_cache_max_memory: int = 321\n"
+        "    redis_cache_cfg: RedisCacheCfg = field(default_factory=RedisCacheCfg)\n"
+    )
+    monkeypatch.syspath_prepend(str(tmp_path))
+
+    redis_cache_cfg = build_redis_cache_cfg(["accelerate", "launch", str(exp_file)])
+
+    assert redis_cache_cfg.redis_cache_max_memory == 321
+
+
 def test_rendezvous_mode_requires_non_local_master_host(tmp_path: Path) -> None:
     exp_file = _write_demo_exp(tmp_path)
 
