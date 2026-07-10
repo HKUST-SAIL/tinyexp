@@ -24,7 +24,7 @@ def test_redis_cached_image_folder_uses_standalone_clients_for_localhost(tmp_pat
         def ping(self):
             return True
 
-    monkeypatch.setattr("tinyexp.examples.resnet_exp.redis.Redis", FakeRedis)
+    monkeypatch.setattr("tinyexp.utils.redis_utils.redis.Redis", FakeRedis)
 
     RedisCachedImageFolder(redis_host="127.0.0.1", redis_ports=[7000, 7001], root=str(tmp_path / "train"))
 
@@ -44,7 +44,7 @@ def test_redis_cached_image_folder_uses_cluster_client_for_multi_machine_cache(t
         def ping(self):
             return True
 
-    monkeypatch.setattr("tinyexp.examples.resnet_exp.redis.RedisCluster", FakeRedisCluster)
+    monkeypatch.setattr("tinyexp.utils.redis_utils.redis.RedisCluster", FakeRedisCluster)
 
     RedisCachedImageFolder(
         redis_host="10.0.0.1",
@@ -69,7 +69,7 @@ def test_redis_cached_image_folder_uses_standalone_clients_when_world_size_is_on
         def ping(self):
             return True
 
-    monkeypatch.setattr("tinyexp.examples.resnet_exp.redis.Redis", FakeRedis)
+    monkeypatch.setattr("tinyexp.utils.redis_utils.redis.Redis", FakeRedis)
 
     RedisCachedImageFolder(redis_host="10.0.0.1", redis_ports=[7000, 7001], root=str(tmp_path / "train"))
 
@@ -98,13 +98,13 @@ def test_redis_cached_image_folder_shards_standalone_keys_across_ports(tmp_path:
             calls.append((self.port, "set", key))
             return True
 
-    monkeypatch.setattr("tinyexp.examples.resnet_exp.redis.Redis", FakeRedis)
+    monkeypatch.setattr("tinyexp.utils.redis_utils.redis.Redis", FakeRedis)
 
     dataset = RedisCachedImageFolder(redis_host="127.0.0.1", redis_ports=[7000, 7001], root=str(tmp_path / "train"))
-    dataset._safe_redis_get(0)
-    dataset._safe_redis_get(1)
-    dataset._safe_redis_set(0, b"0")
-    dataset._safe_redis_set(1, b"1")
+    dataset.redis_client_manager.safe_get(0)
+    dataset.redis_client_manager.safe_get(1)
+    dataset.redis_client_manager.safe_set(0, b"0")
+    dataset.redis_client_manager.safe_set(1, b"1")
 
     assert calls == [
         (7000, "get", 0),
@@ -373,7 +373,9 @@ def test_resnet_train_stops_at_max_train_steps(tmp_path: Path, monkeypatch) -> N
     )
     monkeypatch.setattr(exp, "_evaluate", lambda **kwargs: pytest.fail("eval should not run"))
     monkeypatch.setattr(
-        exp.checkpoint_cfg, "save_checkpoint", lambda **kwargs: pytest.fail("checkpoint should not save")
+        exp.checkpoint_cfg,
+        "save_checkpoint",
+        lambda **kwargs: pytest.fail("checkpoint should not save"),
     )
 
     exp._train(

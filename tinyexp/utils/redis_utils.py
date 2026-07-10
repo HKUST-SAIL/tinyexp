@@ -7,7 +7,9 @@ import socket
 import subprocess
 import tempfile
 import time
+import zlib
 from collections.abc import Sequence
+from numbers import Integral
 from pathlib import Path
 from typing import Any
 
@@ -33,6 +35,92 @@ class RedisClusterStartupError(RuntimeError):
         super().__init__(message)
         self.port = port
         self.last_error = last_error
+
+
+class RedisClientManager:
+    def __init__(
+        self,
+        redis_host: str,
+        redis_ports: list[int],
+        redis_world_size: int = 1,
+    ) -> None:
+        """Manage Redis clients and shard keys across standalone Redis ports."""
+
+        self.redis_clients: list[Any] = []
+
+        self._init_redis_connection(redis_host, redis_ports, redis_world_size=redis_world_size)
+
+    def _init_redis_connection(self, redis_host: str, redis_ports: list[int], *, redis_world_size: int) -> None:
+        try:
+            if redis_world_size <= 1:
+                self.redis_clients = [
+                    redis.Redis(
+                        host=redis_host,
+                        port=int(redis_port),
+                        decode_responses=False,
+                        socket_connect_timeout=5,
+                        socket_timeout=5,
+                    )
+                    for redis_port in redis_ports
+                ]
+            else:
+                self.redis_clients = [
+                    redis.RedisCluster(
+                        startup_nodes=[
+                            redis.cluster.ClusterNode(redis_host, int(redis_port)) for redis_port in redis_ports
+                        ],
+                        decode_responses=False,
+                        socket_connect_timeout=5,
+                        socket_timeout=5,
+                    )
+                ]
+            for redis_client in self.redis_clients:
+                redis_client.ping()
+        except Exception as e:
+            print(f"Redis connection failed: {e}")
+            self.redis_clients = []
+
+    @staticmethod
+    def _shard_index_for_key(key: Any, shard_count: int) -> int:
+        if isinstance(key, Integral):
+            return int(key) % shard_count
+        if isinstance(key, bytes):
+            key_bytes = key
+        elif isinstance(key, memoryview):
+            key_bytes = key.tobytes()
+        else:
+            key_bytes = str(key).encode("utf-8")
+        return zlib.crc32(key_bytes) % shard_count
+
+    def _redis_client_for_key(self, key: Any) -> Any | None:
+        if not self.redis_clients:
+            return None
+        shard_index = self._shard_index_for_key(key, len(self.redis_clients))
+        return self.redis_clients[shard_index]
+
+    def safe_get(self, key: Any) -> Any | None:
+        redis_client = self._redis_client_for_key(key)
+        if redis_client is None:
+            return None
+        try:
+            return redis_client.get(key)
+        except redis.exceptions.RedisError:
+            return None
+
+    def safe_set(self, key: Any, value: Any) -> bool:
+        redis_client = self._redis_client_for_key(key)
+        if redis_client is None:
+            return False
+        try:
+            return bool(redis_client.set(key, value))
+        except redis.exceptions.RedisError:
+            return False
+
+    def __del__(self) -> None:
+        for redis_client in self.redis_clients:
+            with contextlib.suppress(Exception):
+                redis_client.close()
+        self.redis_clients = []
 
 
 class RedisClusterManager:
@@ -293,7 +381,10 @@ def _is_ip_address(value: str) -> bool:
 
 
 def _get_node_ip_address() -> str:
-    with contextlib.suppress(Exception), socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+    with (
+        contextlib.suppress(Exception),
+        socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock,
+    ):
         sock.connect(("8.8.8.8", 80))
         return str(sock.getsockname()[0])
     with contextlib.suppress(Exception):
@@ -345,7 +436,11 @@ class _RayRedisNodeActor:
         for port, client in zip(self._manager.ports, self._manager.redis_clients):
             with contextlib.suppress(Exception):
                 dbsizes[str(port)] = int(client.dbsize())
-        return {"host": self._node_host or self._manager.host, "client_host": self._manager.host, "dbsizes": dbsizes}
+        return {
+            "host": self._node_host or self._manager.host,
+            "client_host": self._manager.host,
+            "dbsizes": dbsizes,
+        }
 
     def stop(self) -> None:
         if self._manager is not None:
@@ -392,7 +487,7 @@ class RayRedisClusterManager:
             for node in alive_nodes:
                 node_id = node.get("NodeID")
                 if not node_id:
-                    raise RedisClusterStartupError(f"Ray node is missing NodeID: {node!r}")  # noqa: TRY003,TRY301
+                    raise RedisClusterStartupError(f"Ray node is missing NodeID: {node!r}")  # noqa: TRY003, TRY301
                 actor = remote_actor_cls.options(
                     scheduling_strategy=NodeAffinitySchedulingStrategy(node_id=node_id, soft=False)
                 ).remote()
@@ -442,7 +537,15 @@ class RayRedisClusterManager:
     def _create_cluster(redis_cli_path: str, redis_nodes: list[dict[str, Any]]) -> None:
         addresses = [f"{node['host']}:{port}" for node in redis_nodes for port in node["ports"]]
         result = subprocess.run(
-            [redis_cli_path, "--cluster", "create", *addresses, "--cluster-replicas", "0", "--cluster-yes"],
+            [
+                redis_cli_path,
+                "--cluster",
+                "create",
+                *addresses,
+                "--cluster-replicas",
+                "0",
+                "--cluster-yes",
+            ],
             check=False,
             capture_output=True,
             text=True,

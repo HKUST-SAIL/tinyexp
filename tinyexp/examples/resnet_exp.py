@@ -2,10 +2,8 @@ import datetime
 import io
 import os
 import time
-from contextlib import suppress
 from dataclasses import dataclass, field
 
-import redis
 import torch
 import torch.nn as nn
 import torchvision.models as models
@@ -114,78 +112,26 @@ class RedisCachedImageFolder:
         self.transform = transform
         self.target_transform = target_transform
         self.dataset = datasets.ImageFolder(root)
-        self.redis_clients = []
 
-        self._init_redis_connection(redis_host, redis_ports, redis_world_size=redis_world_size)
         self.cache_misses = 0
         self.cache_hits = 0
         self.dataset_prefix = os.path.basename(root)[0]
+        from tinyexp.utils.redis_utils import RedisClientManager
 
-    def _init_redis_connection(self, redis_host: str, redis_ports: list[int], *, redis_world_size: int):
-        try:
-            if redis_world_size <= 1:
-                self.redis_clients = [
-                    redis.Redis(
-                        host=redis_host,
-                        port=int(redis_port),
-                        decode_responses=False,
-                        socket_connect_timeout=5,
-                        socket_timeout=5,
-                    )
-                    for redis_port in redis_ports
-                ]
-            else:
-                self.redis_clients = [
-                    redis.RedisCluster(
-                        startup_nodes=[
-                            redis.cluster.ClusterNode(redis_host, int(redis_port)) for redis_port in redis_ports
-                        ],
-                        decode_responses=False,
-                        socket_connect_timeout=5,
-                        socket_timeout=5,
-                    )
-                ]
-            for redis_client in self.redis_clients:
-                redis_client.ping()
-        except Exception as e:
-            print(f"Redis connection failed: {e}")
-            self.redis_clients = []
-
-    def _redis_client_for_key(self, key):
-        if not self.redis_clients:
-            return None
-        return self.redis_clients[int(key) % len(self.redis_clients)]
-
-    def _safe_redis_get(self, key):
-        redis_client = self._redis_client_for_key(key)
-        if redis_client is None:
-            return None
-        try:
-            return redis_client.get(key)
-        except redis.exceptions.RedisError:
-            return None
-
-    def _safe_redis_set(self, key, value):
-        redis_client = self._redis_client_for_key(key)
-        if redis_client is None:
-            return False
-        try:
-            return redis_client.set(key, value)
-        except redis.exceptions.RedisError:
-            return False
+        self.redis_client_manager = RedisClientManager(redis_host, redis_ports, redis_world_size)
 
     def __getitem__(self, index):
         path, target = self.dataset.samples[index]
         # cache_key = f"{self.dataset_prefix}{index}"
         cache_key = index
 
-        file_data = self._safe_redis_get(cache_key)
+        file_data = self.redis_client_manager.safe_get(cache_key)
         if file_data is None:
             self.cache_misses += 1
             try:
                 with open(path, "rb") as f:
                     file_data = f.read()
-                self._safe_redis_set(cache_key, file_data)
+                self.redis_client_manager.safe_set(cache_key, file_data)
             except Exception as e:
                 print(f"Error reading file {path}: {e}")
                 raise
@@ -211,13 +157,6 @@ class RedisCachedImageFolder:
 
     def __len__(self):
         return len(self.dataset)
-
-    def __del__(self):
-        """Destructor to ensure connections are properly closed"""
-        for redis_client in self.redis_clients:
-            with suppress(Exception):
-                redis_client.close()
-        self.redis_clients = []
 
 
 @dataclass(repr=False)
