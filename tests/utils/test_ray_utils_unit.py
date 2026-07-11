@@ -32,7 +32,9 @@ def test_get_launcher_detects_torchelastic_env(monkeypatch: pytest.MonkeyPatch) 
     assert get_launcher() == "torchrun"
 
 
-def test_get_launcher_ignores_empty_torchelastic_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_launcher_ignores_empty_torchelastic_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("TORCHELASTIC_RUN_ID", "none")
 
     assert get_launcher() == "python"
@@ -44,7 +46,9 @@ def test_get_launcher_detects_accelerate_env(monkeypatch: pytest.MonkeyPatch) ->
     assert get_launcher() == "accelerate"
 
 
-def test_get_launcher_prefers_accelerate_env_over_rank_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_launcher_prefers_accelerate_env_over_rank_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "no")
     monkeypatch.setenv("LOCAL_RANK", "0")
     monkeypatch.setenv("RANK", "0")
@@ -53,12 +57,18 @@ def test_get_launcher_prefers_accelerate_env_over_rank_env(monkeypatch: pytest.M
     assert get_launcher() == "accelerate"
 
 
-def test_get_launcher_ignores_torchrun_in_hydra_override(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_launcher_ignores_torchrun_in_hydra_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class FakeProcess:
         pid = 123
 
         def cmdline(self):
-            return ["python", "tinyexp/examples/resnet_exp.py", "exp_name=resnet_run_with_redis_torchrun_simple"]
+            return [
+                "python",
+                "tinyexp/examples/resnet_exp.py",
+                "exp_name=resnet_run_with_redis_torchrun_simple",
+            ]
 
         def name(self):
             return "python"
@@ -71,7 +81,9 @@ def test_get_launcher_ignores_torchrun_in_hydra_override(monkeypatch: pytest.Mon
     assert get_launcher() == "python"
 
 
-def test_get_launcher_detects_torchrun_executable(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_launcher_detects_torchrun_executable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class FakeProcess:
         pid = 123
 
@@ -92,15 +104,20 @@ def test_get_launcher_detects_torchrun_executable(monkeypatch: pytest.MonkeyPatc
 def test_launch_with_ray_rejects_invalid_ray_worker_count_without_starting_ray(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cfg = OmegaConf.create({"ray_num_worker": 0})
-    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.init", lambda: pytest.fail("ray.init should not be called"))
+    cfg = OmegaConf.create({"ray_cfg": {"ray_num_worker": 0}})
+    monkeypatch.setattr(
+        "tinyexp.utils.ray_utils.ray.init",
+        lambda: pytest.fail("ray.init should not be called"),
+    )
 
     with pytest.raises(InvalidWorkerCountError, match="Number of workers"):
         _launch_with_ray(cfg, object)
 
 
-def test_launch_with_ray_resolves_auto_worker_count_from_cluster_gpus(monkeypatch: pytest.MonkeyPatch) -> None:
-    cfg = OmegaConf.create({"ray_num_worker": -1})
+def test_launch_with_ray_resolves_auto_worker_count_from_cluster_gpus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = OmegaConf.create({"ray_cfg": {"ray_num_worker": -1}})
 
     def stop_after_resolution(exp_class):  # type: ignore[no-untyped-def]
         raise RuntimeError("resolved")
@@ -114,11 +131,13 @@ def test_launch_with_ray_resolves_auto_worker_count_from_cluster_gpus(monkeypatc
     with pytest.raises(RuntimeError, match="resolved"):
         _launch_with_ray(cfg, object)
 
-    assert cfg.ray_num_worker == 2
+    assert cfg.ray_cfg.ray_num_worker == 2
 
 
-def test_launch_with_ray_rejects_missing_cluster_gpus(monkeypatch: pytest.MonkeyPatch) -> None:
-    cfg = OmegaConf.create({"ray_num_worker": -1})
+def test_launch_with_ray_rejects_missing_cluster_gpus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = OmegaConf.create({"ray_cfg": {"ray_num_worker": -1}})
     monkeypatch.setattr("tinyexp.utils.ray_utils.ray.init", lambda: None)
     monkeypatch.setattr("tinyexp.utils.ray_utils.ray.cluster_resources", lambda: {"CPU": 8.0})
     monkeypatch.setattr("tinyexp.utils.ray_utils.ray.is_initialized", lambda: True)

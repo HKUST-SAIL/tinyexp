@@ -48,7 +48,8 @@ def _maybe_start_ray_redis_cache(cfg: DictConfig) -> RayRedisClusterManager | No
 
 
 def _launch_with_ray(cfg: DictConfig, exp_class: type[Any]) -> None:
-    ray_num_worker = int(cfg.ray_num_worker)
+    ray_cfg = cfg.ray_cfg
+    ray_num_worker = int(ray_cfg.ray_num_worker)
     if ray_num_worker < -1 or ray_num_worker == 0:
         raise InvalidWorkerCountError(ray_num_worker)
 
@@ -66,7 +67,7 @@ def _launch_with_ray(cfg: DictConfig, exp_class: type[Any]) -> None:
                 f"==> ray_num_worker is -1, using all Ray cluster GPU resources: {ray_num_worker}",
                 flush=True,
             )
-        cfg.ray_num_worker = ray_num_worker
+        ray_cfg.ray_num_worker = ray_num_worker
 
         remote_exp = ray.remote(exp_class)
 
@@ -77,7 +78,7 @@ def _launch_with_ray(cfg: DictConfig, exp_class: type[Any]) -> None:
         if cfg.mode == "train":
             needed_num_cpus_per_worker += cfg.dataloader_cfg.train_data_worker_per_gpu
 
-        needed_cpu = cfg.ray_num_worker * needed_num_cpus_per_worker
+        needed_cpu = ray_cfg.ray_num_worker * needed_num_cpus_per_worker
         total_cpu = int(ray.cluster_resources().get("CPU", 0))
 
         if needed_cpu > total_cpu:
@@ -88,15 +89,15 @@ def _launch_with_ray(cfg: DictConfig, exp_class: type[Any]) -> None:
         # -------------------- allocate resources for run ----------------- #
 
         pg = get_placement_group(
-            num_worker=cfg.ray_num_worker,
-            num_gpus_per_worker=cfg.ray_num_gpus_per_worker,
+            num_worker=ray_cfg.ray_num_worker,
+            num_gpus_per_worker=ray_cfg.ray_num_gpus_per_worker,
             num_cpus_per_worker=needed_num_cpus_per_worker,
-            strategy=cfg.ray_placement_strategy,
+            strategy=ray_cfg.ray_placement_strategy,
         )
         options_list = get_num_worker_options(
             pg,
-            cfg.ray_num_worker,
-            gpu_ratio=cfg.ray_num_gpus_per_worker,
+            ray_cfg.ray_num_worker,
+            gpu_ratio=ray_cfg.ray_num_gpus_per_worker,
             num_cpus_per_worker=needed_num_cpus_per_worker,
         )
         worker_group = [remote_exp.options(**options).remote() for options in options_list]

@@ -94,9 +94,9 @@ def test_build_redis_cache_cfg_uses_local_exp_class_over_imported_base(tmp_path:
         "@dataclass\n"
         "class BaseExp(TinyExp, RedisCfgMixin):\n"
         "    @dataclass\n"
-        "    class RedisCacheCfg(RedisCfgMixin.RedisCacheCfg):\n"
+        "    class RedisCfg(RedisCfgMixin.RedisCfg):\n"
         "        redis_cache_max_memory: int = 111\n"
-        "    redis_cache_cfg: RedisCacheCfg = field(default_factory=RedisCacheCfg)\n"
+        "    redis_cache_cfg: RedisCfg = field(default_factory=RedisCfg)\n"
     )
     exp_file = tmp_path / "child_exp.py"
     exp_file.write_text(
@@ -105,9 +105,9 @@ def test_build_redis_cache_cfg_uses_local_exp_class_over_imported_base(tmp_path:
         "@dataclass\n"
         "class ChildExp(ImportedBaseExp):\n"
         "    @dataclass\n"
-        "    class RedisCacheCfg(ImportedBaseExp.RedisCacheCfg):\n"
+        "    class RedisCfg(ImportedBaseExp.RedisCfg):\n"
         "        redis_cache_max_memory: int = 321\n"
-        "    redis_cache_cfg: RedisCacheCfg = field(default_factory=RedisCacheCfg)\n"
+        "    redis_cache_cfg: RedisCfg = field(default_factory=RedisCfg)\n"
     )
     monkeypatch.syspath_prepend(str(tmp_path))
 

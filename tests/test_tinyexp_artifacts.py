@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 import torch
 
-from tinyexp import CheckpointCfg, TinyExp
+from tinyexp import CheckpointCfgMixin, TinyExp
 from tinyexp.exceptions import UnsupportedCheckpointFormatError
 
 
@@ -35,7 +35,7 @@ def test_checkpoint_cfg_save_and_load_roundtrip(tmp_path: Path) -> None:
         model.weight.fill_(1.5)
         model.bias.fill_(0.5)
 
-    checkpoint_cfg = CheckpointCfg()
+    checkpoint_cfg = CheckpointCfgMixin.CheckpointCfg()
     checkpoint_path = checkpoint_cfg.save_checkpoint(
         run_dir=str(tmp_path),
         name=checkpoint_cfg.last_ckpt_name,
@@ -74,8 +74,10 @@ def test_checkpoint_cfg_save_and_load_roundtrip(tmp_path: Path) -> None:
         assert torch.equal(original_param, reloaded_param)
 
 
-def test_checkpoint_cfg_extra_state_does_not_override_reserved_keys(tmp_path: Path) -> None:
-    checkpoint_cfg = CheckpointCfg()
+def test_checkpoint_cfg_extra_state_does_not_override_reserved_keys(
+    tmp_path: Path,
+) -> None:
+    checkpoint_cfg = CheckpointCfgMixin.CheckpointCfg()
 
     checkpoint_path = checkpoint_cfg.save_checkpoint(
         run_dir=str(tmp_path),
@@ -95,9 +97,12 @@ def test_checkpoint_cfg_rejects_unsupported_model_only_format(tmp_path: Path) ->
     checkpoint_path = tmp_path / "model_only.ckpt"
     torch.save({"state_dict": {"weight": torch.tensor([1.0])}}, checkpoint_path)
 
-    checkpoint_cfg = CheckpointCfg()
+    checkpoint_cfg = CheckpointCfgMixin.CheckpointCfg()
 
-    with pytest.raises(UnsupportedCheckpointFormatError, match="not a supported tinyexp checkpoint format"):
+    with pytest.raises(
+        UnsupportedCheckpointFormatError,
+        match="not a supported tinyexp checkpoint format",
+    ):
         checkpoint_cfg.load_checkpoint(str(checkpoint_path))
 
 
@@ -105,28 +110,32 @@ def test_checkpoint_cfg_rejects_non_dict_payload(tmp_path: Path) -> None:
     checkpoint_path = tmp_path / "not_a_dict.ckpt"
     torch.save([1, 2, 3], checkpoint_path)
 
-    checkpoint_cfg = CheckpointCfg()
+    checkpoint_cfg = CheckpointCfgMixin.CheckpointCfg()
 
     with pytest.raises(TypeError, match="must be a dict, got list"):
         checkpoint_cfg.load_checkpoint(str(checkpoint_path))
 
 
-def test_checkpoint_cfg_requires_model_state_when_model_is_provided(tmp_path: Path) -> None:
+def test_checkpoint_cfg_requires_model_state_when_model_is_provided(
+    tmp_path: Path,
+) -> None:
     checkpoint_path = tmp_path / "missing_model_state.ckpt"
     torch.save({"meta": {}, "epoch": 1}, checkpoint_path)
 
-    checkpoint_cfg = CheckpointCfg()
+    checkpoint_cfg = CheckpointCfgMixin.CheckpointCfg()
     model = torch.nn.Linear(2, 1)
 
     with pytest.raises(KeyError, match="model_state_dict"):
         checkpoint_cfg.load_checkpoint(str(checkpoint_path), model=model)
 
 
-def test_checkpoint_cfg_requires_optimizer_state_when_optimizer_is_provided(tmp_path: Path) -> None:
+def test_checkpoint_cfg_requires_optimizer_state_when_optimizer_is_provided(
+    tmp_path: Path,
+) -> None:
     checkpoint_path = tmp_path / "missing_optimizer_state.ckpt"
     torch.save({"meta": {}, "model_state_dict": {}}, checkpoint_path)
 
-    checkpoint_cfg = CheckpointCfg()
+    checkpoint_cfg = CheckpointCfgMixin.CheckpointCfg()
     model = torch.nn.Linear(2, 1)
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
 
@@ -134,11 +143,16 @@ def test_checkpoint_cfg_requires_optimizer_state_when_optimizer_is_provided(tmp_
         checkpoint_cfg.load_checkpoint(str(checkpoint_path), optimizer=optimizer)
 
 
-def test_checkpoint_cfg_requires_scheduler_state_when_scheduler_is_provided(tmp_path: Path) -> None:
+def test_checkpoint_cfg_requires_scheduler_state_when_scheduler_is_provided(
+    tmp_path: Path,
+) -> None:
     checkpoint_path = tmp_path / "missing_scheduler_state.ckpt"
-    torch.save({"meta": {}, "model_state_dict": {}, "optimizer_state_dict": {}}, checkpoint_path)
+    torch.save(
+        {"meta": {}, "model_state_dict": {}, "optimizer_state_dict": {}},
+        checkpoint_path,
+    )
 
-    checkpoint_cfg = CheckpointCfg()
+    checkpoint_cfg = CheckpointCfgMixin.CheckpointCfg()
     model = torch.nn.Linear(2, 1)
     optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1)

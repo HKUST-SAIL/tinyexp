@@ -13,7 +13,14 @@ from torch.optim import SGD
 from torch.optim.lr_scheduler import StepLR
 from torchvision import datasets, transforms
 
-from tinyexp import RedisCfgMixin, TinyExp, store_and_run_exp
+from tinyexp import (
+    CheckpointCfgMixin,
+    RayCfgMixin,
+    RedisCfgMixin,
+    TinyExp,
+    WandbCfgMixin,
+    store_and_run_exp,
+)
 from tinyexp.dataset.sampler import InfiniteSampler
 from tinyexp.exceptions import UnknownAcceleratorTypeError
 
@@ -160,7 +167,7 @@ class RedisCachedImageFolder:
 
 
 @dataclass(repr=False)
-class ResNetExp(TinyExp, RedisCfgMixin):
+class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfgMixin):
     mode: str = "train"
     max_train_epochs: int = 90
     max_train_steps: int = -1

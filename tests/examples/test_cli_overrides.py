@@ -25,7 +25,7 @@ def test_cli_override_prints_updated_value(tmp_path: Path) -> None:
             str(script_path),
             "mode=help",
             "dataloader_cfg.train_batch_size_per_device=16",
-            "ray_num_worker=1",
+            "ray_cfg.ray_num_worker=1",
         ],
         cwd=tmp_path,
         env=env,

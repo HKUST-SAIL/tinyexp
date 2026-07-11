@@ -9,7 +9,13 @@ import wandb
 from torch.optim.lr_scheduler import StepLR
 from torchvision import datasets, transforms
 
-from tinyexp import TinyExp, store_and_run_exp
+from tinyexp import (
+    CheckpointCfgMixin,
+    RayCfgMixin,
+    TinyExp,
+    WandbCfgMixin,
+    store_and_run_exp,
+)
 from tinyexp.exceptions import UnknownAcceleratorTypeError
 
 
@@ -47,9 +53,13 @@ class Net(nn.Module):
 
 
 @dataclass(repr=False)
-class Exp(TinyExp):
-    ray_num_worker: int = 2
-    ray_num_gpus_per_worker: float = 0.0
+class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin):
+    @dataclass
+    class RayCfg(RayCfgMixin.RayCfg):
+        ray_num_worker: int = 2
+        ray_num_gpus_per_worker: float = 0.0
+
+    ray_cfg: RayCfg = field(default_factory=RayCfg)
     mode: str = "train"
 
     @dataclass

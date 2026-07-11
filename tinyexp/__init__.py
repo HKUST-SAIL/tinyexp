@@ -20,11 +20,14 @@ from .utils.log_utils import tiny_logger_setup
 from .utils.ray_utils import simple_launch_exp
 
 __all__ = [
-    "CheckpointCfg",
+    "CheckpointCfgMixin",
     "ConfigStore",
+    "RayCfgMixin",
     "RedisCfgMixin",
     "TinyExp",
+    "WandbCfgMixin",
     "simple_launch_exp",
+    "store_and_run_exp",
 ]
 
 
@@ -56,116 +59,6 @@ def _default_exp_name() -> str:
 
 
 @dataclass
-class CheckpointCfg:
-    last_ckpt_name: str = "last.ckpt"
-    best_ckpt_name: str = "best.ckpt"
-
-    def save_checkpoint(
-        self,
-        *,
-        run_dir: str,
-        name: str,
-        model=None,
-        optimizer=None,
-        scheduler=None,
-        epoch: Optional[int] = None,
-        global_step: Optional[int] = None,
-        best_metric: Optional[float] = None,
-        exp_name: str = "",
-        exp_class: str = "",
-        extra_state: Optional[dict[str, Any]] = None,
-    ) -> str:
-        save_path = Path(run_dir) / name
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-
-        checkpoint: dict[str, Any] = {
-            "epoch": epoch,
-            "global_step": global_step,
-            "best_metric": best_metric,
-            "meta": {
-                "exp_name": exp_name,
-                "exp_class": exp_class,
-                "saved_at": datetime.now(timezone.utc).isoformat(),
-            },
-        }
-        if model is not None:
-            checkpoint["model_state_dict"] = model.state_dict()
-        if optimizer is not None:
-            checkpoint["optimizer_state_dict"] = optimizer.state_dict()
-        if scheduler is not None:
-            checkpoint["scheduler_state_dict"] = scheduler.state_dict()
-        if extra_state is not None:
-            checkpoint["extra_state"] = extra_state
-
-        torch.save(checkpoint, save_path)
-        return str(save_path)
-
-    def _validate_checkpoint_payload(self, path: str, checkpoint: Any) -> dict[str, Any]:
-        if not isinstance(checkpoint, dict):
-            raise TypeError(f"Checkpoint at {path} must be a dict, got {type(checkpoint).__name__}.")  # noqa: TRY003
-
-        if (
-            not any(
-                key in checkpoint
-                for key in (
-                    "epoch",
-                    "global_step",
-                    "best_metric",
-                    "meta",
-                    "extra_state",
-                )
-            )
-            and "model_state_dict" not in checkpoint
-        ):
-            raise UnsupportedCheckpointFormatError(path)
-
-        return checkpoint
-
-    def _load_required_state(
-        self,
-        checkpoint: dict[str, Any],
-        *,
-        model=None,
-        optimizer=None,
-        scheduler=None,
-        strict: bool = True,
-    ) -> None:
-        if model is not None:
-            if "model_state_dict" not in checkpoint:
-                raise KeyError("model_state_dict")
-            model.load_state_dict(checkpoint["model_state_dict"], strict=strict)
-        if optimizer is not None:
-            if "optimizer_state_dict" not in checkpoint:
-                raise KeyError("optimizer_state_dict")
-            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        if scheduler is not None:
-            if "scheduler_state_dict" not in checkpoint:
-                raise KeyError("scheduler_state_dict")
-            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-
-    def load_checkpoint(
-        self,
-        path: str,
-        *,
-        model=None,
-        optimizer=None,
-        scheduler=None,
-        strict: bool = True,
-        map_location=None,
-    ) -> dict[str, Any]:
-        checkpoint = self._validate_checkpoint_payload(path, torch.load(path, map_location=map_location))
-        self._load_required_state(
-            checkpoint,
-            model=model,
-            optimizer=optimizer,
-            scheduler=scheduler,
-            strict=strict,
-        )
-
-        return checkpoint
-
-
-@dataclass
 class TinyExp:
     """
     Simple experiment configuration class, which use hydra to manage and override configurations.
@@ -174,11 +67,6 @@ class TinyExp:
     """
 
     hydra: _HydraConfig = field(default_factory=_HydraConfig)
-
-    # ---------------- luancher configuration ---------------- #
-    ray_num_worker: int = -1  # Number of Ray workers, -1 means using all Ray cluster GPU resources.
-    ray_num_gpus_per_worker: float = 1.0  # Number of GPUs per Ray worker, should be a float value between 0 and 1.
-    ray_placement_strategy: str = "PACK"
 
     # Fully qualified import path for the experiment class, e.g. "tinyexp.examples.mnist_exp.Exp".
     # It is used in Hydra config store to instantiate the experiment class, and in store_and_run_exp, the exp_class will be automatically set to the fully qualified import path of the experiment class.
@@ -193,7 +81,7 @@ class TinyExp:
     # log directory
     output_root: str = "./output"
     mode: str = "train"
-    resume_from: str = ""
+    resume_from: str = ""  # ckpt path to resume from, if empty, will not resume
 
     # overridden configurations, only for internal use
     overrided_cfg: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -201,20 +89,6 @@ class TinyExp:
     def __repr__(self):
         # Customize the representation of the Exp object for cleaner Ray logs.
         return f"Exp(rank={os.getenv('RANK', 'N/A')})"
-
-    @dataclass
-    class WandbCfg:
-        enable_wandb: bool = False
-
-        def build_wandb(self, accelerator=None, **kwargs):
-            if self.enable_wandb:
-                import wandb
-
-                if accelerator is None or accelerator.rank == 0:
-                    wandb.init(**kwargs)
-                return wandb
-
-    wandb_cfg: WandbCfg = field(default_factory=WandbCfg)
 
     @dataclass
     class LoggerCfg:
@@ -231,7 +105,6 @@ class TinyExp:
             return logger
 
     logger_cfg: LoggerCfg = field(default_factory=LoggerCfg)
-    checkpoint_cfg: CheckpointCfg = field(default_factory=CheckpointCfg)
 
     def get_run_dir(self) -> str:
         return os.path.join(self.output_root, self.exp_name)
@@ -276,11 +149,40 @@ class TinyExp:
 
 
 @dataclass
+class RayCfgMixin:
+    @dataclass
+    class RayCfg:
+        # ---------------- luancher configuration ---------------- #
+        ray_num_worker: int = -1  # Number of Ray workers, -1 means using all Ray cluster GPU resources.
+        ray_num_gpus_per_worker: float = 1.0  # Number of GPUs per Ray worker, should be a float value between 0 and 1.
+        ray_placement_strategy: str = "PACK"
+
+    ray_cfg: RayCfg = field(default_factory=RayCfg)
+
+
+@dataclass
+class WandbCfgMixin:
+    @dataclass
+    class WandbCfg:
+        enable_wandb: bool = False
+
+        def build_wandb(self, accelerator=None, **kwargs):
+            if self.enable_wandb:
+                import wandb
+
+                if accelerator is None or accelerator.rank == 0:
+                    wandb.init(**kwargs)
+                return wandb
+
+    wandb_cfg: WandbCfg = field(default_factory=WandbCfg)
+
+
+@dataclass
 class RedisCfgMixin:
     """Supplies :attr:`redis_cache_cfg` plus thin Ray entrypoints on the *experiment* object (see below)."""
 
     @dataclass
-    class RedisCacheCfg:
+    class RedisCfg:
         """
         Hydra-overridable options live in dataclass fields below.
 
@@ -301,7 +203,123 @@ class RedisCfgMixin:
         # >1: externally managed Redis Cluster rendezvous world size.
         redis_rendezvous_world_size: int = 1
 
-    redis_cache_cfg: RedisCacheCfg = field(default_factory=RedisCacheCfg)
+    redis_cache_cfg: RedisCfg = field(default_factory=RedisCfg)
+
+
+@dataclass
+class CheckpointCfgMixin:
+    @dataclass
+    class CheckpointCfg:
+        last_ckpt_name: str = "last.ckpt"
+        best_ckpt_name: str = "best.ckpt"
+
+        def save_checkpoint(
+            self,
+            *,
+            run_dir: str,
+            name: str,
+            model=None,
+            optimizer=None,
+            scheduler=None,
+            epoch: Optional[int] = None,
+            global_step: Optional[int] = None,
+            best_metric: Optional[float] = None,
+            exp_name: str = "",
+            exp_class: str = "",
+            extra_state: Optional[dict[str, Any]] = None,
+        ) -> str:
+            save_path = Path(run_dir) / name
+            save_path.parent.mkdir(parents=True, exist_ok=True)
+
+            checkpoint: dict[str, Any] = {
+                "epoch": epoch,
+                "global_step": global_step,
+                "best_metric": best_metric,
+                "meta": {
+                    "exp_name": exp_name,
+                    "exp_class": exp_class,
+                    "saved_at": datetime.now(timezone.utc).isoformat(),
+                },
+            }
+            if model is not None:
+                checkpoint["model_state_dict"] = model.state_dict()
+            if optimizer is not None:
+                checkpoint["optimizer_state_dict"] = optimizer.state_dict()
+            if scheduler is not None:
+                checkpoint["scheduler_state_dict"] = scheduler.state_dict()
+            if extra_state is not None:
+                checkpoint["extra_state"] = extra_state
+
+            torch.save(checkpoint, save_path)
+            return str(save_path)
+
+        def _validate_checkpoint_payload(self, path: str, checkpoint: Any) -> dict[str, Any]:
+            if not isinstance(checkpoint, dict):
+                raise TypeError(  # noqa: TRY003
+                    f"Checkpoint at {path} must be a dict, got {type(checkpoint).__name__}."
+                )
+
+            if (
+                not any(
+                    key in checkpoint
+                    for key in (
+                        "epoch",
+                        "global_step",
+                        "best_metric",
+                        "meta",
+                        "extra_state",
+                    )
+                )
+                and "model_state_dict" not in checkpoint
+            ):
+                raise UnsupportedCheckpointFormatError(path)
+
+            return checkpoint
+
+        def _load_required_state(
+            self,
+            checkpoint: dict[str, Any],
+            *,
+            model=None,
+            optimizer=None,
+            scheduler=None,
+            strict: bool = True,
+        ) -> None:
+            if model is not None:
+                if "model_state_dict" not in checkpoint:
+                    raise KeyError("model_state_dict")
+                model.load_state_dict(checkpoint["model_state_dict"], strict=strict)
+            if optimizer is not None:
+                if "optimizer_state_dict" not in checkpoint:
+                    raise KeyError("optimizer_state_dict")
+                optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+            if scheduler is not None:
+                if "scheduler_state_dict" not in checkpoint:
+                    raise KeyError("scheduler_state_dict")
+                scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+
+        def load_checkpoint(
+            self,
+            path: str,
+            *,
+            model=None,
+            optimizer=None,
+            scheduler=None,
+            strict: bool = True,
+            map_location=None,
+        ) -> dict[str, Any]:
+            checkpoint = self._validate_checkpoint_payload(path, torch.load(path, map_location=map_location))
+            self._load_required_state(
+                checkpoint,
+                model=model,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                strict=strict,
+            )
+
+            return checkpoint
+
+    checkpoint_cfg: CheckpointCfg = field(default_factory=CheckpointCfg)
 
 
 def store_and_run_exp(exp_class: type[TinyExp]) -> None:
