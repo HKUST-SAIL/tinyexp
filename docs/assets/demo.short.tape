@@ -33,7 +33,7 @@ Type "uv run python run_mnist_demo.py mode=help"
 Enter
 Sleep 5s
 
-Type "uv run python run_mnist_demo.py mode=help dataloader_cfg.train_batch_size_per_device=16 num_worker=1"
+Type "uv run python run_mnist_demo.py mode=help dataloader_cfg.train_batch_size_per_device=16 ray_num_worker=1"
 Enter
 Sleep 6s
 

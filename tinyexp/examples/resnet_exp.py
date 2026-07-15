@@ -2,21 +2,25 @@ import datetime
 import io
 import os
 import time
-from contextlib import suppress
 from dataclasses import dataclass, field
 
-import redis
 import torch
 import torch.nn as nn
 import torchvision.models as models
 import wandb
-from omegaconf import OmegaConf
 from PIL import Image
 from torch.optim import SGD
 from torch.optim.lr_scheduler import StepLR
 from torchvision import datasets, transforms
 
-from tinyexp import RedisCfgMixin, TinyExp, store_and_run_exp
+from tinyexp import (
+    CheckpointCfgMixin,
+    RayCfgMixin,
+    RedisCfgMixin,
+    TinyExp,
+    WandbCfgMixin,
+    store_and_run_exp,
+)
 from tinyexp.dataset.sampler import InfiniteSampler
 from tinyexp.exceptions import UnknownAcceleratorTypeError
 
@@ -102,69 +106,39 @@ class LocalCachedImageFolder:
 
 
 class RedisCachedImageFolder:
-    def __init__(self, redis_ports: list, root: str, transform=None, target_transform=None):
+    def __init__(
+        self,
+        redis_host: str,
+        redis_ports: list[int],
+        root: str,
+        transform=None,
+        target_transform=None,
+        redis_world_size: int = 1,
+    ):
         self.root = root
         self.transform = transform
         self.target_transform = target_transform
         self.dataset = datasets.ImageFolder(root)
 
-        # Simplified redis connection
-        self.redis_ports = redis_ports
-        self.redis_clients = []
-        self.num_shards = len(redis_ports)
-
-        self._init_redis_connection()
         self.cache_misses = 0
         self.cache_hits = 0
         self.dataset_prefix = os.path.basename(root)[0]
+        from tinyexp.utils.redis_utils import RedisClientManager
 
-    def _init_redis_connection(self):
-        try:
-            for redis_client in self.redis_clients:
-                redis_client.close()
-
-            # Simple Redis connection
-            for port in self.redis_ports:
-                redis_client = redis.StrictRedis(
-                    host="localhost", port=port, decode_responses=False, socket_connect_timeout=5, socket_timeout=5
-                )
-                redis_client.ping()
-                self.redis_clients.append(redis_client)
-
-        except Exception as e:
-            print(f"Redis connection failed: {e}")
-            self.redis_clients = []
-
-    def _safe_redis_get(self, key):
-        if not self.redis_clients:
-            return None
-        redis_client = self.redis_clients[key % self.num_shards]
-        try:
-            return redis_client.get(key)
-        except redis.exceptions.RedisError:
-            return None
-
-    def _safe_redis_set(self, key, value):
-        if not self.redis_clients:
-            return False
-        redis_client = self.redis_clients[key % self.num_shards]
-        try:
-            return redis_client.set(key, value)
-        except redis.exceptions.RedisError:
-            return False
+        self.redis_client_manager = RedisClientManager(redis_host, redis_ports, redis_world_size)
 
     def __getitem__(self, index):
         path, target = self.dataset.samples[index]
         # cache_key = f"{self.dataset_prefix}{index}"
         cache_key = index
 
-        file_data = self._safe_redis_get(cache_key)
+        file_data = self.redis_client_manager.safe_get(cache_key)
         if file_data is None:
             self.cache_misses += 1
             try:
                 with open(path, "rb") as f:
                     file_data = f.read()
-                self._safe_redis_set(cache_key, file_data)
+                self.redis_client_manager.safe_set(cache_key, file_data)
             except Exception as e:
                 print(f"Error reading file {path}: {e}")
                 raise
@@ -191,17 +165,12 @@ class RedisCachedImageFolder:
     def __len__(self):
         return len(self.dataset)
 
-    def __del__(self):
-        """Destructor to ensure connections are properly closed"""
-        for redis_client in self.redis_clients:
-            with suppress(Exception):
-                redis_client.close()
-
 
 @dataclass(repr=False)
-class ResNetExp(TinyExp, RedisCfgMixin):
+class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfgMixin):
     mode: str = "train"
-    num_worker: int = torch.cuda.device_count()
+    max_train_epochs: int = 90
+    max_train_steps: int = -1
 
     @dataclass
     class AcceleratorCfg:
@@ -287,9 +256,11 @@ class ResNetExp(TinyExp, RedisCfgMixin):
             transform = transform_template_imagenet(is_train=True)
             if redis_cache_cfg.redis_cache_enabled:
                 ds_train = RedisCachedImageFolder(
-                    redis_ports=redis_cache_cfg.redis_cache_shard_ports,
+                    redis_host=redis_cache_cfg.redis_cluster_host,
+                    redis_ports=list(redis_cache_cfg.redis_cluster_ports),
                     root=os.path.join(self.data_root, "train"),
                     transform=transform,
+                    redis_world_size=int(redis_cache_cfg.redis_rendezvous_world_size),
                 )
             else:
                 ds_train = datasets.ImageFolder(root=os.path.join(self.data_root, "train"), transform=transform)
@@ -311,7 +282,10 @@ class ResNetExp(TinyExp, RedisCfgMixin):
             ds_val = LocalCachedImageFolder(root=os.path.join(self.data_root, "val"), transform=transform)
             # ds_val = datasets.ImageFolder(root=os.path.join(self.data_root, "val"), transform=transform)
             sampler = torch.utils.data.distributed.DistributedSampler(
-                ds_val, num_replicas=accelerator.world_size, rank=accelerator.rank, shuffle=False
+                ds_val,
+                num_replicas=accelerator.world_size,
+                rank=accelerator.rank,
+                shuffle=False,
             )
             val_kwargs = {
                 "batch_size": self.val_batch_size_per_device,
@@ -329,17 +303,23 @@ class ResNetExp(TinyExp, RedisCfgMixin):
         accelerator = self.accelerator_cfg.build_accelerator()
         run_dir = self.get_run_dir()
         logger = self.logger_cfg.build_logger(save_dir=run_dir, distributed_rank=accelerator.rank)
-        cfg_dict = OmegaConf.to_container(OmegaConf.structured(self), resolve=True)
-        del cfg_dict["hydra"]
-        cfg_msg = OmegaConf.to_yaml(cfg_dict).strip().replace("\n", "\n    ")
-        logger.info(f"-------- Configurations --------\n    {cfg_msg}")
+        cfg_dict = self.print_cfg(logger)
 
         if self.mode == "train":
-            self._train(accelerator=accelerator, logger=logger, cfg_dict=cfg_dict, run_dir=run_dir)
+            self._train(
+                accelerator=accelerator,
+                logger=logger,
+                cfg_dict=cfg_dict,
+                run_dir=run_dir,
+            )
         elif self.mode == "val":
             if not self.resume_from:
                 raise ValueError("resume_from is required when mode='val'")  # noqa: TRY003
-            self._evaluate(accelerator=accelerator, logger=logger, module_or_module_path=self.resume_from)
+            self._evaluate(
+                accelerator=accelerator,
+                logger=logger,
+                module_or_module_path=self.resume_from,
+            )
         else:
             raise NotImplementedError(f"Mode {self.mode} is not implemented")
 
@@ -407,12 +387,15 @@ class ResNetExp(TinyExp, RedisCfgMixin):
 
         if self.wandb_cfg.enable_wandb and accelerator.rank == 0:
             self.wandb_cfg.build_wandb(
-                accelerator=accelerator, config=cfg_dict, project="Baselines", name=self.__class__.__name__
+                accelerator=accelerator,
+                config=cfg_dict,
+                project="Baselines",
+                name=self.__class__.__name__,
             )
 
         train_iter = iter(train_dataloader)
 
-        for global_epoch in range(start_epoch, 90):
+        for global_epoch in range(start_epoch, self.max_train_epochs):
             module.train()
 
             epoch_start_time = time.time()
@@ -434,6 +417,9 @@ class ResNetExp(TinyExp, RedisCfgMixin):
                 optimizer.step()
                 global_step += 1
 
+                if 0 < self.max_train_steps <= global_step:
+                    return
+
                 if global_step % 20 == 0:
                     epoch_elapsed_time = time.time() - epoch_start_time
                     epoch_elapsed_str = f"{int(epoch_elapsed_time / 60):02d}:{int(epoch_elapsed_time % 60):02d}"
@@ -449,7 +435,10 @@ class ResNetExp(TinyExp, RedisCfgMixin):
 
             lr_scheduler.step()
             eval_metric = self._evaluate(
-                accelerator=accelerator, logger=logger, module_or_module_path=module, val_dataloader=val_dataloader
+                accelerator=accelerator,
+                logger=logger,
+                module_or_module_path=module,
+                val_dataloader=val_dataloader,
             )
             if accelerator.is_main_process:
                 self.checkpoint_cfg.save_checkpoint(

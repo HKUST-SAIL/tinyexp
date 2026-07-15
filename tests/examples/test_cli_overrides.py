@@ -25,6 +25,7 @@ def test_cli_override_prints_updated_value(tmp_path: Path) -> None:
             str(script_path),
             "mode=help",
             "dataloader_cfg.train_batch_size_per_device=16",
+            "ray_cfg.ray_num_worker=1",
         ],
         cwd=tmp_path,
         env=env,
@@ -36,3 +37,4 @@ def test_cli_override_prints_updated_value(tmp_path: Path) -> None:
 
     combined_output = f"{result.stdout}\n{result.stderr}"
     assert re.search(r"train_batch_size_per_device:\s*16\b", combined_output)
+    assert re.search(r"ray_num_worker:\s*1\b", combined_output)

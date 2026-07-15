@@ -5,21 +5,28 @@ __license__ = "MIT"
 import os
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-import torch
 from hydra.conf import HydraConf, RunDir
 from hydra.core.config_store import ConfigStore
-from omegaconf import DictConfig
-from omegaconf.listconfig import ListConfig
+from omegaconf import DictConfig, OmegaConf
 
-from .exceptions import UnknownConfigurationKeyError, UnsupportedCheckpointFormatError
+from .exceptions import UnknownConfigurationKeyError
+from .exp_mixins import CheckpointCfgMixin, RayCfgMixin, RedisCfgMixin, WandbCfgMixin
 from .utils.log_utils import tiny_logger_setup
 from .utils.ray_utils import simple_launch_exp
 
-__all__ = ["CheckpointCfg", "ConfigStore", "RedisCfgMixin", "TinyExp", "simple_launch_exp"]
+__all__ = [
+    "CheckpointCfgMixin",
+    "ConfigStore",
+    "RayCfgMixin",
+    "RedisCfgMixin",
+    "TinyExp",
+    "WandbCfgMixin",
+    "simple_launch_exp",
+    "store_and_run_exp",
+]
 
 
 @dataclass
@@ -49,99 +56,6 @@ def _default_exp_name() -> str:
     return "exp"
 
 
-def _is_main_process() -> bool:
-    return os.getenv("RANK", "0") == "0"
-
-
-@dataclass
-class CheckpointCfg:
-    last_ckpt_name: str = "last.ckpt"
-    best_ckpt_name: str = "best.ckpt"
-
-    def save_checkpoint(
-        self,
-        *,
-        run_dir: str,
-        name: str,
-        model=None,
-        optimizer=None,
-        scheduler=None,
-        epoch: Optional[int] = None,
-        global_step: Optional[int] = None,
-        best_metric: Optional[float] = None,
-        exp_name: str = "",
-        exp_class: str = "",
-        extra_state: Optional[dict[str, Any]] = None,
-    ) -> str:
-        save_path = Path(run_dir) / name
-        save_path.parent.mkdir(parents=True, exist_ok=True)
-
-        checkpoint: dict[str, Any] = {
-            "epoch": epoch,
-            "global_step": global_step,
-            "best_metric": best_metric,
-            "meta": {
-                "exp_name": exp_name,
-                "exp_class": exp_class,
-                "saved_at": datetime.now(timezone.utc).isoformat(),
-            },
-        }
-        if model is not None:
-            checkpoint["model_state_dict"] = model.state_dict()
-        if optimizer is not None:
-            checkpoint["optimizer_state_dict"] = optimizer.state_dict()
-        if scheduler is not None:
-            checkpoint["scheduler_state_dict"] = scheduler.state_dict()
-        if extra_state is not None:
-            checkpoint["extra_state"] = extra_state
-
-        torch.save(checkpoint, save_path)
-        return str(save_path)
-
-    def _validate_checkpoint_payload(self, path: str, checkpoint: Any) -> dict[str, Any]:
-        if not isinstance(checkpoint, dict):
-            raise TypeError(f"Checkpoint at {path} must be a dict, got {type(checkpoint).__name__}.")  # noqa: TRY003
-
-        if (
-            not any(key in checkpoint for key in ("epoch", "global_step", "best_metric", "meta", "extra_state"))
-            and "model_state_dict" not in checkpoint
-        ):
-            raise UnsupportedCheckpointFormatError(path)
-
-        return checkpoint
-
-    def _load_required_state(
-        self, checkpoint: dict[str, Any], *, model=None, optimizer=None, scheduler=None, strict: bool = True
-    ) -> None:
-        if model is not None:
-            if "model_state_dict" not in checkpoint:
-                raise KeyError("model_state_dict")
-            model.load_state_dict(checkpoint["model_state_dict"], strict=strict)
-        if optimizer is not None:
-            if "optimizer_state_dict" not in checkpoint:
-                raise KeyError("optimizer_state_dict")
-            optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-        if scheduler is not None:
-            if "scheduler_state_dict" not in checkpoint:
-                raise KeyError("scheduler_state_dict")
-            scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
-
-    def load_checkpoint(
-        self,
-        path: str,
-        *,
-        model=None,
-        optimizer=None,
-        scheduler=None,
-        strict: bool = True,
-        map_location=None,
-    ) -> dict[str, Any]:
-        checkpoint = self._validate_checkpoint_payload(path, torch.load(path, map_location=map_location))
-        self._load_required_state(checkpoint, model=model, optimizer=optimizer, scheduler=scheduler, strict=strict)
-
-        return checkpoint
-
-
 @dataclass
 class TinyExp:
     """
@@ -151,10 +65,6 @@ class TinyExp:
     """
 
     hydra: _HydraConfig = field(default_factory=_HydraConfig)
-
-    # ---------------- luancher configuration ---------------- #
-    num_worker: int = -1  # Number of workers, -1 means to be determined by the user
-    num_gpus_per_worker: float = 1.0  # Number of GPUs per worker, should be a float value between 0 and 1.
 
     # Fully qualified import path for the experiment class, e.g. "tinyexp.examples.mnist_exp.Exp".
     # It is used in Hydra config store to instantiate the experiment class, and in store_and_run_exp, the exp_class will be automatically set to the fully qualified import path of the experiment class.
@@ -169,39 +79,30 @@ class TinyExp:
     # log directory
     output_root: str = "./output"
     mode: str = "train"
-    resume_from: str = ""
+    resume_from: str = ""  # ckpt path to resume from, if empty, will not resume
 
     # overridden configurations, only for internal use
-    overrided_cfg: dict = field(default_factory=dict)
+    overrided_cfg: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def __repr__(self):
         # Customize the representation of the Exp object for cleaner Ray logs.
         return f"Exp(rank={os.getenv('RANK', 'N/A')})"
 
     @dataclass
-    class WandbCfg:
-        enable_wandb: bool = False
-
-        def build_wandb(self, accelerator=None, **kwargs):
-            if self.enable_wandb:
-                import wandb
-
-                if accelerator is None or accelerator.rank == 0:
-                    wandb.init(**kwargs)
-                return wandb
-
-    wandb_cfg: WandbCfg = field(default_factory=WandbCfg)
-
-    @dataclass
     class LoggerCfg:
-        def build_logger(self, save_dir: str, distributed_rank: int = 0, filename: str = "log.txt", mode: str = "a"):
+        def build_logger(
+            self,
+            save_dir: str,
+            distributed_rank: int = 0,
+            filename: str = "log.txt",
+            mode: str = "a",
+        ):
             Path(save_dir).mkdir(parents=True, exist_ok=True)
             logger = tiny_logger_setup(save_dir, distributed_rank, filename, mode)
             logger.info(f"==> log file: {os.path.join(save_dir, filename)}")
             return logger
 
     logger_cfg: LoggerCfg = field(default_factory=LoggerCfg)
-    checkpoint_cfg: CheckpointCfg = field(default_factory=CheckpointCfg)
 
     def get_run_dir(self) -> str:
         return os.path.join(self.output_root, self.exp_name)
@@ -218,55 +119,31 @@ class TinyExp:
                 else:
                     # Otherwise, set the attribute directly
                     ori_value = getattr(cfg_object, key, None)
-                    INDENT = "    "
                     if ori_value != value:
-                        if os.getenv("RANK", 0) == 0 or os.getenv("RANK", 0) == "0":
-                            print(f"{INDENT}{key}: {value} <-- {ori_value}(original)")
-                            # print(f"Override {key} from {ori_value} to {value} in {cfg_object.__class__.__name__}")
+                        self.overrided_cfg[key] = {
+                            "value": value,
+                            "original": ori_value,
+                        }
                         setattr(cfg_object, key, value)
-                        self.overrided_cfg[key] = value
             else:
                 raise UnknownConfigurationKeyError(key)
         return cfg_object
 
+    def print_cfg(self, logger, show_overrided: bool = True):  # type: ignore[no-untyped-def]
+        if show_overrided and self.overrided_cfg:
+            override_lines = [
+                f"    {key}: {item['value']} <-- {item['original']}(original)"
+                for key, item in self.overrided_cfg.items()
+            ]
+            override_msg = "\n".join(override_lines)
+            logger.info(f"-------- Overridden Configurations --------\n{override_msg}")
 
-@dataclass
-class RedisCfgMixin:
-    @dataclass
-    class RedisCacheCfg:
-        redis_cache_enabled: bool = True
-        redis_cache_shard_ports: ListConfig = field(
-            default_factory=lambda: ListConfig(
-                [
-                    7000,
-                    7001,
-                    7002,
-                    7003,
-                    7004,
-                ]
-            )
-        )  # List of Redis cache shard used ports
-        redis_cache_max_memory: int = 160  # Maximum memory is 160GB, according to the ImageNet dataset size
-        redis_cluster_manager_cpus: int = 10
-
-        def build_redis_cache(self):
-            if self.redis_cache_enabled:
-                from tinyexp.utils.redis_utils import RedisClusterManager
-
-                redis_cluster_manager = RedisClusterManager(
-                    ports=self.redis_cache_shard_ports,
-                    max_memory_per_port=self.redis_cache_max_memory // len(self.redis_cache_shard_ports),
-                )
-                return redis_cluster_manager.start_redis_cluster()
-            return True
-
-    redis_cache_cfg: RedisCacheCfg = field(default_factory=RedisCacheCfg)
-
-    def proxy_build_redis_cache(self):
-        """
-        Hard-coded method to build Redis cache since ray actor need
-        """
-        return self.redis_cache_cfg.build_redis_cache()
+        cfg_dict = OmegaConf.to_container(OmegaConf.structured(self), resolve=True)
+        del cfg_dict["hydra"]
+        del cfg_dict["overrided_cfg"]
+        cfg_msg = OmegaConf.to_yaml(cfg_dict).strip().replace("\n", "\n    ")
+        logger.info(f"-------- Configurations --------\n    {cfg_msg}")
+        return cfg_dict
 
 
 def store_and_run_exp(exp_class: type[TinyExp]) -> None:

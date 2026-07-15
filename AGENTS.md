@@ -22,6 +22,10 @@ This repo uses `uv` for dependency management (creates `.venv/` and maintains `u
 - Formatting/linting is enforced via `pre-commit`: Black + isort + Ruff (auto-fix enabled).
 - Prefer explicit names and type hints; `mypy` is part of the `tox` run and untyped defs are disallowed.
 
+## Development Principles
+- 如无必要，勿增实体: do not add new concepts, state, helpers, layers, or dependencies unless they are needed to solve the concrete problem.
+- Keep It Simple, Stupid (KISS): prefer the smallest direct implementation that preserves behavior and is easy to reason about.
+
 ## Testing Guidelines
 - Framework: `pytest`; place tests under `tests/` and name files `test_*.py`.
 - Keep tests fast and deterministic (CPU-first). If a feature needs external services (e.g., Redis/W&B), gate via env vars and provide safe fallbacks/mocks.

@@ -6,11 +6,16 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import wandb
-from omegaconf import OmegaConf
 from torch.optim.lr_scheduler import StepLR
 from torchvision import datasets, transforms
 
-from tinyexp import TinyExp, store_and_run_exp
+from tinyexp import (
+    CheckpointCfgMixin,
+    RayCfgMixin,
+    TinyExp,
+    WandbCfgMixin,
+    store_and_run_exp,
+)
 from tinyexp.exceptions import UnknownAcceleratorTypeError
 
 
@@ -48,9 +53,13 @@ class Net(nn.Module):
 
 
 @dataclass(repr=False)
-class Exp(TinyExp):
-    num_worker: int = 2
-    num_gpus_per_worker: float = 0.0
+class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin):
+    @dataclass
+    class RayCfg(RayCfgMixin.RayCfg):
+        ray_num_worker: int = 2
+        ray_num_gpus_per_worker: float = 0.0
+
+    ray_cfg: RayCfg = field(default_factory=RayCfg)
     mode: str = "train"
 
     @dataclass
@@ -143,17 +152,23 @@ class Exp(TinyExp):
         accelerator = self.accelerator_cfg.build_accelerator()
         run_dir = self.get_run_dir()
         logger = self.logger_cfg.build_logger(save_dir=run_dir, distributed_rank=accelerator.rank)
-        cfg_dict = OmegaConf.to_container(OmegaConf.structured(self), resolve=True)
-        del cfg_dict["hydra"]
-        cfg_msg = OmegaConf.to_yaml(cfg_dict).strip().replace("\n", "\n    ")
-        logger.info(f"-------- Configurations --------\n    {cfg_msg}")
+        cfg_dict = self.print_cfg(logger)
 
         if self.mode == "train":
-            self._train(accelerator=accelerator, logger=logger, cfg_dict=cfg_dict, run_dir=run_dir)
+            self._train(
+                accelerator=accelerator,
+                logger=logger,
+                cfg_dict=cfg_dict,
+                run_dir=run_dir,
+            )
         elif self.mode == "val":
             if not self.resume_from:
                 raise ValueError("resume_from is required when mode='val'")  # noqa: TRY003
-            self._evaluate(accelerator=accelerator, logger=logger, module_or_module_path=self.resume_from)
+            self._evaluate(
+                accelerator=accelerator,
+                logger=logger,
+                module_or_module_path=self.resume_from,
+            )
         else:
             raise NotImplementedError(f"Mode {self.mode} is not implemented")
 
@@ -254,7 +269,10 @@ class Exp(TinyExp):
                             }
                         )
             eval_metric = self._evaluate(
-                accelerator=accelerator, logger=logger, module_or_module_path=module, val_dataloader=val_dataloader
+                accelerator=accelerator,
+                logger=logger,
+                module_or_module_path=module,
+                val_dataloader=val_dataloader,
             )
             if accelerator.is_main_process:
                 self.checkpoint_cfg.save_checkpoint(
