@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.0] - 2026-07-15
+
+
+### Added
+
+- 🎸 update readme
+
+- add Ray and Redis distributed launch support (#25)
+
+
+### Changed
+
+- Support continue train, support ckpt saving and loading (#24)
+
+
 ## [0.0.5] - 2026-03-06
 
 
