@@ -16,7 +16,7 @@ from torchvision import datasets, transforms
 from tinyexp import TinyExp, store_and_run_exp
 from tinyexp.dataset.sampler import InfiniteSampler
 from tinyexp.exceptions import UnknownAcceleratorTypeError
-from tinyexp.exp_mixins import CheckpointCfgMixin, LoggerMixin, RayCfgMixin, RedisCfgMixin, WandbCfgMixin
+from tinyexp.exp_mixins import CheckpointCfgMixin, LoggerCfgMixin, RayCfgMixin, RedisCfgMixin, WandbCfgMixin
 
 
 def transform_template_imagenet(
@@ -161,7 +161,7 @@ class RedisCachedImageFolder:
 
 
 @dataclass(repr=False)
-class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerMixin):
+class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixin):
     mode: str = "train"
     max_train_epochs: int = 90
     max_train_steps: int = -1

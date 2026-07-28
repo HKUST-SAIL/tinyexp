@@ -12,13 +12,13 @@ from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, OmegaConf
 
 from .exceptions import UnknownConfigurationKeyError
-from .exp_mixins import CheckpointCfgMixin, LoggerMixin, RayCfgMixin, RedisCfgMixin, WandbCfgMixin
+from .exp_mixins import CheckpointCfgMixin, LoggerCfgMixin, RayCfgMixin, RedisCfgMixin, WandbCfgMixin
 from .utils.ray_utils import simple_launch_exp
 
 __all__ = [
     "CheckpointCfgMixin",
     "ConfigStore",
-    "LoggerMixin",
+    "LoggerCfgMixin",
     "RayCfgMixin",
     "RedisCfgMixin",
     "TinyExp",

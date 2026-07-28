@@ -1,3 +1,3 @@
-from .basic_mixins import CheckpointCfgMixin, LoggerMixin, RayCfgMixin, RedisCfgMixin, WandbCfgMixin
+from .basic_mixins import CheckpointCfgMixin, LoggerCfgMixin, RayCfgMixin, RedisCfgMixin, WandbCfgMixin
 
-__all__ = ["CheckpointCfgMixin", "LoggerMixin", "RayCfgMixin", "RedisCfgMixin", "WandbCfgMixin"]
+__all__ = ["CheckpointCfgMixin", "LoggerCfgMixin", "RayCfgMixin", "RedisCfgMixin", "WandbCfgMixin"]

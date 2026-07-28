@@ -11,7 +11,7 @@ from torchvision import datasets, transforms
 
 from tinyexp import TinyExp, store_and_run_exp
 from tinyexp.exceptions import UnknownAcceleratorTypeError
-from tinyexp.exp_mixins import CheckpointCfgMixin, LoggerMixin, RayCfgMixin, WandbCfgMixin
+from tinyexp.exp_mixins import CheckpointCfgMixin, LoggerCfgMixin, RayCfgMixin, WandbCfgMixin
 
 
 class Net(nn.Module):
@@ -48,7 +48,7 @@ class Net(nn.Module):
 
 
 @dataclass(repr=False)
-class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerMixin):
+class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixin):
     @dataclass
     class RayCfg(RayCfgMixin.RayCfg):
         ray_num_worker: int = 2

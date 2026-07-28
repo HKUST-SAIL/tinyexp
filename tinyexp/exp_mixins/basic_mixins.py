@@ -13,7 +13,7 @@ from ..utils.log_utils import tiny_logger_setup
 
 
 @dataclass
-class LoggerMixin:
+class LoggerCfgMixin:
     @dataclass
     class LoggerCfg:
         def build_logger(

@@ -6,18 +6,18 @@ from pathlib import Path
 import pytest
 import torch
 
-from tinyexp import CheckpointCfgMixin, LoggerMixin, RayCfgMixin, RedisCfgMixin, TinyExp, WandbCfgMixin
+from tinyexp import CheckpointCfgMixin, LoggerCfgMixin, RayCfgMixin, RedisCfgMixin, TinyExp, WandbCfgMixin
 from tinyexp.exceptions import UnsupportedCheckpointFormatError
 
 
 @dataclass
-class LoggerExp(TinyExp, LoggerMixin):
+class LoggerExp(TinyExp, LoggerCfgMixin):
     pass
 
 
 def test_root_package_re_exports_mixins() -> None:
     assert CheckpointCfgMixin.__name__ == "CheckpointCfgMixin"
-    assert LoggerMixin.__name__ == "LoggerMixin"
+    assert LoggerCfgMixin.__name__ == "LoggerCfgMixin"
     assert RayCfgMixin.__name__ == "RayCfgMixin"
     assert RedisCfgMixin.__name__ == "RedisCfgMixin"
     assert WandbCfgMixin.__name__ == "WandbCfgMixin"
