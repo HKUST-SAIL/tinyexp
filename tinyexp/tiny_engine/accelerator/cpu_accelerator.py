@@ -1,5 +1,8 @@
+import os
+import socket
 from contextlib import suppress
 
+import psutil
 import torch
 import torch.distributed as dist
 
@@ -20,6 +23,17 @@ class CPUAccelerator(BaseAccelerator):
             self._process_group_initialized = False
 
     def _init_process_group(self) -> None:
+        if not os.getenv("GLOO_SOCKET_IFNAME"):
+            # Avoid Gloo's hostname-resolution warning by binding the interface that routes to MASTER_ADDR.
+            with suppress(OSError):
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                    sock.connect((self.master_addr, 1))
+                    local_ip = sock.getsockname()[0]
+                for iface, addrs in psutil.net_if_addrs().items():
+                    if any(a.family == socket.AF_INET and a.address == local_ip for a in addrs):
+                        os.environ["GLOO_SOCKET_IFNAME"] = iface
+                        break
+
         dist.init_process_group(
             backend="gloo",
             init_method="env://",

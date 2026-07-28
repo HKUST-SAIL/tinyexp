@@ -5,7 +5,6 @@ __license__ = "MIT"
 import os
 import sys
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Optional
 
 from hydra.conf import HydraConf, RunDir
@@ -13,13 +12,13 @@ from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, OmegaConf
 
 from .exceptions import UnknownConfigurationKeyError
-from .exp_mixins import CheckpointCfgMixin, RayCfgMixin, RedisCfgMixin, WandbCfgMixin
-from .utils.log_utils import tiny_logger_setup
+from .exp_mixins import CheckpointCfgMixin, LoggerMixin, RayCfgMixin, RedisCfgMixin, WandbCfgMixin
 from .utils.ray_utils import simple_launch_exp
 
 __all__ = [
     "CheckpointCfgMixin",
     "ConfigStore",
+    "LoggerMixin",
     "RayCfgMixin",
     "RedisCfgMixin",
     "TinyExp",
@@ -87,22 +86,6 @@ class TinyExp:
     def __repr__(self):
         # Customize the representation of the Exp object for cleaner Ray logs.
         return f"Exp(rank={os.getenv('RANK', 'N/A')})"
-
-    @dataclass
-    class LoggerCfg:
-        def build_logger(
-            self,
-            save_dir: str,
-            distributed_rank: int = 0,
-            filename: str = "log.txt",
-            mode: str = "a",
-        ):
-            Path(save_dir).mkdir(parents=True, exist_ok=True)
-            logger = tiny_logger_setup(save_dir, distributed_rank, filename, mode)
-            logger.info(f"==> log file: {os.path.join(save_dir, filename)}")
-            return logger
-
-    logger_cfg: LoggerCfg = field(default_factory=LoggerCfg)
 
     def get_run_dir(self) -> str:
         return os.path.join(self.output_root, self.exp_name)

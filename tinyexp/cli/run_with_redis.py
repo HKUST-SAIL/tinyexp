@@ -38,7 +38,7 @@ from typing import Any, cast
 import redis
 from omegaconf import OmegaConf
 
-from tinyexp import RedisCfgMixin
+from tinyexp.exp_mixins import RedisCfgMixin
 
 REDIS_RENDEZVOUS_PORT = 26379
 REDIS_RENDEZVOUS_TIMEOUT_S = 600

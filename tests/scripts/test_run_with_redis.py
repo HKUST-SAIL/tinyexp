@@ -15,7 +15,8 @@ def _write_demo_exp(tmp_path: Path) -> Path:
     exp_file = tmp_path / "demo_exp.py"
     exp_file.write_text(
         "from dataclasses import dataclass\n"
-        "from tinyexp import RedisCfgMixin, TinyExp\n"
+        "from tinyexp import TinyExp\n"
+        "from tinyexp.exp_mixins import RedisCfgMixin\n"
         "@dataclass\n"
         "class DemoExp(TinyExp, RedisCfgMixin):\n"
         "    pass\n"
@@ -90,7 +91,8 @@ def test_build_redis_cache_cfg_uses_local_exp_class_over_imported_base(tmp_path:
     base_file = tmp_path / "base_exp_module.py"
     base_file.write_text(
         "from dataclasses import dataclass, field\n"
-        "from tinyexp import RedisCfgMixin, TinyExp\n"
+        "from tinyexp import TinyExp\n"
+        "from tinyexp.exp_mixins import RedisCfgMixin\n"
         "@dataclass\n"
         "class BaseExp(TinyExp, RedisCfgMixin):\n"
         "    @dataclass\n"

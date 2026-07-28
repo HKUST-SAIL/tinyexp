@@ -1,12 +1,34 @@
 from __future__ import annotations
 
+import importlib
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 import torch
 
-from tinyexp import CheckpointCfgMixin, TinyExp
+from tinyexp import CheckpointCfgMixin, LoggerMixin, RayCfgMixin, RedisCfgMixin, TinyExp, WandbCfgMixin
 from tinyexp.exceptions import UnsupportedCheckpointFormatError
+
+
+@dataclass
+class LoggerExp(TinyExp, LoggerMixin):
+    pass
+
+
+def test_root_package_re_exports_mixins() -> None:
+    assert CheckpointCfgMixin.__name__ == "CheckpointCfgMixin"
+    assert LoggerMixin.__name__ == "LoggerMixin"
+    assert RayCfgMixin.__name__ == "RayCfgMixin"
+    assert RedisCfgMixin.__name__ == "RedisCfgMixin"
+    assert WandbCfgMixin.__name__ == "WandbCfgMixin"
+
+
+def test_legacy_mixins_module_re_exports_current_mixins() -> None:
+    legacy_mixins = importlib.import_module("tinyexp.exp_mixins.mixins")
+
+    assert legacy_mixins.LoggerMixin is LoggerMixin
+    assert legacy_mixins.CheckpointCfgMixin is CheckpointCfgMixin
 
 
 def test_get_run_dir(tmp_path: Path) -> None:
@@ -17,7 +39,7 @@ def test_get_run_dir(tmp_path: Path) -> None:
 
 
 def test_logger_cfg_creates_run_dir(tmp_path: Path) -> None:
-    exp = TinyExp(output_root=str(tmp_path), exp_name="demo_exp")
+    exp = LoggerExp(output_root=str(tmp_path), exp_name="demo_exp")
     run_dir = Path(exp.get_run_dir())
 
     exp.logger_cfg.build_logger(save_dir=str(run_dir), distributed_rank=0)
