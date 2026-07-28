@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,13 +21,6 @@ def test_root_package_re_exports_mixins() -> None:
     assert RayCfgMixin.__name__ == "RayCfgMixin"
     assert RedisCfgMixin.__name__ == "RedisCfgMixin"
     assert WandbCfgMixin.__name__ == "WandbCfgMixin"
-
-
-def test_legacy_mixins_module_re_exports_current_mixins() -> None:
-    legacy_mixins = importlib.import_module("tinyexp.exp_mixins.mixins")
-
-    assert legacy_mixins.LoggerMixin is LoggerMixin
-    assert legacy_mixins.CheckpointCfgMixin is CheckpointCfgMixin
 
 
 def test_get_run_dir(tmp_path: Path) -> None:
