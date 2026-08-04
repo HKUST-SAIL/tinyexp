@@ -98,7 +98,7 @@ uv run python tinyexp/examples/mnist_exp.py mode=help dataloader_cfg.train_batch
 Run a command with TinyExp launch helpers after installing the package:
 
 ```bash
-tinyexp-run-with-redis -- python your_exp.py redis_cache_cfg.redis_cache_enabled=true
+tinyexp-run-with-redis -- python your_exp.py redis_cfg.redis_cache_enabled=true
 tinyexp-run-with-ray-cluster --node-count 2 --head-addr 10.0.0.1 -- python your_exp.py
 ```
 

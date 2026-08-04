@@ -62,7 +62,7 @@ class WandbCfgMixin:
 
 @dataclass
 class RedisCfgMixin:
-    """Supplies :attr:`redis_cache_cfg` plus thin Ray entrypoints on the *experiment* object (see below)."""
+    """Supplies :attr:`redis_cfg` plus thin Ray entrypoints on the *experiment* object (see below)."""
 
     @dataclass
     class RedisCfg:
@@ -86,7 +86,7 @@ class RedisCfgMixin:
         # >1: externally managed Redis Cluster rendezvous world size.
         redis_rendezvous_world_size: int = 1
 
-    redis_cache_cfg: RedisCfg = field(default_factory=RedisCfg)
+    redis_cfg: RedisCfg = field(default_factory=RedisCfg)
 
 
 @dataclass

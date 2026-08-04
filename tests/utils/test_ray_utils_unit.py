@@ -254,7 +254,7 @@ def test_maybe_start_ray_redis_cache_returns_none_without_redis_cfg() -> None:
 
 
 def test_maybe_start_ray_redis_cache_returns_none_when_disabled() -> None:
-    cfg = OmegaConf.create({"redis_cache_cfg": {"redis_cache_enabled": False}})
+    cfg = OmegaConf.create({"redis_cfg": {"redis_cache_enabled": False}})
     assert _maybe_start_ray_redis_cache(cfg) is None
 
 
@@ -265,8 +265,8 @@ def test_maybe_start_ray_redis_cache_starts_standalone_for_world_size_one(
     captured = {}
 
     class FakeRayRedisClusterManager:
-        def __init__(self, redis_cache_cfg) -> None:  # type: ignore[no-untyped-def]
-            self.redis_cache_cfg = redis_cache_cfg
+        def __init__(self, redis_cfg) -> None:  # type: ignore[no-untyped-def]
+            self.redis_cfg = redis_cfg
             created.append(self)
 
         def start(self, *, cluster_enabled: bool) -> tuple[str, list[int], int]:
@@ -277,7 +277,7 @@ def test_maybe_start_ray_redis_cache_starts_standalone_for_world_size_one(
 
     cfg = OmegaConf.create(
         {
-            "redis_cache_cfg": {
+            "redis_cfg": {
                 "redis_cache_enabled": True,
                 "redis_cluster_host": "127.0.0.1",
                 "redis_cluster_ports": [7000],
@@ -290,15 +290,15 @@ def test_maybe_start_ray_redis_cache_starts_standalone_for_world_size_one(
 
     assert manager is created[0]
     assert captured["cluster_enabled"] is False
-    assert cfg.redis_cache_cfg.redis_cluster_host == "10.0.0.1"
-    assert list(cfg.redis_cache_cfg.redis_cluster_ports) == [7000]
-    assert cfg.redis_cache_cfg.redis_rendezvous_world_size == 1
+    assert cfg.redis_cfg.redis_cluster_host == "10.0.0.1"
+    assert list(cfg.redis_cfg.redis_cluster_ports) == [7000]
+    assert cfg.redis_cfg.redis_rendezvous_world_size == 1
 
 
 def test_maybe_start_ray_redis_cache_returns_none_for_external_cluster_cfg() -> None:
     cfg = OmegaConf.create(
         {
-            "redis_cache_cfg": {
+            "redis_cfg": {
                 "redis_cache_enabled": True,
                 "redis_cluster_host": "10.0.0.1",
                 "redis_cluster_ports": [7000, 7001, 7002],
@@ -313,7 +313,7 @@ def test_maybe_start_ray_redis_cache_returns_none_for_external_cluster_cfg() -> 
 def test_maybe_start_ray_redis_cache_rejects_invalid_world_size() -> None:
     cfg = OmegaConf.create(
         {
-            "redis_cache_cfg": {
+            "redis_cfg": {
                 "redis_cache_enabled": True,
                 "redis_cluster_ports": [7000],
                 "redis_rendezvous_world_size": 0,
@@ -331,8 +331,8 @@ def test_maybe_start_ray_redis_cache_writes_resolved_cfg_for_auto_mode(
     created = []
 
     class FakeRayRedisClusterManager:
-        def __init__(self, redis_cache_cfg) -> None:  # type: ignore[no-untyped-def]
-            self.redis_cache_cfg = redis_cache_cfg
+        def __init__(self, redis_cfg) -> None:  # type: ignore[no-untyped-def]
+            self.redis_cfg = redis_cfg
             created.append(self)
 
         def start(self, *, cluster_enabled: bool) -> tuple[str, list[int], int]:
@@ -343,7 +343,7 @@ def test_maybe_start_ray_redis_cache_writes_resolved_cfg_for_auto_mode(
 
     cfg = OmegaConf.create(
         {
-            "redis_cache_cfg": {
+            "redis_cfg": {
                 "redis_cache_enabled": True,
                 "redis_cluster_host": "127.0.0.1",
                 "redis_cluster_ports": [7000],
@@ -355,6 +355,6 @@ def test_maybe_start_ray_redis_cache_writes_resolved_cfg_for_auto_mode(
     manager = _maybe_start_ray_redis_cache(cfg)
 
     assert manager is created[0]
-    assert cfg.redis_cache_cfg.redis_cluster_host == "10.0.0.1"
-    assert list(cfg.redis_cache_cfg.redis_cluster_ports) == [7000, 7001, 7002]
-    assert cfg.redis_cache_cfg.redis_rendezvous_world_size == 2
+    assert cfg.redis_cfg.redis_cluster_host == "10.0.0.1"
+    assert list(cfg.redis_cfg.redis_cluster_ports) == [7000, 7001, 7002]
+    assert cfg.redis_cfg.redis_rendezvous_world_size == 2

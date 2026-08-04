@@ -27,11 +27,11 @@ _RAY_NODE_RESOURCE_PIN = 0.001
 
 
 def _maybe_start_ray_redis_cache(cfg: DictConfig) -> RayRedisClusterManager | None:
-    redis_cache_cfg = getattr(cfg, "redis_cache_cfg", None)
-    if redis_cache_cfg is None or not bool(getattr(redis_cache_cfg, "redis_cache_enabled", False)):
+    redis_cfg = getattr(cfg, "redis_cfg", None)
+    if redis_cfg is None or not bool(getattr(redis_cfg, "redis_cache_enabled", False)):
         return None
 
-    requested_world_size = int(getattr(redis_cache_cfg, "redis_rendezvous_world_size", 1))
+    requested_world_size = int(getattr(redis_cfg, "redis_rendezvous_world_size", 1))
     if requested_world_size == 1:
         cluster_enabled = False
     elif requested_world_size == -1:
@@ -41,11 +41,11 @@ def _maybe_start_ray_redis_cache(cfg: DictConfig) -> RayRedisClusterManager | No
     else:
         raise ValueError("redis_rendezvous_world_size must be -1, 1, or > 1")  # noqa: TRY003
 
-    manager = RayRedisClusterManager(redis_cache_cfg)
+    manager = RayRedisClusterManager(redis_cfg)
     startup_host, startup_ports, world_size = manager.start(cluster_enabled=cluster_enabled)
-    redis_cache_cfg.redis_cluster_host = startup_host
-    redis_cache_cfg.redis_cluster_ports = startup_ports
-    redis_cache_cfg.redis_rendezvous_world_size = world_size
+    redis_cfg.redis_cluster_host = startup_host
+    redis_cfg.redis_cluster_ports = startup_ports
+    redis_cfg.redis_rendezvous_world_size = world_size
     return manager
 
 

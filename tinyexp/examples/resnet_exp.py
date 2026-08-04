@@ -246,15 +246,15 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
         val_data_worker_per_gpu: int = 1
         seed: int = 42
 
-        def build_train_dataloader(self, accelerator, redis_cache_cfg):
+        def build_train_dataloader(self, accelerator, redis_cfg):
             transform = transform_template_imagenet(is_train=True)
-            if redis_cache_cfg.redis_cache_enabled:
+            if redis_cfg.redis_cache_enabled:
                 ds_train = RedisCachedImageFolder(
-                    redis_host=redis_cache_cfg.redis_cluster_host,
-                    redis_ports=list(redis_cache_cfg.redis_cluster_ports),
+                    redis_host=redis_cfg.redis_cluster_host,
+                    redis_ports=list(redis_cfg.redis_cluster_ports),
                     root=os.path.join(self.data_root, "train"),
                     transform=transform,
-                    redis_world_size=int(redis_cache_cfg.redis_rendezvous_world_size),
+                    redis_world_size=int(redis_cfg.redis_rendezvous_world_size),
                 )
             else:
                 ds_train = datasets.ImageFolder(root=os.path.join(self.data_root, "train"), transform=transform)
@@ -357,7 +357,7 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
         return eval_metric
 
     def _train(self, accelerator, logger, cfg_dict, run_dir: str) -> None:
-        train_dataloader = self.dataloader_cfg.build_train_dataloader(accelerator, self.redis_cache_cfg)
+        train_dataloader = self.dataloader_cfg.build_train_dataloader(accelerator, self.redis_cfg)
         val_dataloader = self.dataloader_cfg.build_val_dataloader(accelerator)
         ori_module = self.module_cfg.build_module()
         ori_optimizer = self.optimizer_cfg.build_optimizer(ori_module, train_dataloader, accelerator)
