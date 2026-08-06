@@ -95,6 +95,14 @@ Print all configs plus your overrides:
 uv run python tinyexp/examples/mnist_exp.py mode=help dataloader_cfg.train_batch_size_per_device=16
 ```
 
+Worker processes are launched according to the `launcher` config: `launcher=ray` spawns Ray workers from the driver
+process, while `launcher=mp` runs in the current process. The bundled examples default to `launcher=ray`, so when
+using an external multi-process launcher such as `torchrun` or `accelerate launch`, override it explicitly:
+
+```bash
+uv run torchrun --standalone --nproc-per-node 2 tinyexp/examples/mnist_exp.py launcher=mp
+```
+
 Run a command with TinyExp launch helpers after installing the package:
 
 ```bash

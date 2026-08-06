@@ -35,7 +35,7 @@ class InsufficientCPUError(RuntimeError):
 
 
 class UnknownLauncherError(ValueError):
-    def __init__(self, launcher: str, allowed: Sequence[str] = ("python", "torchrun", "accelerate")) -> None:
+    def __init__(self, launcher: str, allowed: Sequence[str] = ("ray", "mp")) -> None:
         self.launcher = launcher
         self.allowed = tuple(allowed)
         super().__init__(f"Unknown launcher {launcher!r}, please use one of: {', '.join(self.allowed)}.")

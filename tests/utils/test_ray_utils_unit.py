@@ -8,97 +8,8 @@ from tinyexp.utils.ray_utils import (
     _build_worker_env_vars,
     _launch_with_ray,
     _maybe_start_ray_redis_cache,
-    _should_print_launcher,
-    get_launcher,
     get_placement_group,
 )
-
-
-def test_get_launcher_defaults_to_python() -> None:
-    assert get_launcher() == "python"
-
-
-def test_get_launcher_detects_torchrun_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LOCAL_RANK", "0")
-    monkeypatch.setenv("RANK", "0")
-    monkeypatch.setenv("WORLD_SIZE", "2")
-
-    assert get_launcher() == "torchrun"
-
-
-def test_get_launcher_detects_torchelastic_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TORCHELASTIC_RUN_ID", "01863564-2461-4a49-9c96-0984a091986f")
-
-    assert get_launcher() == "torchrun"
-
-
-def test_get_launcher_ignores_empty_torchelastic_env(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("TORCHELASTIC_RUN_ID", "none")
-
-    assert get_launcher() == "python"
-
-
-def test_get_launcher_detects_accelerate_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ACCELERATE_PROCESS_INDEX", "0")
-
-    assert get_launcher() == "accelerate"
-
-
-def test_get_launcher_prefers_accelerate_env_over_rank_env(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("ACCELERATE_MIXED_PRECISION", "no")
-    monkeypatch.setenv("LOCAL_RANK", "0")
-    monkeypatch.setenv("RANK", "0")
-    monkeypatch.setenv("WORLD_SIZE", "2")
-
-    assert get_launcher() == "accelerate"
-
-
-def test_get_launcher_ignores_torchrun_in_hydra_override(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class FakeProcess:
-        pid = 123
-
-        def cmdline(self):
-            return [
-                "python",
-                "tinyexp/examples/resnet_exp.py",
-                "exp_name=resnet_run_with_redis_torchrun_simple",
-            ]
-
-        def name(self):
-            return "python"
-
-        def parent(self):
-            return None
-
-    monkeypatch.setattr("tinyexp.utils.ray_utils.psutil.Process", lambda pid: FakeProcess())
-
-    assert get_launcher() == "python"
-
-
-def test_get_launcher_detects_torchrun_executable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class FakeProcess:
-        pid = 123
-
-        def cmdline(self):
-            return ["torchrun", "--standalone", "tinyexp/examples/resnet_exp.py"]
-
-        def name(self):
-            return "torchrun"
-
-        def parent(self):
-            return None
-
-    monkeypatch.setattr("tinyexp.utils.ray_utils.psutil.Process", lambda pid: FakeProcess())
-
-    assert get_launcher() == "torchrun"
 
 
 def test_launch_with_ray_rejects_invalid_ray_worker_count_without_starting_ray(
@@ -145,14 +56,6 @@ def test_launch_with_ray_rejects_missing_cluster_gpus(
 
     with pytest.raises(InvalidWorkerCountError, match="Number of workers"):
         _launch_with_ray(cfg, object)
-
-
-def test_should_print_launcher_based_on_rank(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("RANK", raising=False)
-    assert _should_print_launcher() is True
-
-    monkeypatch.setenv("RANK", "1")
-    assert _should_print_launcher() is False
 
 
 def test_build_worker_env_vars_prefers_user_defined_ifname(

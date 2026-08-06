@@ -163,6 +163,7 @@ class RedisCachedImageFolder:
 @dataclass(repr=False)
 class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixin):
     mode: str = "train"
+    launcher: str = "ray"
     max_train_epochs: int = 90
     max_train_steps: int = -1
 

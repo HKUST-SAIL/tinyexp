@@ -6,7 +6,6 @@ from contextlib import suppress
 from typing import Any
 
 import hydra
-import psutil
 import ray
 from omegaconf import DictConfig
 from ray.util.placement_group import placement_group
@@ -195,66 +194,13 @@ def get_num_worker_options(pg, num_worker, gpu_ratio=1.0, num_cpus_per_worker=No
     return options_list
 
 
-def get_launcher() -> str:
-    # Launchers may be wrapped by tools like uv, so environment variables are the most reliable signal.
-    accelerate_env_keys = (
-        "ACCELERATE_USE_CPU",
-        "ACCELERATE_PROCESS_INDEX",
-        "ACCELERATE_LOCAL_PROCESS_INDEX",
-        "ACCELERATE_MIXED_PRECISION",
-        "ACCELERATE_DYNAMO_BACKEND",
-    )
-    torchelastic_run_id = os.getenv("TORCHELASTIC_RUN_ID")
-    has_torchelastic_run_id = torchelastic_run_id not in (None, "", "none")
-    has_rank_env = (
-        os.getenv("LOCAL_RANK") is not None and os.getenv("RANK") is not None and os.getenv("WORLD_SIZE") is not None
-    )
-
-    if any(os.getenv(key) is not None for key in accelerate_env_keys):
-        return "accelerate"
-    elif has_torchelastic_run_id or has_rank_env:
-        return "torchrun"
-
-    # Get the current process
-    current_process = psutil.Process(os.getpid())
-    process_chain = [current_process]
-
-    # Trace up the process tree (up to 10 levels to avoid infinite loops)
-    for _ in range(10):
-        try:
-            parent = current_process.parent()
-        except (psutil.AccessDenied, psutil.NoSuchProcess, PermissionError):
-            break
-        if not parent or parent.pid == 1:  # Stop when reaching the root process (PID=1)
-            break
-        process_chain.append(parent)
-        current_process = parent
-
-    for proc in process_chain:
-        try:
-            cmdline = proc.cmdline()
-            proc_name = proc.name()
-        except (psutil.AccessDenied, psutil.NoSuchProcess, PermissionError):
-            continue
-
-        executable = os.path.basename(cmdline[0]) if cmdline else proc_name
-        if executable == "torchrun" or proc_name == "torchrun" or "torch.distributed.run" in cmdline:
-            return "torchrun"
-        if executable == "accelerate" or proc_name == "accelerate" or "accelerate.commands.launch" in cmdline:
-            return "accelerate"
-
-    return "python"
-
-
-def _should_print_launcher() -> bool:
-    return os.getenv("RANK", "0") == "0"
-
-
 @hydra.main(version_base=None, config_name="cfg")
 def simple_launch_exp(cfg: DictConfig) -> None:
     """
     This is a template for launching a experiment with hydra config.
-    The launcher can be torchrun(multi-process), accelerate(multi-process), or python(ray).
+    The launcher is selected by ``cfg.launcher``: "ray" spawns Ray workers from the
+    driver process, while "mp" runs the experiment in the current process (for use
+    with external multi-process launchers such as torchrun or accelerate).
     """
     exp_class = hydra.utils.get_class(cfg.exp_class)
 
@@ -285,15 +231,9 @@ def simple_launch_exp(cfg: DictConfig) -> None:
         print("\n", flush=True)
         return
 
-    launcher = get_launcher()
-
-    if _should_print_launcher():
-        print(f"==> use launcher:{launcher}", flush=True)
-
-    if launcher == "python":
+    if cfg.launcher == "ray":
         _launch_with_ray(cfg, exp_class)
-
-    elif launcher == "torchrun" or launcher == "accelerate":
+    elif cfg.launcher == "mp":
         exp_class().set_cfg(cfg).run()
     else:
-        raise UnknownLauncherError(launcher)
+        raise UnknownLauncherError(cfg.launcher)

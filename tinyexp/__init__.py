@@ -75,6 +75,12 @@ class TinyExp:
     # e.g. if the main module is `resnet_exp.py`, the experiment name will be `resnet_exp`.
     exp_name: str = field(default_factory=_default_exp_name)
 
+    # How to launch the experiment workers:
+    # - "ray": the driver spawns Ray workers (run with plain `python`).
+    # - "mp": run in the current process; process management is owned by an
+    #   external multi-process launcher such as torchrun or accelerate.
+    launcher: str = "mp"
+
     # log directory
     output_root: str = "./output"
     mode: str = "train"

@@ -52,10 +52,11 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
     @dataclass
     class RayCfg(RayCfgMixin.RayCfg):
         ray_num_worker: int = 2
-        ray_num_gpus_per_worker: float = 0.0
+        ray_num_gpus_per_worker: float = 0.0  # 0.0 means do not use GPU
 
     ray_cfg: RayCfg = field(default_factory=RayCfg)
     mode: str = "train"
+    launcher: str = "ray"
 
     @dataclass
     class AcceleratorCfg:
