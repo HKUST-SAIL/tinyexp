@@ -37,7 +37,7 @@ def test_ray_cfg_run_resolves_auto_worker_count_from_cluster_gpus(
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.remote", stop_after_resolution)
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.cluster_resources", lambda: {"GPU": 2.0})
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.is_initialized", lambda: True)
-    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.shutdown", lambda: None)
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.shutdown", lambda **kwargs: None)
 
     with pytest.raises(RuntimeError, match="resolved"):
         RayCfgMixin.RayCfg.run(object, cfg)
@@ -52,7 +52,7 @@ def test_ray_cfg_run_rejects_missing_cluster_gpus(
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.init", lambda: None)
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.cluster_resources", lambda: {"CPU": 8.0})
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.is_initialized", lambda: True)
-    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.shutdown", lambda: None)
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.shutdown", lambda **kwargs: None)
 
     with pytest.raises(InvalidWorkerCountError, match="Number of workers"):
         RayCfgMixin.RayCfg.run(object, cfg)
