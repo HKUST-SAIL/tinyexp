@@ -4,28 +4,28 @@ import pytest
 from omegaconf import OmegaConf
 
 from tinyexp.exceptions import InvalidWorkerCountError
+from tinyexp.exp_mixins import RayCfgMixin
 from tinyexp.utils.ray_utils import (
     _build_worker_env_vars,
-    _launch_with_ray,
     _maybe_start_ray_redis_cache,
     get_placement_group,
 )
 
 
-def test_launch_with_ray_rejects_invalid_ray_worker_count_without_starting_ray(
+def test_ray_cfg_run_rejects_invalid_ray_worker_count_without_starting_ray(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cfg = OmegaConf.create({"ray_cfg": {"ray_num_worker": 0}})
     monkeypatch.setattr(
-        "tinyexp.utils.ray_utils.ray.init",
+        "tinyexp.exp_mixins.basic_mixins.ray.init",
         lambda: pytest.fail("ray.init should not be called"),
     )
 
     with pytest.raises(InvalidWorkerCountError, match="Number of workers"):
-        _launch_with_ray(cfg, object)
+        RayCfgMixin.RayCfg.run(object, cfg)
 
 
-def test_launch_with_ray_resolves_auto_worker_count_from_cluster_gpus(
+def test_ray_cfg_run_resolves_auto_worker_count_from_cluster_gpus(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cfg = OmegaConf.create({"ray_cfg": {"ray_num_worker": -1}})
@@ -33,29 +33,43 @@ def test_launch_with_ray_resolves_auto_worker_count_from_cluster_gpus(
     def stop_after_resolution(exp_class):  # type: ignore[no-untyped-def]
         raise RuntimeError("resolved")
 
-    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.init", lambda: None)
-    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.remote", stop_after_resolution)
-    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.cluster_resources", lambda: {"GPU": 2.0})
-    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.is_initialized", lambda: True)
-    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.shutdown", lambda: None)
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.init", lambda: None)
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.remote", stop_after_resolution)
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.cluster_resources", lambda: {"GPU": 2.0})
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.is_initialized", lambda: True)
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.shutdown", lambda: None)
 
     with pytest.raises(RuntimeError, match="resolved"):
-        _launch_with_ray(cfg, object)
+        RayCfgMixin.RayCfg.run(object, cfg)
 
     assert cfg.ray_cfg.ray_num_worker == 2
 
 
-def test_launch_with_ray_rejects_missing_cluster_gpus(
+def test_ray_cfg_run_rejects_missing_cluster_gpus(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cfg = OmegaConf.create({"ray_cfg": {"ray_num_worker": -1}})
-    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.init", lambda: None)
-    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.cluster_resources", lambda: {"CPU": 8.0})
-    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.is_initialized", lambda: True)
-    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.shutdown", lambda: None)
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.init", lambda: None)
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.cluster_resources", lambda: {"CPU": 8.0})
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.is_initialized", lambda: True)
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.shutdown", lambda: None)
 
     with pytest.raises(InvalidWorkerCountError, match="Number of workers"):
-        _launch_with_ray(cfg, object)
+        RayCfgMixin.RayCfg.run(object, cfg)
+
+
+def test_custom_ray_cfg_run_receives_class_and_global_cfg() -> None:
+    calls = []
+
+    class CustomRayCfg(RayCfgMixin.RayCfg):
+        @classmethod
+        def run(cls, exp_class, experiment_cfg):
+            calls.append((cls, exp_class, experiment_cfg))
+
+    cfg = OmegaConf.create({"ray_cfg": {"ray_num_worker": 1}, "mode": "run"})
+    CustomRayCfg.run(object, cfg)
+
+    assert calls == [(CustomRayCfg, object, cfg)]
 
 
 def test_build_worker_env_vars_prefers_user_defined_ifname(

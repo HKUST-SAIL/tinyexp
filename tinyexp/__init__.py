@@ -7,13 +7,13 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+import hydra
 from hydra.conf import HydraConf, RunDir
 from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, OmegaConf
 
-from .exceptions import UnknownConfigurationKeyError
+from .exceptions import UnknownConfigurationKeyError, UnknownLauncherError
 from .exp_mixins import CheckpointCfgMixin, LoggerCfgMixin, RayCfgMixin, RedisCfgMixin, WandbCfgMixin
-from .utils.ray_utils import simple_launch_exp
 
 __all__ = [
     "CheckpointCfgMixin",
@@ -142,6 +142,52 @@ class TinyExp:
         cfg_msg = OmegaConf.to_yaml(cfg_dict).strip().replace("\n", "\n    ")
         logger.info(f"-------- Configurations --------\n    {cfg_msg}")
         return cfg_dict
+
+
+@hydra.main(version_base=None, config_path="pkg://tinyexp", config_name="cfg")
+def simple_launch_exp(cfg: DictConfig) -> None:
+    """
+    This is a template for launching a experiment with hydra config.
+    The launcher is selected by ``cfg.launcher``: "ray" spawns Ray workers from the
+    driver process, while "mp" runs the experiment in the current process (for use
+    with external multi-process launchers such as torchrun or accelerate).
+    """
+    exp_class = hydra.utils.get_class(cfg.exp_class)
+
+    if cfg.mode == "help":
+        from omegaconf import OmegaConf
+
+        # Add ANSI color codes for colored output after '==>'
+        RESET = "\033[0m"
+        YELLOW = "\033[93m"
+        INDENT = "    "  # 4 spaces
+
+        print(
+            f"{YELLOW}==> Experiment Configurations (Available Configs):{RESET}",
+            flush=True,
+        )
+        print(
+            INDENT + OmegaConf.to_yaml(cfg).strip().replace("\n", f"\n{INDENT}"),
+            flush=True,
+        )
+        exp_instance = exp_class()
+        exp_instance.set_cfg(cfg)
+
+        class _StdoutLogger:
+            def info(self, message):  # type: ignore[no-untyped-def]
+                print(message, flush=True)
+
+        exp_instance.print_cfg(_StdoutLogger())
+        print("\n", flush=True)
+        return
+
+    if cfg.launcher == "ray":
+        ray_cfg_class = type(exp_class().ray_cfg)
+        ray_cfg_class.run(exp_class, cfg)
+    elif cfg.launcher == "mp":
+        exp_class().set_cfg(cfg).run()
+    else:
+        raise UnknownLauncherError(cfg.launcher)
 
 
 def store_and_run_exp(exp_class: type[TinyExp]) -> None:

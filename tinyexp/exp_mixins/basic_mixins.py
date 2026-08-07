@@ -1,15 +1,28 @@
 import os
+from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+import ray
 import torch
 from loguru._logger import Logger
+from omegaconf import DictConfig
 from omegaconf.listconfig import ListConfig
 
-from ..exceptions import UnsupportedCheckpointFormatError
+from ..exceptions import (
+    InsufficientCPUError,
+    InvalidWorkerCountError,
+    UnsupportedCheckpointFormatError,
+)
 from ..utils.log_utils import tiny_logger_setup
+from ..utils.ray_utils import (
+    _maybe_start_ray_redis_cache,
+    _needed_num_cpus_per_worker,
+    get_num_worker_options,
+    get_placement_group,
+)
 
 
 @dataclass
@@ -39,6 +52,79 @@ class RayCfgMixin:
         ray_num_worker: int = -1  # Number of Ray workers, -1 means using all Ray cluster GPU resources.
         ray_num_gpus_per_worker: float = 1.0  # Number of GPUs per Ray worker, should be a float value between 0 and 1.
         ray_placement_strategy: str = "PACK"
+
+        @classmethod
+        def run(cls, exp_class: type[Any], experiment_cfg: DictConfig) -> None:
+            """
+            Run the Ray driver-side orchestration.
+
+            Args:
+                exp_class: Experiment class instantiated by each Ray worker.
+                experiment_cfg: Complete Hydra configuration for exp_class.
+            """
+            ray_cfg = experiment_cfg.ray_cfg
+
+            if ray_cfg.ray_num_worker < -1 or ray_cfg.ray_num_worker == 0:
+                raise InvalidWorkerCountError(ray_cfg.ray_num_worker)
+            ray.init()
+            pg = None
+            redis_manager = None
+            worker_group = []
+
+            try:
+                ray_num_worker = ray_cfg.ray_num_worker
+                if ray_num_worker == -1:
+                    ray_num_worker = int(ray.cluster_resources().get("GPU", 0))
+                    if ray_num_worker <= 0:
+                        raise InvalidWorkerCountError(ray_num_worker)
+                    print(
+                        f"==> ray_num_worker is -1, using all Ray cluster GPU resources: {ray_num_worker}",
+                        flush=True,
+                    )
+                    ray_cfg.ray_num_worker = ray_num_worker
+
+                remote_exp = ray.remote(exp_class)
+
+                # -------------------- check cpu count for run ----------------- #
+                needed_num_cpus_per_worker = _needed_num_cpus_per_worker(experiment_cfg)
+
+                needed_cpu = ray_num_worker * needed_num_cpus_per_worker
+                total_cpu = int(ray.cluster_resources().get("CPU", 0))
+
+                if needed_cpu > total_cpu:
+                    raise InsufficientCPUError(total_cpu=total_cpu, needed_cpu=needed_cpu)
+
+                redis_manager = _maybe_start_ray_redis_cache(experiment_cfg)
+                # -------------------- allocate resources for run ----------------- #
+
+                pg = get_placement_group(
+                    num_worker=ray_cfg.ray_num_worker,
+                    num_gpus_per_worker=ray_cfg.ray_num_gpus_per_worker,
+                    num_cpus_per_worker=needed_num_cpus_per_worker,
+                    strategy=ray_cfg.ray_placement_strategy,
+                )
+                options_list = get_num_worker_options(
+                    pg,
+                    ray_cfg.ray_num_worker,
+                    gpu_ratio=ray_cfg.ray_num_gpus_per_worker,
+                    num_cpus_per_worker=needed_num_cpus_per_worker,
+                )
+                worker_group = [remote_exp.options(**options).remote() for options in options_list]
+
+                ray.get([worker.set_cfg.remote(experiment_cfg) for worker in worker_group])
+                ray.get([worker.run.remote() for worker in worker_group])
+            finally:
+                if pg is not None:
+                    with suppress(Exception):
+                        ray.util.remove_placement_group(pg)
+
+                if redis_manager is not None:
+                    with suppress(Exception):
+                        redis_manager.stop()
+
+                if ray.is_initialized():
+                    with suppress(Exception):
+                        ray.shutdown()
 
     ray_cfg: RayCfg = field(default_factory=RayCfg)
 

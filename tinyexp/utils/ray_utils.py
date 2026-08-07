@@ -2,21 +2,13 @@ from __future__ import annotations
 
 import os
 import socket
-from contextlib import suppress
-from typing import Any
 
-import hydra
 import ray
 from omegaconf import DictConfig
 from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from ..exceptions import (
-    InsufficientCPUError,
-    InvalidWorkerCountError,
-    UnknownExperimentModeError,
-    UnknownLauncherError,
-)
+from ..exceptions import UnknownExperimentModeError
 from .redis_utils import RayRedisClusterManager
 
 _RAY_HEAD_NODE_RESOURCE = "node:__internal_head__"
@@ -69,74 +61,7 @@ def _needed_num_cpus_per_worker(cfg: DictConfig) -> int:
     return needed_num_cpus_per_worker
 
 
-def _launch_with_ray(cfg: DictConfig, exp_class: type[Any]) -> None:
-    ray_cfg = cfg.ray_cfg
-    ray_num_worker = int(ray_cfg.ray_num_worker)
-    if ray_num_worker < -1 or ray_num_worker == 0:
-        raise InvalidWorkerCountError(ray_num_worker)
-
-    pg = None
-    redis_manager = None
-    worker_group = []
-
-    ray.init()
-    try:
-        if ray_num_worker == -1:
-            ray_num_worker = int(ray.cluster_resources().get("GPU", 0))
-            if ray_num_worker <= 0:
-                raise InvalidWorkerCountError(ray_num_worker)
-            print(
-                f"==> ray_num_worker is -1, using all Ray cluster GPU resources: {ray_num_worker}",
-                flush=True,
-            )
-        ray_cfg.ray_num_worker = ray_num_worker
-
-        remote_exp = ray.remote(exp_class)
-
-        # -------------------- check cpu count for run ----------------- #
-        needed_num_cpus_per_worker = _needed_num_cpus_per_worker(cfg)
-
-        needed_cpu = ray_cfg.ray_num_worker * needed_num_cpus_per_worker
-        total_cpu = int(ray.cluster_resources().get("CPU", 0))
-
-        if needed_cpu > total_cpu:
-            raise InsufficientCPUError(total_cpu=total_cpu, needed_cpu=needed_cpu)
-
-        redis_manager = _maybe_start_ray_redis_cache(cfg)
-
-        # -------------------- allocate resources for run ----------------- #
-
-        pg = get_placement_group(
-            num_worker=ray_cfg.ray_num_worker,
-            num_gpus_per_worker=ray_cfg.ray_num_gpus_per_worker,
-            num_cpus_per_worker=needed_num_cpus_per_worker,
-            strategy=ray_cfg.ray_placement_strategy,
-        )
-        options_list = get_num_worker_options(
-            pg,
-            ray_cfg.ray_num_worker,
-            gpu_ratio=ray_cfg.ray_num_gpus_per_worker,
-            num_cpus_per_worker=needed_num_cpus_per_worker,
-        )
-        worker_group = [remote_exp.options(**options).remote() for options in options_list]
-
-        ray.get([worker.set_cfg.remote(cfg) for worker in worker_group])
-        ray.get([worker.run.remote() for worker in worker_group])
-    finally:
-        if pg is not None:
-            with suppress(Exception):
-                ray.util.remove_placement_group(pg)
-
-        if redis_manager is not None:
-            with suppress(Exception):
-                redis_manager.stop()
-
-        if ray.is_initialized():
-            with suppress(Exception):
-                ray.shutdown()
-
-
-def get_placement_group(num_worker, num_gpus_per_worker=1, num_cpus_per_worker=10, strategy="PACK"):
+def get_placement_group(num_worker, num_gpus_per_worker: float = 1.0, num_cpus_per_worker=10, strategy="PACK"):
     """Create and return a placement group for worker allocation."""
     bundles = [{"CPU": num_cpus_per_worker, "GPU": num_gpus_per_worker} for _ in range(num_worker)]
     cluster_resources = ray.cluster_resources() if ray.is_initialized() else {}
@@ -209,48 +134,3 @@ def get_num_worker_options(pg, num_worker, gpu_ratio=1.0, num_cpus_per_worker=No
         )
         options_list.append(options)
     return options_list
-
-
-@hydra.main(version_base=None, config_name="cfg")
-def simple_launch_exp(cfg: DictConfig) -> None:
-    """
-    This is a template for launching a experiment with hydra config.
-    The launcher is selected by ``cfg.launcher``: "ray" spawns Ray workers from the
-    driver process, while "mp" runs the experiment in the current process (for use
-    with external multi-process launchers such as torchrun or accelerate).
-    """
-    exp_class = hydra.utils.get_class(cfg.exp_class)
-
-    if cfg.mode == "help":
-        from omegaconf import OmegaConf
-
-        # Add ANSI color codes for colored output after '==>'
-        RESET = "\033[0m"
-        YELLOW = "\033[93m"
-        INDENT = "    "  # 4 spaces
-
-        print(
-            f"{YELLOW}==> Experiment Configurations (Available Configs):{RESET}",
-            flush=True,
-        )
-        print(
-            INDENT + OmegaConf.to_yaml(cfg).strip().replace("\n", f"\n{INDENT}"),
-            flush=True,
-        )
-        exp_instance = exp_class()
-        exp_instance.set_cfg(cfg)
-
-        class _StdoutLogger:
-            def info(self, message):  # type: ignore[no-untyped-def]
-                print(message, flush=True)
-
-        exp_instance.print_cfg(_StdoutLogger())
-        print("\n", flush=True)
-        return
-
-    if cfg.launcher == "ray":
-        _launch_with_ray(cfg, exp_class)
-    elif cfg.launcher == "mp":
-        exp_class().set_cfg(cfg).run()
-    else:
-        raise UnknownLauncherError(cfg.launcher)
