@@ -5,21 +5,20 @@ __license__ = "MIT"
 import os
 import sys
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Optional
 
+import hydra
 from hydra.conf import HydraConf, RunDir
 from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, OmegaConf
 
-from .exceptions import UnknownConfigurationKeyError
-from .exp_mixins import CheckpointCfgMixin, RayCfgMixin, RedisCfgMixin, WandbCfgMixin
-from .utils.log_utils import tiny_logger_setup
-from .utils.ray_utils import simple_launch_exp
+from .exceptions import UnknownConfigurationKeyError, UnknownLauncherError
+from .exp_mixins import CheckpointCfgMixin, LoggerCfgMixin, RayCfgMixin, RedisCfgMixin, WandbCfgMixin
 
 __all__ = [
     "CheckpointCfgMixin",
     "ConfigStore",
+    "LoggerCfgMixin",
     "RayCfgMixin",
     "RedisCfgMixin",
     "TinyExp",
@@ -76,10 +75,25 @@ class TinyExp:
     # e.g. if the main module is `resnet_exp.py`, the experiment name will be `resnet_exp`.
     exp_name: str = field(default_factory=_default_exp_name)
 
+    # How to launch the experiment workers:
+    # - "ray": the driver spawns Ray workers (run with plain `python`).
+    # - "mp": run in the current process; process management is owned by an
+    #   external multi-process launcher such as torchrun or accelerate.
+    launcher: str = "mp"
+
     # log directory
     output_root: str = "./output"
+
+    # The experiment mode:
+    # - "run": run the experiment without any dataloader; with the Ray launcher,
+    #   no dataloader CPUs are reserved (only 1 CPU per worker).
+    # - "train": train the model; reserves CPUs for both train and val dataloader workers.
+    # - "val": evaluate the model; reserves CPUs for val dataloader workers only.
+    # - "help": print the experiment configurations and exit.
     mode: str = "train"
-    resume_from: str = ""  # ckpt path to resume from, if empty, will not resume
+
+    # ckpt path to resume from, if empty, will not resume
+    resume_from: str = ""
 
     # overridden configurations, only for internal use
     overrided_cfg: dict[str, dict[str, Any]] = field(default_factory=dict)
@@ -87,22 +101,6 @@ class TinyExp:
     def __repr__(self):
         # Customize the representation of the Exp object for cleaner Ray logs.
         return f"Exp(rank={os.getenv('RANK', 'N/A')})"
-
-    @dataclass
-    class LoggerCfg:
-        def build_logger(
-            self,
-            save_dir: str,
-            distributed_rank: int = 0,
-            filename: str = "log.txt",
-            mode: str = "a",
-        ):
-            Path(save_dir).mkdir(parents=True, exist_ok=True)
-            logger = tiny_logger_setup(save_dir, distributed_rank, filename, mode)
-            logger.info(f"==> log file: {os.path.join(save_dir, filename)}")
-            return logger
-
-    logger_cfg: LoggerCfg = field(default_factory=LoggerCfg)
 
     def get_run_dir(self) -> str:
         return os.path.join(self.output_root, self.exp_name)
@@ -144,6 +142,52 @@ class TinyExp:
         cfg_msg = OmegaConf.to_yaml(cfg_dict).strip().replace("\n", "\n    ")
         logger.info(f"-------- Configurations --------\n    {cfg_msg}")
         return cfg_dict
+
+
+@hydra.main(version_base=None, config_path="pkg://tinyexp", config_name="cfg")
+def simple_launch_exp(cfg: DictConfig) -> None:
+    """
+    This is a template for launching a experiment with hydra config.
+    The launcher is selected by ``cfg.launcher``: "ray" spawns Ray workers from the
+    driver process, while "mp" runs the experiment in the current process (for use
+    with external multi-process launchers such as torchrun or accelerate).
+    """
+    exp_class = hydra.utils.get_class(cfg.exp_class)
+
+    if cfg.mode == "help":
+        from omegaconf import OmegaConf
+
+        # Add ANSI color codes for colored output after '==>'
+        RESET = "\033[0m"
+        YELLOW = "\033[93m"
+        INDENT = "    "  # 4 spaces
+
+        print(
+            f"{YELLOW}==> Experiment Configurations (Available Configs):{RESET}",
+            flush=True,
+        )
+        print(
+            INDENT + OmegaConf.to_yaml(cfg).strip().replace("\n", f"\n{INDENT}"),
+            flush=True,
+        )
+        exp_instance = exp_class()
+        exp_instance.set_cfg(cfg)
+
+        class _StdoutLogger:
+            def info(self, message):  # type: ignore[no-untyped-def]
+                print(message, flush=True)
+
+        exp_instance.print_cfg(_StdoutLogger())
+        print("\n", flush=True)
+        return
+
+    if cfg.launcher == "ray":
+        ray_cfg_class = type(exp_class().ray_cfg)
+        ray_cfg_class.run(exp_class, cfg)
+    elif cfg.launcher == "mp":
+        exp_class().set_cfg(cfg).run()
+    else:
+        raise UnknownLauncherError(cfg.launcher)
 
 
 def store_and_run_exp(exp_class: type[TinyExp]) -> None:

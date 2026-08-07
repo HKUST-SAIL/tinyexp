@@ -95,10 +95,21 @@ Print all configs plus your overrides:
 uv run python tinyexp/examples/mnist_exp.py mode=help dataloader_cfg.train_batch_size_per_device=16
 ```
 
+Worker processes are launched according to the `launcher` config: `launcher=ray` spawns Ray workers from the driver
+process, while `launcher=mp` runs in the current process. The bundled examples default to `launcher=ray`, so when
+using an external multi-process launcher such as `torchrun` or `accelerate launch`, override it explicitly:
+
+```bash
+uv run torchrun --standalone --nproc-per-node 2 tinyexp/examples/mnist_exp.py launcher=mp
+```
+
+The `mode` config selects what to execute: `train`, `val`, `run`, or `help`. `mode=run` is for general
+distributed programs without dataloaders — with `launcher=ray`, no dataloader CPUs are reserved (1 CPU per worker).
+
 Run a command with TinyExp launch helpers after installing the package:
 
 ```bash
-tinyexp-run-with-redis -- python your_exp.py redis_cache_cfg.redis_cache_enabled=true
+tinyexp-run-with-redis -- python your_exp.py redis_cfg.redis_cache_enabled=true
 tinyexp-run-with-ray-cluster --node-count 2 --head-addr 10.0.0.1 -- python your_exp.py
 ```
 
@@ -106,12 +117,19 @@ tinyexp-run-with-ray-cluster --node-count 2 --head-addr 10.0.0.1 -- python your_
 
 - MNIST baseline: [`tinyexp/examples/mnist_exp.py`](tinyexp/examples/mnist_exp.py)
 - ImageNet ResNet-50: [`tinyexp/examples/resnet_exp.py`](tinyexp/examples/resnet_exp.py)
+- Distributed Monte Carlo pi (non-DL, `mode=run`): [`tinyexp/examples/pi_exp.py`](tinyexp/examples/pi_exp.py)
 
 For ImageNet example:
 
 ```bash
 export IMAGENET_HOME=/path/to/imagenet
 uv run python tinyexp/examples/resnet_exp.py
+```
+
+For the pi example (Ray workers all-reduce their sample counts, no dataloader involved):
+
+```bash
+uv run python -m tinyexp.examples.pi_exp pi_cfg.total_samples=100000000 ray_cfg.ray_num_worker=4
 ```
 
 ## How It Works

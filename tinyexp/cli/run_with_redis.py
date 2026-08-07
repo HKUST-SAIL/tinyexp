@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Run a command with a Redis cache lifecycle owned by this wrapper.
 
-The wrapper reads ``redis_cache_cfg`` overrides from the target command, starts
+The wrapper reads ``redis_cfg`` overrides from the target command, starts
 standalone Redis for single-node jobs or a Redis Cluster for multi-node jobs,
 injects the final Redis connection settings back into the child command as Hydra
 overrides, waits for the child command, and then stops Redis processes it owns.
 
 For multi-node jobs, pass ``--node-count``, ``--node-rank``, and ``--head-addr``
 or provide matching StepFun env/Hydra values through ``NODE_RANK`` and
-``redis_cache_cfg``. Rank 0 hosts the HTTP rendezvous server on ``0.0.0.0``;
+``redis_cfg``. Rank 0 hosts the HTTP rendezvous server on ``0.0.0.0``;
 all ranks register through ``--head-addr``.
 """
 
@@ -38,14 +38,14 @@ from typing import Any, cast
 import redis
 from omegaconf import OmegaConf
 
-from tinyexp import RedisCfgMixin
+from tinyexp.exp_mixins import RedisCfgMixin
 
 REDIS_RENDEZVOUS_PORT = 26379
 REDIS_RENDEZVOUS_TIMEOUT_S = 600
 _REDIS_CONNECTION_OVERRIDE_PREFIXES = (
-    "redis_cache_cfg.redis_cluster_host=",
-    "redis_cache_cfg.redis_cluster_ports=",
-    "redis_cache_cfg.redis_rendezvous_world_size=",
+    "redis_cfg.redis_cluster_host=",
+    "redis_cfg.redis_cluster_ports=",
+    "redis_cfg.redis_rendezvous_world_size=",
 )
 
 STARTED_NODES: list[tuple[str, int]] = []
@@ -83,13 +83,13 @@ def env_uint(name: str, default: int) -> int:
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="tinyexp-run-with-redis",
-        description="Start Redis, inject redis_cache_cfg overrides, then run <command>.",
+        description="Start Redis, inject redis_cfg overrides, then run <command>.",
     )
     parser.add_argument(
         "--node-count",
         type=positive_int,
         default=None,
-        help="Total Redis rendezvous nodes. Default: redis_cache_cfg.redis_rendezvous_world_size.",
+        help="Total Redis rendezvous nodes. Default: redis_cfg.redis_rendezvous_world_size.",
     )
     parser.add_argument(
         "--node-rank",
@@ -100,7 +100,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--head-addr",
         default="",
-        help="Rendezvous address all nodes use for multi-node Redis. Default: redis_cache_cfg.redis_cluster_host.",
+        help="Rendezvous address all nodes use for multi-node Redis. Default: redis_cfg.redis_cluster_host.",
     )
     parser.add_argument(
         "--rendezvous-port",
@@ -148,15 +148,15 @@ def main(argv: list[str]) -> int:
     global CHILD_PROCESS, STARTED_NODES
 
     args = parse_args(argv)
-    redis_cache_cfg = build_redis_cache_cfg(args.command)
-    configured_ports = [int(port) for port in redis_cache_cfg.redis_cluster_ports]
+    redis_cfg = build_redis_cfg(args.command)
+    configured_ports = [int(port) for port in redis_cfg.redis_cluster_ports]
     if not configured_ports:
-        print("redis_cache_cfg.redis_cluster_ports must not be empty", file=sys.stderr)
+        print("redis_cfg.redis_cluster_ports must not be empty", file=sys.stderr)
         return 2
 
-    world_size = args.node_count or int(redis_cache_cfg.redis_rendezvous_world_size)
+    world_size = args.node_count or int(redis_cfg.redis_rendezvous_world_size)
     if world_size < 1:
-        print("redis_cache_cfg.redis_rendezvous_world_size must be >= 1", file=sys.stderr)
+        print("redis_cfg.redis_rendezvous_world_size must be >= 1", file=sys.stderr)
         return 2
     if args.node_rank >= world_size:
         print(
@@ -165,7 +165,7 @@ def main(argv: list[str]) -> int:
         )
         return 2
 
-    head_addr = args.head_addr or str(redis_cache_cfg.redis_cluster_host)
+    head_addr = args.head_addr or str(redis_cfg.redis_cluster_host)
     if world_size > 1 and head_addr in {"", "127.0.0.1", "localhost", "::1"}:
         print("--head-addr is required for multi-node Redis jobs", file=sys.stderr)
         return 2
@@ -177,9 +177,9 @@ def main(argv: list[str]) -> int:
     startup_node: tuple[str, list[int]] | None = None
     try:
         redis_status = True
-        if redis_cache_cfg.redis_cache_enabled and world_size > 1:
+        if redis_cfg.redis_cache_enabled and world_size > 1:
             startup_node = start_rendezvous_redis_cluster(
-                redis_cache_cfg,
+                redis_cfg,
                 world_size=world_size,
                 node_rank=args.node_rank,
                 head_addr=head_addr,
@@ -188,8 +188,8 @@ def main(argv: list[str]) -> int:
                 started_nodes=STARTED_NODES,
             )
             redis_status = startup_node is not None
-        elif redis_cache_cfg.redis_cache_enabled:
-            startup_node = start_local_redis(redis_cache_cfg, STARTED_NODES)
+        elif redis_cfg.redis_cache_enabled:
+            startup_node = start_local_redis(redis_cfg, STARTED_NODES)
             redis_status = startup_node is not None
 
         print(f"Redis status:\033[32m{redis_status}\033[0m", flush=True)
@@ -200,9 +200,9 @@ def main(argv: list[str]) -> int:
         if startup_node is not None:
             startup_host, startup_ports = startup_node
             overrides = [
-                f"redis_cache_cfg.redis_cluster_host={startup_host}",
-                f"redis_cache_cfg.redis_cluster_ports=[{','.join(str(port) for port in startup_ports)}]",
-                f"redis_cache_cfg.redis_rendezvous_world_size={world_size}",
+                f"redis_cfg.redis_cluster_host={startup_host}",
+                f"redis_cfg.redis_cluster_ports=[{','.join(str(port) for port in startup_ports)}]",
+                f"redis_cfg.redis_rendezvous_world_size={world_size}",
             ]
             command = [arg for arg in command if not arg.startswith(_REDIS_CONNECTION_OVERRIDE_PREFIXES)]
             command = [*command, *overrides]
@@ -228,7 +228,7 @@ def main(argv: list[str]) -> int:
         STARTED_NODES = []
 
 
-def build_redis_cache_cfg(argv: list[str]) -> Any:
+def build_redis_cfg(argv: list[str]) -> Any:
     exp: Any | None = None
     module = _load_experiment_module(argv)
     if module is not None:
@@ -244,11 +244,11 @@ def build_redis_cache_cfg(argv: list[str]) -> Any:
             exp = cast(Any, exp_classes[0]())
             exp.exp_class = f"{exp_classes[0].__module__}.{exp_classes[0].__qualname__}"
 
-    overrides = [arg for arg in argv if arg.startswith("redis_cache_cfg.")]
+    overrides = [arg for arg in argv if arg.startswith("redis_cfg.")]
     if exp is not None:
         if overrides:
             exp.set_cfg(OmegaConf.from_dotlist(overrides))
-        return exp.redis_cache_cfg
+        return exp.redis_cfg
 
     print(
         "Could not infer experiment config; using RedisCfgMixin defaults",
@@ -257,13 +257,13 @@ def build_redis_cache_cfg(argv: list[str]) -> Any:
     cfg = OmegaConf.structured(RedisCfgMixin())
     if overrides:
         cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(overrides))
-    return cfg.redis_cache_cfg
+    return cfg.redis_cfg
 
 
-def start_local_redis(redis_cache_cfg: Any, started_nodes: list[tuple[str, int]]) -> tuple[str, list[int]] | None:
-    host = str(redis_cache_cfg.redis_cluster_host)
-    ports = [int(port) for port in redis_cache_cfg.redis_cluster_ports]
-    max_memory_bytes = max(1, int((float(redis_cache_cfg.redis_cache_max_memory) / len(ports)) * (1024**3)))
+def start_local_redis(redis_cfg: Any, started_nodes: list[tuple[str, int]]) -> tuple[str, list[int]] | None:
+    host = str(redis_cfg.redis_cluster_host)
+    ports = [int(port) for port in redis_cfg.redis_cluster_ports]
+    max_memory_bytes = max(1, int((float(redis_cfg.redis_cache_max_memory) / len(ports)) * (1024**3)))
     local_started_nodes: list[tuple[str, int]] = []
     for port in ports:
         if not start_redis_node(
@@ -281,7 +281,7 @@ def start_local_redis(redis_cache_cfg: Any, started_nodes: list[tuple[str, int]]
 
 
 def start_rendezvous_redis_cluster(
-    redis_cache_cfg: Any,
+    redis_cfg: Any,
     *,
     world_size: int,
     node_rank: int,
@@ -290,7 +290,7 @@ def start_rendezvous_redis_cluster(
     timeout_s: int,
     started_nodes: list[tuple[str, int]],
 ) -> tuple[str, list[int]] | None:
-    ports = [int(port) for port in redis_cache_cfg.redis_cluster_ports]
+    ports = [int(port) for port in redis_cfg.redis_cluster_ports]
     node_count = world_size * len(ports)
     if node_count < 3:
         print("Redis Cluster requires at least 3 master nodes", file=sys.stderr)
@@ -311,7 +311,7 @@ def start_rendezvous_redis_cluster(
         )
         return None
 
-    max_memory_bytes = max(1, int((float(redis_cache_cfg.redis_cache_max_memory) / node_count) * (1024**3)))
+    max_memory_bytes = max(1, int((float(redis_cfg.redis_cache_max_memory) / node_count) * (1024**3)))
     local_started_nodes: list[tuple[str, int]] = []
     for port in ports:
         if not start_redis_node(

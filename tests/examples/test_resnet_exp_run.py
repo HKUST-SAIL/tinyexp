@@ -142,14 +142,14 @@ def test_resnet_dataloader_passes_complete_redis_cfg_to_cached_folder(
     )
 
     dataloader_cfg = ResNetExp.DataloaderCfg(data_root="/imagenet")
-    redis_cache_cfg = SimpleNamespace(
+    redis_cfg = SimpleNamespace(
         redis_cache_enabled=True,
         redis_cluster_host="10.0.0.1",
         redis_cluster_ports=ListConfig([7300, 7301, 7302]),
         redis_rendezvous_world_size=2,
     )
 
-    dataloader_cfg.build_train_dataloader(accelerator=SimpleNamespace(), redis_cache_cfg=redis_cache_cfg)
+    dataloader_cfg.build_train_dataloader(accelerator=SimpleNamespace(), redis_cfg=redis_cfg)
 
     assert captured["redis_host"] == "10.0.0.1"
     assert captured["redis_ports"] == [7300, 7301, 7302]
@@ -253,7 +253,7 @@ def test_resnet_train_saves_last_and_best_checkpoints(tmp_path: Path, monkeypatc
     monkeypatch.setattr(
         exp.dataloader_cfg,
         "build_train_dataloader",
-        lambda accelerator, redis_cache_cfg: train_batch,
+        lambda accelerator, redis_cfg: train_batch,
     )
     monkeypatch.setattr(exp.dataloader_cfg, "build_val_dataloader", lambda accelerator: val_batch)
     monkeypatch.setattr(exp.module_cfg, "build_module", lambda: nn.Linear(2, 2))
@@ -315,7 +315,7 @@ def test_resnet_train_stops_at_max_train_epochs(tmp_path: Path, monkeypatch) -> 
     monkeypatch.setattr(
         exp.dataloader_cfg,
         "build_train_dataloader",
-        lambda accelerator, redis_cache_cfg: train_batch,
+        lambda accelerator, redis_cfg: train_batch,
     )
     monkeypatch.setattr(exp.dataloader_cfg, "build_val_dataloader", lambda accelerator: val_batch)
     monkeypatch.setattr(exp.module_cfg, "build_module", lambda: nn.Linear(2, 2))
@@ -362,7 +362,7 @@ def test_resnet_train_stops_at_max_train_steps(tmp_path: Path, monkeypatch) -> N
     monkeypatch.setattr(
         exp.dataloader_cfg,
         "build_train_dataloader",
-        lambda accelerator, redis_cache_cfg: train_batch,
+        lambda accelerator, redis_cfg: train_batch,
     )
     monkeypatch.setattr(exp.dataloader_cfg, "build_val_dataloader", lambda accelerator: [])
     monkeypatch.setattr(exp.module_cfg, "build_module", lambda: nn.Linear(2, 2))
@@ -410,7 +410,7 @@ def test_resnet_train_resume_loads_checkpoint_state(tmp_path: Path, monkeypatch)
     monkeypatch.setattr(
         exp.dataloader_cfg,
         "build_train_dataloader",
-        lambda accelerator, redis_cache_cfg: train_batch,
+        lambda accelerator, redis_cfg: train_batch,
     )
     monkeypatch.setattr(exp.dataloader_cfg, "build_val_dataloader", lambda accelerator: val_batch)
     monkeypatch.setattr(exp.module_cfg, "build_module", lambda: nn.Linear(2, 2))

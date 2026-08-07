@@ -449,8 +449,8 @@ class _RayRedisNodeActor:
 
 
 class RayRedisClusterManager:
-    def __init__(self, redis_cache_cfg: Any, *, log_dir: str | Path | None = None) -> None:
-        self.redis_cache_cfg = redis_cache_cfg
+    def __init__(self, redis_cfg: Any, *, log_dir: str | Path | None = None) -> None:
+        self.redis_cfg = redis_cfg
         self.log_dir = Path(log_dir) if log_dir is not None else None
         self._actors: list[Any] = []
 
@@ -465,7 +465,7 @@ class RayRedisClusterManager:
         if cluster_enabled is None:
             cluster_enabled = len(alive_nodes) > 1
 
-        ports = [int(port) for port in self.redis_cache_cfg.redis_cluster_ports]
+        ports = [int(port) for port in self.redis_cfg.redis_cluster_ports]
         total_redis_shards = len(ports) * len(alive_nodes)
         if cluster_enabled and total_redis_shards < 3:
             raise RedisClusterStartupError(  # noqa: TRY003
@@ -479,7 +479,7 @@ class RayRedisClusterManager:
             )
 
         memory_shard_count = total_redis_shards if cluster_enabled else len(ports)
-        max_memory_per_port = float(self.redis_cache_cfg.redis_cache_max_memory) / memory_shard_count
+        max_memory_per_port = float(self.redis_cfg.redis_cache_max_memory) / memory_shard_count
         remote_actor_cls = ray.remote(num_cpus=0)(_RayRedisNodeActor)
         start_refs = []
 
