@@ -21,7 +21,7 @@ class InvalidWorkerCountError(ValueError):
 
 
 class UnknownExperimentModeError(ValueError):
-    def __init__(self, mode: str, allowed: Sequence[str] = ("train", "val", "help")) -> None:
+    def __init__(self, mode: str, allowed: Sequence[str] = ("run", "train", "val", "help")) -> None:
         self.mode = mode
         self.allowed = tuple(allowed)
         super().__init__(f"Unknown mode {mode!r}, please set `mode` to one of: {', '.join(self.allowed)}.")

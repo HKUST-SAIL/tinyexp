@@ -83,8 +83,17 @@ class TinyExp:
 
     # log directory
     output_root: str = "./output"
+
+    # The experiment mode:
+    # - "run": run the experiment without any dataloader; with the Ray launcher,
+    #   no dataloader CPUs are reserved (only 1 CPU per worker).
+    # - "train": train the model; reserves CPUs for both train and val dataloader workers.
+    # - "val": evaluate the model; reserves CPUs for val dataloader workers only.
+    # - "help": print the experiment configurations and exit.
     mode: str = "train"
-    resume_from: str = ""  # ckpt path to resume from, if empty, will not resume
+
+    # ckpt path to resume from, if empty, will not resume
+    resume_from: str = ""
 
     # overridden configurations, only for internal use
     overrided_cfg: dict[str, dict[str, Any]] = field(default_factory=dict)

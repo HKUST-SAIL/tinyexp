@@ -48,6 +48,27 @@ def _maybe_start_ray_redis_cache(cfg: DictConfig) -> RayRedisClusterManager | No
     return manager
 
 
+def _needed_num_cpus_per_worker(cfg: DictConfig) -> int:
+    """
+    Compute the number of CPUs to reserve for each Ray worker based on ``cfg.mode``.
+
+    Every worker gets 1 CPU for the main process, plus CPUs for its dataloader workers:
+    - "train": train and val dataloader workers.
+    - "val": val dataloader workers only.
+    - "run" / "help": no dataloader workers, so only the 1 main-process CPU.
+    """
+    if cfg.mode not in {"run", "train", "val", "help"}:
+        raise UnknownExperimentModeError(cfg.mode)
+
+    needed_num_cpus_per_worker = 1
+    if cfg.mode == "train":
+        needed_num_cpus_per_worker += cfg.dataloader_cfg.val_data_worker_per_gpu
+        needed_num_cpus_per_worker += cfg.dataloader_cfg.train_data_worker_per_gpu
+    elif cfg.mode == "val":
+        needed_num_cpus_per_worker += cfg.dataloader_cfg.val_data_worker_per_gpu
+    return needed_num_cpus_per_worker
+
+
 def _launch_with_ray(cfg: DictConfig, exp_class: type[Any]) -> None:
     ray_cfg = cfg.ray_cfg
     ray_num_worker = int(ray_cfg.ray_num_worker)
@@ -73,11 +94,7 @@ def _launch_with_ray(cfg: DictConfig, exp_class: type[Any]) -> None:
         remote_exp = ray.remote(exp_class)
 
         # -------------------- check cpu count for run ----------------- #
-        if cfg.mode not in {"train", "val", "help"}:
-            raise UnknownExperimentModeError(cfg.mode)
-        needed_num_cpus_per_worker = cfg.dataloader_cfg.val_data_worker_per_gpu + 1
-        if cfg.mode == "train":
-            needed_num_cpus_per_worker += cfg.dataloader_cfg.train_data_worker_per_gpu
+        needed_num_cpus_per_worker = _needed_num_cpus_per_worker(cfg)
 
         needed_cpu = ray_cfg.ray_num_worker * needed_num_cpus_per_worker
         total_cpu = int(ray.cluster_resources().get("CPU", 0))
