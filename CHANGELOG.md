@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.2] - 2026-08-08
+
+
+### Fixed
+
+- run_with_redis: single-node local Redis no longer fails with "--node-rank must be < --node-count" when a multi-machine launcher exports NODE_RANK>=1; the rank guard now only applies to multi-node cluster mode
+
+
 ## [0.1.1] - 2026-08-08
 
 

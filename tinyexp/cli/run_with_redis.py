@@ -158,7 +158,9 @@ def main(argv: list[str]) -> int:
     if world_size < 1:
         print("redis_cfg.redis_rendezvous_world_size must be >= 1", file=sys.stderr)
         return 2
-    if args.node_rank >= world_size:
+    # node_rank only matters for multi-node cluster mode; single-node local Redis
+    # (world_size == 1) ignores it, so don't reject an inherited NODE_RANK env here.
+    if world_size > 1 and args.node_rank >= world_size:
         print(
             f"--node-rank must be < --node-count, got {args.node_rank} >= {world_size}",
             file=sys.stderr,

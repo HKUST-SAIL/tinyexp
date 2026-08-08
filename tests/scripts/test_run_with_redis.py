@@ -179,6 +179,63 @@ def test_run_with_redis_appends_connection_overrides_for_torchrun_command(tmp_pa
     assert captured["popen_kwargs"]["start_new_session"] is True
 
 
+def test_single_node_local_redis_ignores_inherited_node_rank(tmp_path: Path, monkeypatch) -> None:
+    # Multi-machine launchers export NODE_RANK=0,1,2,... on every host. When each
+    # host only starts its own (unshared) local Redis, world_size is 1 and the
+    # inherited NODE_RANK must not trigger the "--node-rank must be < --node-count"
+    # guard, which only applies to multi-node cluster mode.
+    exp_file = _write_demo_exp(tmp_path)
+    captured = {}
+    monkeypatch.setenv("NODE_RANK", "3")
+
+    def fake_start_local_redis(redis_cfg, started_nodes):
+        captured["started_local"] = True
+        return "127.0.0.1", [7014]
+
+    def fake_popen(args, **kwargs):
+        captured["argv"] = args
+        return _FinishedProcess()
+
+    monkeypatch.setattr("tinyexp.cli.run_with_redis.start_local_redis", fake_start_local_redis)
+    monkeypatch.setattr("tinyexp.cli.run_with_redis.subprocess.Popen", fake_popen)
+
+    assert (
+        main(
+            [
+                "python",
+                str(exp_file),
+                "redis_cfg.redis_cluster_ports=[7014]",
+                "redis_cfg.redis_cache_enabled=true",
+                "redis_cfg.redis_rendezvous_world_size=1",
+            ]
+        )
+        == 0
+    )
+    assert captured["started_local"] is True
+
+
+def test_multi_node_rejects_out_of_range_node_rank(tmp_path: Path) -> None:
+    exp_file = _write_demo_exp(tmp_path)
+
+    assert (
+        main(
+            [
+                "--node-count",
+                "2",
+                "--node-rank",
+                "2",
+                "--head-addr",
+                "10.0.0.1",
+                "--",
+                "python",
+                str(exp_file),
+                "redis_cfg.redis_cluster_ports=[7010,7011]",
+            ]
+        )
+        == 2
+    )
+
+
 def test_rendezvous_mode_uses_exp_ports(tmp_path: Path, monkeypatch) -> None:
     exp_file = _write_demo_exp(tmp_path)
     captured = {}
