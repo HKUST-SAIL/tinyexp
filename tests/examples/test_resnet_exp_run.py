@@ -11,6 +11,14 @@ from omegaconf import ListConfig, OmegaConf
 from tinyexp.examples.resnet_exp import RedisCachedImageFolder, ResNetExp
 
 
+def test_resnet_warmup_milestone_uses_configured_epoch() -> None:
+    module = nn.Linear(1, 1)
+    optimizer = torch.optim.SGD(module.parameters(), lr=0.1)
+    scheduler = ResNetExp.LrSchedulerCfg(warmup_epoch=5).build_lr_scheduler(optimizer)
+
+    assert scheduler._milestones == [5]
+
+
 def test_redis_cached_image_folder_uses_standalone_clients_for_localhost(tmp_path: Path, monkeypatch) -> None:
     train_root = tmp_path / "train" / "class0"
     train_root.mkdir(parents=True)

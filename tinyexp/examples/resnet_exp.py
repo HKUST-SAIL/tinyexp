@@ -17,6 +17,7 @@ from tinyexp import TinyExp, store_and_run_exp
 from tinyexp.dataset.sampler import InfiniteSampler
 from tinyexp.exceptions import UnknownAcceleratorTypeError
 from tinyexp.exp_mixins import CheckpointCfgMixin, LoggerCfgMixin, RayCfgMixin, RedisCfgMixin, WandbCfgMixin
+from tinyexp.tiny_engine.accelerator import AcceleratorProtocol
 
 
 def transform_template_imagenet(
@@ -168,10 +169,16 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
     max_train_steps: int = -1
 
     @dataclass
+    class RayCfg(RayCfgMixin.RayCfg):
+        ray_num_cpus_per_worker: int = 12  # Main process plus train/validation dataloader workers.
+
+    ray_cfg: RayCfg = field(default_factory=RayCfg)
+
+    @dataclass
     class AcceleratorCfg:
         accelerator: str = "ddp"
 
-        def build_accelerator(self):
+        def build_accelerator(self) -> AcceleratorProtocol:
             from tinyexp.tiny_engine.accelerator import CPUAccelerator, DDPAccelerator
 
             if self.accelerator == "cpu":
@@ -219,7 +226,6 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
 
             if self.warmup_epoch > 0:
                 warmup_factor: float = 0.001
-                train_warmup_epoch: int = 3
 
                 warmup_scheduler = LinearLR(
                     optimizer,
@@ -230,7 +236,7 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
                 scheduler = SequentialLR(
                     optimizer,
                     schedulers=[warmup_scheduler, main_scheduler],
-                    milestones=[train_warmup_epoch],
+                    milestones=[self.warmup_epoch],
                 )
             else:
                 scheduler = main_scheduler

@@ -1,4 +1,5 @@
 import os
+import tempfile
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -19,7 +20,6 @@ from ..exceptions import (
 from ..utils.log_utils import tiny_logger_setup
 from ..utils.ray_utils import (
     _maybe_start_ray_redis_cache,
-    _needed_num_cpus_per_worker,
     get_num_worker_options,
     get_placement_group,
 )
@@ -44,13 +44,41 @@ class LoggerCfgMixin:
     logger_cfg: LoggerCfg = field(default_factory=LoggerCfg)
 
 
+def _resolve_ray_num_worker(
+    ray_num_worker: int,
+    num_cpus_per_worker: int,
+    num_gpus_per_worker: float,
+    cluster_resources: dict[str, float],
+) -> int:
+    if ray_num_worker != -1:
+        return ray_num_worker
+
+    cpu_worker_count = int(cluster_resources.get("CPU", 0) // num_cpus_per_worker)
+    if num_gpus_per_worker > 0:
+        gpu_worker_count = int(cluster_resources.get("GPU", 0) // num_gpus_per_worker)
+        resolved_worker_count = min(cpu_worker_count, gpu_worker_count)
+        resource_name = "GPU and CPU"
+    else:
+        resolved_worker_count = cpu_worker_count
+        resource_name = "CPU"
+
+    if resolved_worker_count <= 0:
+        raise InvalidWorkerCountError(resolved_worker_count)
+    print(
+        f"==> ray_num_worker is -1, using available {resource_name} resources: {resolved_worker_count}",
+        flush=True,
+    )
+    return resolved_worker_count
+
+
 @dataclass
 class RayCfgMixin:
     @dataclass
     class RayCfg:
         # ---------------- luancher configuration ---------------- #
-        ray_num_worker: int = -1  # Number of Ray workers, -1 means using all Ray cluster GPU resources.
-        ray_num_gpus_per_worker: float = 1.0  # Number of GPUs per Ray worker, should be a float value between 0 and 1.
+        ray_num_worker: int = -1  # Number of Ray workers, -1 means fill available worker resources.
+        ray_num_cpus_per_worker: int = 1
+        ray_num_gpus_per_worker: float = 1.0
         ray_placement_strategy: str = "PACK"
 
         @classmethod
@@ -63,6 +91,12 @@ class RayCfgMixin:
                 experiment_cfg: Complete Hydra configuration for exp_class.
             """
             ray_cfg = experiment_cfg.ray_cfg
+            num_cpus_per_worker = int(ray_cfg.ray_num_cpus_per_worker)
+            num_gpus_per_worker = float(ray_cfg.ray_num_gpus_per_worker)
+            if num_cpus_per_worker <= 0:
+                raise ValueError("ray_num_cpus_per_worker must be greater than 0")  # noqa: TRY003
+            if num_gpus_per_worker < 0:
+                raise ValueError("ray_num_gpus_per_worker must not be negative")  # noqa: TRY003
 
             if ray_cfg.ray_num_worker < -1 or ray_cfg.ray_num_worker == 0:
                 raise InvalidWorkerCountError(ray_cfg.ray_num_worker)
@@ -72,24 +106,22 @@ class RayCfgMixin:
             worker_group = []
 
             try:
-                ray_num_worker = ray_cfg.ray_num_worker
-                if ray_num_worker == -1:
-                    ray_num_worker = int(ray.cluster_resources().get("GPU", 0))
-                    if ray_num_worker <= 0:
-                        raise InvalidWorkerCountError(ray_num_worker)
-                    print(
-                        f"==> ray_num_worker is -1, using all Ray cluster GPU resources: {ray_num_worker}",
-                        flush=True,
-                    )
+                cluster_resources = ray.cluster_resources()
+                ray_num_worker = _resolve_ray_num_worker(
+                    ray_cfg.ray_num_worker,
+                    num_cpus_per_worker,
+                    num_gpus_per_worker,
+                    cluster_resources,
+                )
+                if ray_cfg.ray_num_worker == -1:
                     ray_cfg.ray_num_worker = ray_num_worker
 
                 remote_exp = ray.remote(exp_class)
 
-                # -------------------- check cpu count for run ----------------- #
-                needed_num_cpus_per_worker = _needed_num_cpus_per_worker(experiment_cfg)
+                needed_num_cpus_per_worker = num_cpus_per_worker
 
                 needed_cpu = ray_num_worker * needed_num_cpus_per_worker
-                total_cpu = int(ray.cluster_resources().get("CPU", 0))
+                total_cpu = int(cluster_resources.get("CPU", 0))
 
                 if needed_cpu > total_cpu:
                     raise InsufficientCPUError(total_cpu=total_cpu, needed_cpu=needed_cpu)
@@ -99,14 +131,14 @@ class RayCfgMixin:
 
                 pg = get_placement_group(
                     num_worker=ray_cfg.ray_num_worker,
-                    num_gpus_per_worker=ray_cfg.ray_num_gpus_per_worker,
+                    num_gpus_per_worker=num_gpus_per_worker,
                     num_cpus_per_worker=needed_num_cpus_per_worker,
                     strategy=ray_cfg.ray_placement_strategy,
                 )
                 options_list = get_num_worker_options(
                     pg,
                     ray_cfg.ray_num_worker,
-                    gpu_ratio=ray_cfg.ray_num_gpus_per_worker,
+                    gpu_ratio=num_gpus_per_worker,
                     num_cpus_per_worker=needed_num_cpus_per_worker,
                 )
                 worker_group = [remote_exp.options(**options).remote() for options in options_list]
@@ -219,7 +251,24 @@ class CheckpointCfgMixin:
             if extra_state is not None:
                 checkpoint["extra_state"] = extra_state
 
-            torch.save(checkpoint, save_path)
+            temp_path: Optional[Path] = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="wb",
+                    dir=save_path.parent,
+                    prefix=f".{save_path.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as temp_file:
+                    temp_path = Path(temp_file.name)
+                    torch.save(checkpoint, temp_file)
+                    temp_file.flush()
+                    os.fsync(temp_file.fileno())
+                os.replace(temp_path, save_path)
+            except Exception:
+                if temp_path is not None:
+                    temp_path.unlink(missing_ok=True)
+                raise
             return str(save_path)
 
         def _validate_checkpoint_payload(self, path: str, checkpoint: Any) -> dict[str, Any]:

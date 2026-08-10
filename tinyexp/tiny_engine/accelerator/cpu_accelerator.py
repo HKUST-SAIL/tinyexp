@@ -16,6 +16,7 @@ class CPUAccelerator(BaseAccelerator):
 
     def __init__(self) -> None:
         super().__init__()
+        self.device = torch.device("cpu")
         if self.world_size > 1:
             self._init_process_group()
             self._process_group_initialized = True

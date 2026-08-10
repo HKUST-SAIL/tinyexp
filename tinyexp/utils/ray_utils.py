@@ -8,7 +8,6 @@ from omegaconf import DictConfig
 from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from ..exceptions import UnknownExperimentModeError
 from .redis_utils import RayRedisClusterManager
 
 _RAY_HEAD_NODE_RESOURCE = "node:__internal_head__"
@@ -38,27 +37,6 @@ def _maybe_start_ray_redis_cache(cfg: DictConfig) -> RayRedisClusterManager | No
     redis_cfg.redis_cluster_ports = startup_ports
     redis_cfg.redis_rendezvous_world_size = world_size
     return manager
-
-
-def _needed_num_cpus_per_worker(cfg: DictConfig) -> int:
-    """
-    Compute the number of CPUs to reserve for each Ray worker based on ``cfg.mode``.
-
-    Every worker gets 1 CPU for the main process, plus CPUs for its dataloader workers:
-    - "train": train and val dataloader workers.
-    - "val": val dataloader workers only.
-    - "run" / "help": no dataloader workers, so only the 1 main-process CPU.
-    """
-    if cfg.mode not in {"run", "train", "val", "help"}:
-        raise UnknownExperimentModeError(cfg.mode)
-
-    needed_num_cpus_per_worker = 1
-    if cfg.mode == "train":
-        needed_num_cpus_per_worker += cfg.dataloader_cfg.val_data_worker_per_gpu
-        needed_num_cpus_per_worker += cfg.dataloader_cfg.train_data_worker_per_gpu
-    elif cfg.mode == "val":
-        needed_num_cpus_per_worker += cfg.dataloader_cfg.val_data_worker_per_gpu
-    return needed_num_cpus_per_worker
 
 
 def get_placement_group(num_worker, num_gpus_per_worker: float = 1.0, num_cpus_per_worker=10, strategy="PACK"):

@@ -1,7 +1,7 @@
 # flake8: noqa: F401, F403
 import contextlib as _contextlib
 
-from .base_accelerator import BaseAccelerator
+from .base_accelerator import AcceleratorProtocol, BaseAccelerator
 from .cpu_accelerator import CPUAccelerator
 from .ddp_accelerator import DDPAccelerator
 

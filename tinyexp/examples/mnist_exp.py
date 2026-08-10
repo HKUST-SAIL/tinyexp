@@ -12,6 +12,7 @@ from torchvision import datasets, transforms
 from tinyexp import TinyExp, store_and_run_exp
 from tinyexp.exceptions import UnknownAcceleratorTypeError
 from tinyexp.exp_mixins import CheckpointCfgMixin, LoggerCfgMixin, RayCfgMixin, WandbCfgMixin
+from tinyexp.tiny_engine.accelerator import AcceleratorProtocol
 
 
 class Net(nn.Module):
@@ -52,6 +53,7 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
     @dataclass
     class RayCfg(RayCfgMixin.RayCfg):
         ray_num_worker: int = 2
+        ray_num_cpus_per_worker: int = 4  # Main process plus train/validation dataloader workers.
         ray_num_gpus_per_worker: float = 0.0  # 0.0 means do not use GPU
 
     ray_cfg: RayCfg = field(default_factory=RayCfg)
@@ -62,7 +64,7 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
     class AcceleratorCfg:
         accelerator: str = "cpu"
 
-        def build_accelerator(self):
+        def build_accelerator(self) -> AcceleratorProtocol:
             from tinyexp.tiny_engine.accelerator import CPUAccelerator, DDPAccelerator
 
             if self.accelerator == "cpu":
@@ -205,7 +207,7 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
 
         return eval_metric
 
-    def _train(self, accelerator, logger, cfg_dict, run_dir: str) -> None:
+    def _train(self, accelerator, logger, cfg_dict, run_dir: str) -> None:  # noqa: C901
         train_dataloader = self.dataloader_cfg.build_train_dataloader(accelerator)
         val_dataloader = self.dataloader_cfg.build_val_dataloader(accelerator)
         ori_module = self.module_cfg.build_module()
@@ -270,6 +272,11 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
                 module_or_module_path=module,
                 val_dataloader=val_dataloader,
             )
+            lr_scheduler.step()
+            is_best = best_metric is None or eval_metric > best_metric
+            if is_best:
+                best_metric = eval_metric
+
             if accelerator.is_main_process:
                 self.checkpoint_cfg.save_checkpoint(
                     run_dir=run_dir,
@@ -283,8 +290,7 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
                     exp_name=self.exp_name,
                     exp_class=self.exp_class,
                 )
-                if best_metric is None or eval_metric > best_metric:
-                    best_metric = eval_metric
+                if is_best:
                     self.checkpoint_cfg.save_checkpoint(
                         run_dir=run_dir,
                         name=self.checkpoint_cfg.best_ckpt_name,
@@ -297,8 +303,6 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
                         exp_name=self.exp_name,
                         exp_class=self.exp_class,
                     )
-
-            lr_scheduler.step()
 
 
 # import hydra

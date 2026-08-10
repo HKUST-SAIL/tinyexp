@@ -19,6 +19,16 @@ def test_cpu_accelerator_reduce_ops_world_size_one(monkeypatch: pytest.MonkeyPat
     acc.wait_for_everyone()
 
 
+def test_cpu_accelerator_forces_cpu_even_when_cuda_is_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "device_count", lambda: 2)
+    monkeypatch.setenv("WORLD_SIZE", "1")
+
+    accelerator = CPUAccelerator()
+
+    assert accelerator.device == torch.device("cpu")
+
+
 def test_cpu_accelerator_print_only_rank0(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setenv("WORLD_SIZE", "1")
 

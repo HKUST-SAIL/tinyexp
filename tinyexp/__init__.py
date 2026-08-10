@@ -85,11 +85,10 @@ class TinyExp:
     output_root: str = "./output"
 
     # The experiment mode:
-    # - "run": run the experiment without any dataloader; with the Ray launcher,
-    #   no dataloader CPUs are reserved (only 1 CPU per worker).
-    # - "train": train the model; reserves CPUs for both train and val dataloader workers.
-    # - "val": evaluate the model; reserves CPUs for val dataloader workers only.
-    # - "help": print the experiment configurations and exit.
+    # - "run": run a general experiment workload.
+    # - "train": train the model.
+    # - "val": evaluate the model.
+    # - "help": print the experiment configuration and exit.
     mode: str = "train"
 
     # ckpt path to resume from, if empty, will not resume

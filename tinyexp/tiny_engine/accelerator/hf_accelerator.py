@@ -1,4 +1,5 @@
 try:
+    import torch
     from accelerate import Accelerator
 
     class HFAccelerator(Accelerator):
@@ -13,6 +14,15 @@ try:
             self.rank = self.process_index
             self.world_size = self.num_processes
             self.local_rank = self.local_process_index
+
+        def reduce_sum(self, tensor: torch.Tensor) -> torch.Tensor:
+            return self.reduce(tensor, reduction="sum")
+
+        def reduce_mean(self, tensor: torch.Tensor) -> torch.Tensor:
+            return self.reduce(tensor, reduction="mean")
+
+        def destroy(self) -> None:
+            self.end_training()
 
 except ImportError:
     import warnings

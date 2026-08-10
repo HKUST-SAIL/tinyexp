@@ -12,10 +12,47 @@ from tinyexp.utils.ray_utils import (
 )
 
 
+def test_ray_cfg_run_uses_explicit_resources_without_dataloader_cfg(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = OmegaConf.create(
+        {
+            "ray_cfg": {
+                "ray_num_worker": 1,
+                "ray_num_cpus_per_worker": 3,
+                "ray_num_gpus_per_worker": 0,
+                "ray_placement_strategy": "PACK",
+            }
+        }
+    )
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.init", lambda: None)
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.remote", lambda exp_class: object())
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.cluster_resources", lambda: {"CPU": 3.0, "GPU": 0.0})
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.is_initialized", lambda: True)
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.shutdown", lambda **kwargs: None)
+
+    def stop_after_resource_resolution(**kwargs):  # type: ignore[no-untyped-def]
+        captured.update(kwargs)
+        raise RuntimeError("resource resolution complete")  # noqa: TRY003
+
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.get_placement_group", stop_after_resource_resolution)
+
+    with pytest.raises(RuntimeError, match="resource resolution complete"):
+        RayCfgMixin.RayCfg.run(object, cfg)
+
+    assert captured["num_worker"] == 1
+    assert captured["num_cpus_per_worker"] == 3
+    assert captured["num_gpus_per_worker"] == 0
+
+
 def test_ray_cfg_run_rejects_invalid_ray_worker_count_without_starting_ray(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cfg = OmegaConf.create({"ray_cfg": {"ray_num_worker": 0}})
+    cfg = OmegaConf.create(
+        {"ray_cfg": {"ray_num_worker": 0, "ray_num_cpus_per_worker": 1, "ray_num_gpus_per_worker": 1}}
+    )
     monkeypatch.setattr(
         "tinyexp.exp_mixins.basic_mixins.ray.init",
         lambda: pytest.fail("ray.init should not be called"),
@@ -28,14 +65,16 @@ def test_ray_cfg_run_rejects_invalid_ray_worker_count_without_starting_ray(
 def test_ray_cfg_run_resolves_auto_worker_count_from_cluster_gpus(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cfg = OmegaConf.create({"ray_cfg": {"ray_num_worker": -1}})
+    cfg = OmegaConf.create(
+        {"ray_cfg": {"ray_num_worker": -1, "ray_num_cpus_per_worker": 1, "ray_num_gpus_per_worker": 1}}
+    )
 
     def stop_after_resolution(exp_class):  # type: ignore[no-untyped-def]
         raise RuntimeError("resolved")
 
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.init", lambda: None)
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.remote", stop_after_resolution)
-    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.cluster_resources", lambda: {"GPU": 2.0})
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.cluster_resources", lambda: {"CPU": 8.0, "GPU": 2.0})
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.is_initialized", lambda: True)
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.shutdown", lambda **kwargs: None)
 
@@ -45,10 +84,96 @@ def test_ray_cfg_run_resolves_auto_worker_count_from_cluster_gpus(
     assert cfg.ray_cfg.ray_num_worker == 2
 
 
+def test_ray_cfg_run_caps_auto_worker_count_by_cpu_and_gpu_capacity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = OmegaConf.create(
+        {
+            "ray_cfg": {
+                "ray_num_worker": -1,
+                "ray_num_cpus_per_worker": 3,
+                "ray_num_gpus_per_worker": 1,
+            }
+        }
+    )
+
+    def stop_after_resolution(exp_class):  # type: ignore[no-untyped-def]
+        raise RuntimeError("resolved")
+
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.init", lambda: None)
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.remote", stop_after_resolution)
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.cluster_resources", lambda: {"CPU": 8.0, "GPU": 4.0})
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.is_initialized", lambda: True)
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.shutdown", lambda **kwargs: None)
+
+    with pytest.raises(RuntimeError, match="resolved"):
+        RayCfgMixin.RayCfg.run(object, cfg)
+
+    assert cfg.ray_cfg.ray_num_worker == 2
+
+
+def test_ray_cfg_run_resolves_auto_worker_count_from_cluster_cpus_for_cpu_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = OmegaConf.create(
+        {
+            "ray_cfg": {
+                "ray_num_worker": -1,
+                "ray_num_cpus_per_worker": 2,
+                "ray_num_gpus_per_worker": 0,
+            }
+        }
+    )
+
+    def stop_after_resolution(exp_class):  # type: ignore[no-untyped-def]
+        raise RuntimeError("resolved")
+
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.init", lambda: None)
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.remote", stop_after_resolution)
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.cluster_resources", lambda: {"CPU": 8.0, "GPU": 0.0})
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.is_initialized", lambda: True)
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.shutdown", lambda **kwargs: None)
+
+    with pytest.raises(RuntimeError, match="resolved"):
+        RayCfgMixin.RayCfg.run(object, cfg)
+
+    assert cfg.ray_cfg.ray_num_worker == 4
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [("ray_num_cpus_per_worker", 0), ("ray_num_gpus_per_worker", -0.1)],
+)
+def test_ray_cfg_run_rejects_invalid_worker_resources_before_ray_init(
+    monkeypatch: pytest.MonkeyPatch,
+    field_name: str,
+    value: float,
+) -> None:
+    cfg = OmegaConf.create(
+        {
+            "ray_cfg": {
+                "ray_num_worker": 1,
+                "ray_num_cpus_per_worker": 1,
+                "ray_num_gpus_per_worker": 0,
+                field_name: value,
+            }
+        }
+    )
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.ray.init",
+        lambda: pytest.fail("ray.init should not be called"),
+    )
+
+    with pytest.raises(ValueError):
+        RayCfgMixin.RayCfg.run(object, cfg)
+
+
 def test_ray_cfg_run_rejects_missing_cluster_gpus(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    cfg = OmegaConf.create({"ray_cfg": {"ray_num_worker": -1}})
+    cfg = OmegaConf.create(
+        {"ray_cfg": {"ray_num_worker": -1, "ray_num_cpus_per_worker": 1, "ray_num_gpus_per_worker": 1}}
+    )
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.init", lambda: None)
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.cluster_resources", lambda: {"CPU": 8.0})
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.is_initialized", lambda: True)

@@ -103,8 +103,9 @@ using an external multi-process launcher such as `torchrun` or `accelerate launc
 uv run torchrun --standalone --nproc-per-node 2 tinyexp/examples/mnist_exp.py launcher=mp
 ```
 
-The `mode` config selects what to execute: `train`, `val`, `run`, or `help`. `mode=run` is for general
-distributed programs without dataloaders — with `launcher=ray`, no dataloader CPUs are reserved (1 CPU per worker).
+The `mode` config selects what to execute: `train`, `val`, `run`, or `help`. Ray worker resources are explicit: set
+`ray_cfg.ray_num_cpus_per_worker` and `ray_cfg.ray_num_gpus_per_worker` for the resources required by one worker.
+The fields can be overridden in the experiment's nested `RayCfg` or from the command line.
 
 Run a command with TinyExp launch helpers after installing the package:
 
@@ -139,7 +140,9 @@ uv run python -m tinyexp.examples.pi_exp pi_cfg.total_samples=100000000 ray_cfg.
 3. Implement `run()` (and train/eval helpers) in the same experiment definition.
 4. Launch the script and override config from CLI when needed.
 
-This gives you a single, explicit place to manage experiment behavior.
+This gives you a single, explicit place to manage experiment behavior. Training helpers can depend on
+`tinyexp.tiny_engine.accelerator.AcceleratorProtocol`, so CPU, DDP, and Hugging Face Accelerate backends expose the same
+model preparation, reduction, synchronization, and cleanup methods.
 
 ## Development
 
