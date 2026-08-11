@@ -22,6 +22,8 @@ from ..exceptions import (
 from ..utils.log_utils import tiny_logger_setup
 from ..utils.ray_utils import (
     _maybe_start_ray_redis_cache,
+    build_ray_worker_env_vars,
+    get_network_config,
     get_num_worker_options,
     get_placement_group,
 )
@@ -75,6 +77,14 @@ def _resolve_ray_num_worker(
 
 @dataclass
 class RayCfgMixin:
+    def _get_ray_node_id(self) -> str:
+        """Return the Ray node hosting this worker actor."""
+        return str(ray.get_runtime_context().get_node_id())
+
+    def _set_ray_runtime_env(self, env_vars: dict[str, str]) -> None:
+        """Apply launcher-provided environment variables before the experiment runs."""
+        os.environ.update({key: str(value) for key, value in env_vars.items()})
+
     @dataclass
     class RayCfg:
         # ---------------- luancher configuration ---------------- #
@@ -137,14 +147,39 @@ class RayCfgMixin:
                     num_cpus_per_worker=needed_num_cpus_per_worker,
                     strategy=ray_cfg.ray_placement_strategy,
                 )
+                master_addr, master_port = get_network_config()
                 options_list = get_num_worker_options(
                     pg,
                     ray_cfg.ray_num_worker,
                     gpu_ratio=num_gpus_per_worker,
                     num_cpus_per_worker=needed_num_cpus_per_worker,
+                    master_addr=master_addr,
+                    master_port=master_port,
                 )
                 worker_group = [remote_exp.options(**options).remote() for options in options_list]
 
+                worker_node_ids = ray.get([worker._get_ray_node_id.remote() for worker in worker_group])
+                runtime_envs = build_ray_worker_env_vars(
+                    num_worker=ray_cfg.ray_num_worker,
+                    node_ids=worker_node_ids,
+                    master_addr=master_addr,
+                    master_port=master_port,
+                )
+                print("==> Ray worker topology:", flush=True)
+                node_ranks = {node_id: node_rank for node_rank, node_id in enumerate(dict.fromkeys(worker_node_ids))}
+                for rank, (node_id, env_vars) in enumerate(zip(worker_node_ids, runtime_envs)):
+                    print(
+                        f"    rank={rank}/{ray_cfg.ray_num_worker} node={node_id} "
+                        f"node_rank={node_ranks[node_id]} "
+                        f"local_rank={env_vars['LOCAL_RANK']}/{env_vars['LOCAL_WORLD_SIZE']}",
+                        flush=True,
+                    )
+                ray.get(
+                    [
+                        worker._set_ray_runtime_env.remote(env_vars)
+                        for worker, env_vars in zip(worker_group, runtime_envs)
+                    ]
+                )
                 ray.get([worker.set_cfg.remote(experiment_cfg) for worker in worker_group])
                 ray.get([worker.run.remote() for worker in worker_group])
             finally:

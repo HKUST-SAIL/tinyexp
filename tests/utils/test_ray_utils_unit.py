@@ -8,6 +8,7 @@ from tinyexp.exp_mixins import RayCfgMixin
 from tinyexp.utils.ray_utils import (
     _build_worker_env_vars,
     _maybe_start_ray_redis_cache,
+    build_ray_worker_env_vars,
     get_network_config,
     get_placement_group,
 )
@@ -30,7 +31,10 @@ def test_ray_cfg_run_uses_explicit_resources_without_dataloader_cfg(
 
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.init", lambda: None)
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.remote", lambda exp_class: object())
-    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.cluster_resources", lambda: {"CPU": 3.0, "GPU": 0.0})
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.ray.cluster_resources",
+        lambda: {"CPU": 3.0, "GPU": 0.0},
+    )
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.is_initialized", lambda: True)
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.shutdown", lambda **kwargs: None)
 
@@ -38,7 +42,10 @@ def test_ray_cfg_run_uses_explicit_resources_without_dataloader_cfg(
         captured.update(kwargs)
         raise RuntimeError("resource resolution complete")  # noqa: TRY003
 
-    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.get_placement_group", stop_after_resource_resolution)
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.get_placement_group",
+        stop_after_resource_resolution,
+    )
 
     with pytest.raises(RuntimeError, match="resource resolution complete"):
         RayCfgMixin.RayCfg.run(object, cfg)
@@ -52,7 +59,13 @@ def test_ray_cfg_run_rejects_invalid_ray_worker_count_without_starting_ray(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cfg = OmegaConf.create(
-        {"ray_cfg": {"ray_num_worker": 0, "ray_num_cpus_per_worker": 1, "ray_num_gpus_per_worker": 1}}
+        {
+            "ray_cfg": {
+                "ray_num_worker": 0,
+                "ray_num_cpus_per_worker": 1,
+                "ray_num_gpus_per_worker": 1,
+            }
+        }
     )
     monkeypatch.setattr(
         "tinyexp.exp_mixins.basic_mixins.ray.init",
@@ -67,7 +80,13 @@ def test_ray_cfg_run_resolves_auto_worker_count_from_cluster_gpus(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cfg = OmegaConf.create(
-        {"ray_cfg": {"ray_num_worker": -1, "ray_num_cpus_per_worker": 1, "ray_num_gpus_per_worker": 1}}
+        {
+            "ray_cfg": {
+                "ray_num_worker": -1,
+                "ray_num_cpus_per_worker": 1,
+                "ray_num_gpus_per_worker": 1,
+            }
+        }
     )
 
     def stop_after_resolution(exp_class):  # type: ignore[no-untyped-def]
@@ -75,7 +94,10 @@ def test_ray_cfg_run_resolves_auto_worker_count_from_cluster_gpus(
 
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.init", lambda: None)
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.remote", stop_after_resolution)
-    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.cluster_resources", lambda: {"CPU": 8.0, "GPU": 2.0})
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.ray.cluster_resources",
+        lambda: {"CPU": 8.0, "GPU": 2.0},
+    )
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.is_initialized", lambda: True)
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.shutdown", lambda **kwargs: None)
 
@@ -103,7 +125,10 @@ def test_ray_cfg_run_caps_auto_worker_count_by_cpu_and_gpu_capacity(
 
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.init", lambda: None)
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.remote", stop_after_resolution)
-    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.cluster_resources", lambda: {"CPU": 8.0, "GPU": 4.0})
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.ray.cluster_resources",
+        lambda: {"CPU": 8.0, "GPU": 4.0},
+    )
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.is_initialized", lambda: True)
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.shutdown", lambda **kwargs: None)
 
@@ -131,7 +156,10 @@ def test_ray_cfg_run_resolves_auto_worker_count_from_cluster_cpus_for_cpu_worker
 
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.init", lambda: None)
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.remote", stop_after_resolution)
-    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.cluster_resources", lambda: {"CPU": 8.0, "GPU": 0.0})
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.ray.cluster_resources",
+        lambda: {"CPU": 8.0, "GPU": 0.0},
+    )
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.is_initialized", lambda: True)
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.shutdown", lambda **kwargs: None)
 
@@ -173,7 +201,13 @@ def test_ray_cfg_run_rejects_missing_cluster_gpus(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cfg = OmegaConf.create(
-        {"ray_cfg": {"ray_num_worker": -1, "ray_num_cpus_per_worker": 1, "ray_num_gpus_per_worker": 1}}
+        {
+            "ray_cfg": {
+                "ray_num_worker": -1,
+                "ray_num_cpus_per_worker": 1,
+                "ray_num_gpus_per_worker": 1,
+            }
+        }
     )
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.init", lambda: None)
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.cluster_resources", lambda: {"CPU": 8.0})
@@ -214,7 +248,49 @@ def test_build_worker_env_vars_omits_ifname_by_default(
     assert "GLOO_SOCKET_IFNAME" not in env_vars
 
 
-def test_get_network_config_uses_public_ray_ip_api(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_build_ray_worker_env_vars_uses_actual_node_local_ranks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GLOO_SOCKET_IFNAME", raising=False)
+
+    env_vars = build_ray_worker_env_vars(
+        num_worker=4,
+        node_ids=["node-a", "node-a", "node-b", "node-b"],
+        master_addr="10.0.0.1",
+        master_port=12345,
+    )
+
+    assert [set(env) for env in env_vars] == [
+        {
+            "WORLD_SIZE",
+            "RANK",
+            "MASTER_ADDR",
+            "MASTER_PORT",
+            "LOCAL_RANK",
+            "LOCAL_WORLD_SIZE",
+        }
+    ] * 4
+    assert [(env["RANK"], env["LOCAL_RANK"], env["LOCAL_WORLD_SIZE"]) for env in env_vars] == [
+        ("0", "0", "2"),
+        ("1", "1", "2"),
+        ("2", "0", "2"),
+        ("3", "1", "2"),
+    ]
+
+
+def test_build_ray_worker_env_vars_rejects_mismatched_worker_count() -> None:
+    with pytest.raises(ValueError, match="one node id for every Ray worker"):
+        build_ray_worker_env_vars(
+            num_worker=2,
+            node_ids=["node-a"],
+            master_addr="10.0.0.1",
+            master_port=12345,
+        )
+
+
+def test_get_network_config_uses_public_ray_ip_api(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr("tinyexp.utils.ray_utils.ray.util.get_node_ip_address", lambda: "10.0.0.7")
 
     master_addr, master_port = get_network_config()
