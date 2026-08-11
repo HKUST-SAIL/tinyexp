@@ -8,6 +8,7 @@ from tinyexp.exp_mixins import RayCfgMixin
 from tinyexp.utils.ray_utils import (
     _build_worker_env_vars,
     _maybe_start_ray_redis_cache,
+    get_network_config,
     get_placement_group,
 )
 
@@ -211,6 +212,15 @@ def test_build_worker_env_vars_omits_ifname_by_default(
     monkeypatch.delenv("GLOO_SOCKET_IFNAME", raising=False)
     env_vars = _build_worker_env_vars(num_worker=2, rank=1, local_rank=1, master_addr="127.0.0.1", master_port=12345)
     assert "GLOO_SOCKET_IFNAME" not in env_vars
+
+
+def test_get_network_config_uses_public_ray_ip_api(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.util.get_node_ip_address", lambda: "10.0.0.7")
+
+    master_addr, master_port = get_network_config()
+
+    assert master_addr == "10.0.0.7"
+    assert 0 < master_port <= 65535
 
 
 def test_get_placement_group_defaults_to_pack(monkeypatch: pytest.MonkeyPatch) -> None:

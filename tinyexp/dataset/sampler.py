@@ -18,7 +18,14 @@ class InfiniteSampler(Sampler):
     or `range(size) + range(size) + ...` (if shuffle is False)
     """
 
-    def __init__(self, size: int, shuffle: bool = True, seed: Optional[int] = 0, drop_last=False, accelerator=None):
+    def __init__(
+        self,
+        size: int,
+        shuffle: bool = True,
+        seed: Optional[int] = 0,
+        drop_last=False,
+        accelerator=None,
+    ):
         """
         Args:
             size (int): the total number of data of the underlying dataset to sample from
@@ -38,12 +45,17 @@ class InfiniteSampler(Sampler):
         else:
             self._rank = 0
             self._world_size = 1
+        self._sample_offset = 0
 
-    def set_epoch(self, epoch):
-        pass
+    def set_epoch(self, epoch: int) -> None:
+        """Position the sampler at the start of an epoch in the fixed stream."""
+        epoch = int(epoch)
+        if epoch < 0:
+            raise ValueError("epoch must not be negative")  # noqa: TRY003
+        self._sample_offset = epoch * len(self) * self._world_size
 
     def __iter__(self):
-        start = self._rank
+        start = self._rank + self._sample_offset
         yield from itertools.islice(self._infinite_indices(), start, None, self._world_size)
 
     def _infinite_indices(self):

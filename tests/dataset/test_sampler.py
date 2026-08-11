@@ -35,6 +35,38 @@ def test_infinite_sampler_no_shuffle_multi_worker_slices() -> None:
     assert first_six == [1, 3, 1, 3, 1, 3]
 
 
+def test_infinite_sampler_set_epoch_continues_fixed_stream() -> None:
+    expected_sampler = InfiniteSampler(size=10, shuffle=True, seed=17)
+    expected_stream = iter(expected_sampler)
+    expected_values = [next(expected_stream) for _ in range(20)]
+
+    sampler = InfiniteSampler(size=10, shuffle=True, seed=17)
+    sampler.set_epoch(1)
+    resumed_stream = iter(sampler)
+    resumed_values = [next(resumed_stream) for _ in range(10)]
+
+    assert resumed_values == expected_values[10:20]
+
+    sampler.set_epoch(0)
+    reset_stream = iter(sampler)
+    assert [next(reset_stream) for _ in range(10)] == expected_values[:10]
+
+
+def test_infinite_sampler_set_epoch_preserves_distributed_stream_position() -> None:
+    accelerator = SimpleNamespace(rank=1, world_size=2)
+    global_sampler = InfiniteSampler(size=12, shuffle=True, seed=23)
+    global_stream = iter(global_sampler)
+    expected_global = [next(global_stream) for _ in range(40)]
+
+    sampler = InfiniteSampler(size=12, shuffle=True, seed=23, accelerator=accelerator)
+    sampler.set_epoch(2)
+    resumed_stream = iter(sampler)
+    resumed_values = [next(resumed_stream) for _ in range(5)]
+    expected_values = expected_global[2 * 6 * 2 + 1 :: 2][:5]
+
+    assert resumed_values == expected_values
+
+
 def test_infinite_sampler_len_respects_drop_last() -> None:
     accelerator = SimpleNamespace(rank=0, world_size=2)
     assert len(InfiniteSampler(size=5, shuffle=False, seed=0, accelerator=accelerator, drop_last=False)) == 3

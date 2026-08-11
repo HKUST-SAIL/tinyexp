@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from tinyexp.cli import run_with_redis
 from tinyexp.cli.run_with_redis import build_redis_cfg, main, stop_child_process
 
@@ -248,7 +250,7 @@ def test_rendezvous_mode_uses_exp_ports(tmp_path: Path, monkeypatch) -> None:
         head_addr,
         rendezvous_port,
         timeout_s,
-        started_nodes,
+        lifecycle,
     ):
         captured["world_size"] = world_size
         captured["node_rank"] = node_rank
@@ -306,6 +308,60 @@ def test_rendezvous_mode_uses_exp_ports(tmp_path: Path, monkeypatch) -> None:
     assert captured["popen_kwargs"]["start_new_session"] is True
 
 
+def test_main_restores_signal_handlers_after_child_exit(tmp_path: Path, monkeypatch) -> None:
+    exp_file = _write_demo_exp(tmp_path)
+    previous_handlers = {
+        signal.SIGTERM: signal.getsignal(signal.SIGTERM),
+        signal.SIGINT: signal.getsignal(signal.SIGINT),
+    }
+    monkeypatch.setattr("tinyexp.cli.run_with_redis.subprocess.Popen", lambda *args, **kwargs: _FinishedProcess())
+
+    assert main(["python", str(exp_file), "redis_cfg.redis_cache_enabled=false"]) == 0
+
+    for signum, previous_handler in previous_handlers.items():
+        assert signal.getsignal(signum) is previous_handler
+
+
+def test_redis_lifecycle_closes_only_owned_resources_once(monkeypatch) -> None:
+    events: list[str] = []
+
+    class FakeManager:
+        def __init__(self, *, ports, host, **_kwargs):  # type: ignore[no-untyped-def]
+            self.host = host
+            self.ports = list(ports)
+
+        def start_redis_cluster(self) -> bool:
+            events.append("start-manager")
+            return True
+
+        def stop_redis_cluster(self) -> None:
+            events.append("stop-manager")
+
+    class FakeServer:
+        def shutdown(self) -> None:
+            events.append("shutdown-server")
+
+        def server_close(self) -> None:
+            events.append("close-server")
+
+    monkeypatch.setattr(run_with_redis, "RedisClusterManager", FakeManager)
+    lifecycle = run_with_redis._RedisLifecycle()
+
+    assert lifecycle.start_nodes(
+        host="127.0.0.1",
+        ports=[7010, 7011],
+        max_memory_per_port=1.0,
+        cluster_enabled=False,
+    )
+    lifecycle.own_rendezvous_server(FakeServer())
+    assert lifecycle.started_nodes == [("127.0.0.1", 7010), ("127.0.0.1", 7011)]
+
+    lifecycle.close()
+    lifecycle.close()
+
+    assert events == ["start-manager", "shutdown-server", "close-server", "stop-manager"]
+
+
 def test_stop_child_process_signals_process_group_and_kills_on_timeout(
     monkeypatch,
 ) -> None:
@@ -334,3 +390,27 @@ def test_stop_child_process_signals_process_group_and_kills_on_timeout(
     stop_child_process(HangingProcess(), signal.SIGTERM, timeout_s=0)
 
     assert calls == [(24680, signal.SIGTERM), (24680, signal.SIGKILL)]
+
+
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGINT])
+def test_handle_signal_stops_child_and_closes_lifecycle(signum: int, monkeypatch) -> None:
+    calls: list[object] = []
+    child = object()
+
+    class FakeLifecycle:
+        def close(self) -> None:
+            calls.append("close-lifecycle")
+
+    monkeypatch.setattr(run_with_redis, "CHILD_PROCESS", child)
+    monkeypatch.setattr(run_with_redis, "REDIS_LIFECYCLE", FakeLifecycle())
+    monkeypatch.setattr(
+        run_with_redis,
+        "stop_child_process",
+        lambda process, received_signum: calls.append((process, received_signum)),
+    )
+
+    with pytest.raises(SystemExit, match=str(128 + signum)) as exc_info:
+        run_with_redis.handle_signal(signum, None)
+
+    assert exc_info.value.code == 128 + signum
+    assert calls == [(child, signum), "close-lifecycle"]

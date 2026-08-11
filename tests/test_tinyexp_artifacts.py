@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 
@@ -96,6 +98,49 @@ def test_checkpoint_cfg_save_and_load_roundtrip(tmp_path: Path) -> None:
         for key in original_state:
             assert torch.equal(original_state[key], reloaded_state[key])
     assert reloaded_scheduler.state_dict() == scheduler.state_dict()
+
+
+def test_checkpoint_cfg_scaler_state_roundtrip(tmp_path: Path) -> None:
+    class DummyScaler:
+        def __init__(self, scale: float) -> None:
+            self.scale = scale
+
+        def state_dict(self) -> dict[str, float]:
+            return {"scale": self.scale}
+
+        def load_state_dict(self, state: dict[str, float]) -> None:
+            self.scale = state["scale"]
+
+    checkpoint_cfg = CheckpointCfgMixin.CheckpointCfg()
+    checkpoint_path = checkpoint_cfg.save_checkpoint(
+        run_dir=str(tmp_path),
+        name=checkpoint_cfg.last_ckpt_name,
+        scaler=DummyScaler(1024.0),
+    )
+    reloaded_scaler = DummyScaler(1.0)
+
+    checkpoint_cfg.load_checkpoint(checkpoint_path, scaler=reloaded_scaler)
+
+    assert reloaded_scaler.scale == 1024.0
+
+
+def test_checkpoint_cfg_rng_state_restores_continuation() -> None:
+    checkpoint_cfg = CheckpointCfgMixin.CheckpointCfg()
+    random.seed(7)
+    np.random.seed(7)
+    torch.manual_seed(7)
+    state = checkpoint_cfg.capture_rng_state()
+    expected = (random.random(), np.random.random(), torch.rand(3))  # noqa: S311
+
+    random.random()  # noqa: S311
+    np.random.random()
+    torch.rand(3)
+    checkpoint_cfg.restore_rng_state(state)
+    resumed = (random.random(), np.random.random(), torch.rand(3))  # noqa: S311
+
+    assert resumed[0] == expected[0]
+    assert resumed[1] == expected[1]
+    assert torch.equal(resumed[2], expected[2])
 
 
 def test_checkpoint_cfg_atomic_save_preserves_previous_checkpoint_on_failure(

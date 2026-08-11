@@ -1,4 +1,5 @@
 import os
+import random
 import tempfile
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -6,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+import numpy as np
 import ray
 import torch
 from loguru._logger import Logger
@@ -156,7 +158,7 @@ class RayCfgMixin:
 
                 if ray.is_initialized():
                     with suppress(Exception):
-                        ray.shutdown(_exiting_interpreter=True)
+                        ray.shutdown()
 
     ray_cfg: RayCfg = field(default_factory=RayCfg)
 
@@ -222,6 +224,7 @@ class CheckpointCfgMixin:
             model=None,
             optimizer=None,
             scheduler=None,
+            scaler=None,
             epoch: Optional[int] = None,
             global_step: Optional[int] = None,
             best_metric: Optional[float] = None,
@@ -248,6 +251,8 @@ class CheckpointCfgMixin:
                 checkpoint["optimizer_state_dict"] = optimizer.state_dict()
             if scheduler is not None:
                 checkpoint["scheduler_state_dict"] = scheduler.state_dict()
+            if scaler is not None:
+                checkpoint["scaler_state_dict"] = scaler.state_dict()
             if extra_state is not None:
                 checkpoint["extra_state"] = extra_state
 
@@ -301,6 +306,7 @@ class CheckpointCfgMixin:
             model=None,
             optimizer=None,
             scheduler=None,
+            scaler=None,
             strict: bool = True,
         ) -> None:
             if model is not None:
@@ -315,6 +321,29 @@ class CheckpointCfgMixin:
                 if "scheduler_state_dict" not in checkpoint:
                     raise KeyError("scheduler_state_dict")
                 scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            if scaler is not None:
+                if "scaler_state_dict" not in checkpoint:
+                    raise KeyError("scaler_state_dict")
+                scaler.load_state_dict(checkpoint["scaler_state_dict"])
+
+        @staticmethod
+        def capture_rng_state() -> dict[str, Any]:
+            state: dict[str, Any] = {
+                "python": random.getstate(),
+                "numpy": np.random.get_state(),
+                "torch": torch.get_rng_state(),
+            }
+            if torch.cuda.is_available():
+                state["torch_cuda"] = torch.cuda.get_rng_state_all()
+            return state
+
+        @staticmethod
+        def restore_rng_state(state: dict[str, Any]) -> None:
+            random.setstate(state["python"])
+            np.random.set_state(state["numpy"])
+            torch.set_rng_state(state["torch"])
+            if torch.cuda.is_available() and "torch_cuda" in state:
+                torch.cuda.set_rng_state_all(state["torch_cuda"])
 
         def load_checkpoint(
             self,
@@ -323,6 +352,7 @@ class CheckpointCfgMixin:
             model=None,
             optimizer=None,
             scheduler=None,
+            scaler=None,
             strict: bool = True,
             map_location=None,
         ) -> dict[str, Any]:
@@ -332,6 +362,7 @@ class CheckpointCfgMixin:
                 model=model,
                 optimizer=optimizer,
                 scheduler=scheduler,
+                scaler=scaler,
                 strict=strict,
             )
 

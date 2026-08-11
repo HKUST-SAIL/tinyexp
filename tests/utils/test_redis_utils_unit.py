@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -177,7 +178,15 @@ def test_redis_cluster_manager_cluster_mode_adds_expected_server_args(
     commands: list[list[str]] = []
 
     class FakeProcess:
-        def poll(self) -> int:
+        pid = 4321
+
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            pass
+
+        def wait(self, timeout=None) -> int:  # type: ignore[no-untyped-def]
             return 0
 
     class FakeRedis:
@@ -187,10 +196,15 @@ def test_redis_cluster_manager_cluster_mode_adds_expected_server_args(
         def ping(self) -> None:
             pass
 
+        def info(self, section: str) -> dict[str, int]:
+            assert section == "server"
+            return {"process_id": FakeProcess.pid}
+
         def close(self) -> None:
             pass
 
-    def fake_popen(command, stdout, stderr):  # type: ignore[no-untyped-def]
+    def fake_popen(command, stdout, stderr, start_new_session):  # type: ignore[no-untyped-def]
+        assert start_new_session is True
         commands.append(command)
         return FakeProcess()
 
@@ -215,6 +229,103 @@ def test_redis_cluster_manager_cluster_mode_adds_expected_server_args(
     assert command[command.index("--cluster-announce-bus-port") + 1] == "17000"
     assert command[command.index("--cluster-config-file") + 1] == "tinyexp-redis-7000.nodes.conf"
     manager.stop_redis_cluster()
+
+
+def test_redis_cluster_manager_refuses_external_process_ownership(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class FakeProcess:
+        pid = 4321
+
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            events.append("terminate-owned-process")
+
+        def wait(self, timeout=None) -> int:  # type: ignore[no-untyped-def]
+            events.append("wait-owned-process")
+            return 0
+
+        def kill(self) -> None:
+            events.append("kill-owned-process")
+
+    class ExternalRedis:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def ping(self) -> None:
+            pass
+
+        def info(self, section: str) -> dict[str, int]:
+            assert section == "server"
+            return {"process_id": 9876}
+
+        def shutdown(self, **_kwargs: Any) -> None:
+            pytest.fail("external Redis must not be shut down")
+
+        def close(self) -> None:
+            events.append("close-client")
+
+    monkeypatch.setattr("tinyexp.utils.redis_utils.shutil.which", lambda _cmd: "/usr/bin/redis-server")
+    monkeypatch.setattr("tinyexp.utils.redis_utils.subprocess.Popen", lambda *args, **kwargs: FakeProcess())
+    monkeypatch.setattr("tinyexp.utils.redis_utils.redis.StrictRedis", ExternalRedis)
+
+    manager = RedisClusterManager(ports=[7000], max_memory_per_port=0.5)
+
+    assert manager.start_redis_cluster() is False
+    assert isinstance(manager._last_startup_failure, RedisClusterStartupError)
+    assert "external process 9876" in str(manager._last_startup_failure)
+    assert events == ["close-client", "terminate-owned-process", "wait-owned-process"]
+
+
+def test_redis_cluster_manager_cleans_partial_startup(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[str] = []
+
+    class FakeProcess:
+        def __init__(self, pid: int) -> None:
+            self.pid = pid
+
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            events.append(f"terminate-{self.pid}")
+
+        def wait(self, timeout=None) -> int:  # type: ignore[no-untyped-def]
+            events.append(f"wait-{self.pid}")
+            return 0
+
+    class FakeRedis:
+        def __init__(self, *, port: int, **_kwargs: Any) -> None:
+            self.port = port
+
+        def ping(self) -> None:
+            pass
+
+        def info(self, section: str) -> dict[str, int]:
+            assert section == "server"
+            return {"process_id": 1001}
+
+        def close(self) -> None:
+            events.append(f"close-client-{self.port}")
+
+    owned_process = FakeProcess(1001)
+    monkeypatch.setattr("tinyexp.utils.redis_utils.shutil.which", lambda _cmd: "/usr/bin/redis-server")
+    monkeypatch.setattr(
+        "tinyexp.utils.redis_utils.subprocess.Popen",
+        Mock(side_effect=[owned_process, OSError()]),
+    )
+    monkeypatch.setattr("tinyexp.utils.redis_utils.redis.StrictRedis", FakeRedis)
+
+    manager = RedisClusterManager(ports=[7000, 7001], max_memory_per_port=0.5)
+
+    assert manager.start_redis_cluster() is False
+    assert events == ["close-client-7000", "terminate-1001", "wait-1001"]
+    assert manager.redis_processes == []
+    assert manager.redis_clients == []
 
 
 def test_ray_redis_cluster_manager_starts_pinned_actors_and_creates_cluster(

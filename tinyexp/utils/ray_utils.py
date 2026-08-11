@@ -84,7 +84,7 @@ def _build_worker_env_vars(num_worker, rank, local_rank, master_addr, master_por
 
 def get_network_config():
     """Get network configuration for distributed setup."""
-    master_addr = ray._private.services.get_node_ip_address()
+    master_addr = ray.util.get_node_ip_address()
     with socket.socket() as sock:
         sock.bind(("", 0))
         master_port = sock.getsockname()[1]

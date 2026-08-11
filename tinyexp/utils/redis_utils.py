@@ -204,17 +204,38 @@ class RedisClusterManager:
     def __exit__(self, exc_type, exc, tb) -> None:  # type: ignore[no-untyped-def]
         self.stop_redis_cluster()
 
-    def _wait_until_healthy(self, client: redis.Redis, *, port: int) -> None:
+    def _wait_until_healthy(self, client: redis.Redis, *, port: int, process: subprocess.Popen[Any]) -> None:
         deadline = time.monotonic() + self.startup_timeout_s
         last_error: Exception | None = None
         while time.monotonic() < deadline:
+            returncode = process.poll()
+            if returncode is not None:
+                raise RedisClusterStartupError(  # noqa: TRY003
+                    f"Redis shard on port {port} exited during startup with code {returncode}.",
+                    port=port,
+                )
             try:
                 client.ping()
+                server_info = client.info("server")
+                process_id = int(server_info.get("process_id", -1))
             except redis.exceptions.RedisError as e:
                 last_error = e
                 time.sleep(0.1)
-            else:
-                return
+                continue
+            except (TypeError, ValueError) as e:
+                raise RedisClusterStartupError(  # noqa: TRY003
+                    f"Redis shard on port {port} did not report a valid process_id.",
+                    port=port,
+                    last_error=e,
+                ) from e
+
+            if process_id != process.pid:
+                raise RedisClusterStartupError(  # noqa: TRY003
+                    f"Redis port {port} is served by external process {process_id}; "
+                    f"TinyExp started process {process.pid} and will not take ownership of the external server.",
+                    port=port,
+                )
+            return
         raise RedisClusterStartupError(  # noqa: TRY003
             f"Redis shard on port {port} failed to start: {last_error}",
             port=port,
@@ -300,6 +321,7 @@ class RedisClusterManager:
                     self._build_server_command(redis_server_path, port),
                     stdout=stdout,
                     stderr=stderr,
+                    start_new_session=True,
                 )
                 self.redis_processes.append(redis_process)
 
@@ -311,11 +333,11 @@ class RedisClusterManager:
                     socket_connect_timeout=1,
                     socket_timeout=1,
                 )
-                self._wait_until_healthy(redis_client, port=port)
                 self.redis_clients.append(redis_client)
+                self._wait_until_healthy(redis_client, port=port, process=redis_process)
 
                 if self.log_startup:
-                    print(f"Redis shard {i} started on port {port}", flush=True)
+                    print(f"==> Redis shard {i} started on port {port}", flush=True)
 
         except Exception as e:
             self._last_startup_failure = e
@@ -392,7 +414,7 @@ def _get_node_ip_address() -> str:
         if _is_ip_address(node_ip):
             return node_ip
     with contextlib.suppress(Exception):
-        node_ip = ray._private.services.get_node_ip_address()
+        node_ip = ray.util.get_node_ip_address()
         if _is_ip_address(node_ip):
             return node_ip
     return socket.gethostbyname(socket.gethostname())

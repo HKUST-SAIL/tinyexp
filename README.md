@@ -114,6 +114,10 @@ tinyexp-run-with-redis -- python your_exp.py redis_cfg.redis_cache_enabled=true
 tinyexp-run-with-ray-cluster --node-count 2 --head-addr 10.0.0.1 -- python your_exp.py
 ```
 
+`tinyexp-run-with-redis` owns and stops only the Redis processes it starts. If a configured port is already served by
+another Redis process, startup fails without shutting down or taking ownership of that server. Connect to externally
+managed Redis directly through `redis_cfg` instead of wrapping the command with `tinyexp-run-with-redis`.
+
 ## Example Experiments
 
 - MNIST baseline: [`tinyexp/examples/mnist_exp.py`](tinyexp/examples/mnist_exp.py)

@@ -294,7 +294,7 @@ def test_resnet_train_saves_last_and_best_checkpoints(tmp_path: Path, monkeypatc
     assert saved[0]["name"] == exp.checkpoint_cfg.last_ckpt_name
     assert saved[0]["epoch"] == 0
     assert saved[0]["global_step"] == 1
-    assert saved[0]["best_metric"] is None
+    assert saved[0]["best_metric"] == 0.5
     assert saved[1]["name"] == exp.checkpoint_cfg.best_ckpt_name
     assert saved[1]["best_metric"] == 0.5
 

@@ -39,6 +39,7 @@ import redis
 from omegaconf import OmegaConf
 
 from tinyexp.exp_mixins import RedisCfgMixin
+from tinyexp.utils.redis_utils import RedisClusterManager
 
 REDIS_RENDEZVOUS_PORT = 26379
 REDIS_RENDEZVOUS_TIMEOUT_S = 600
@@ -48,8 +49,57 @@ _REDIS_CONNECTION_OVERRIDE_PREFIXES = (
     "redis_cfg.redis_rendezvous_world_size=",
 )
 
-STARTED_NODES: list[tuple[str, int]] = []
 CHILD_PROCESS: subprocess.Popen[Any] | None = None
+
+
+class _RedisLifecycle:
+    """Own Redis resources created by one wrapper invocation."""
+
+    def __init__(self) -> None:
+        self._managers: list[RedisClusterManager] = []
+        self._rendezvous_server: ThreadingHTTPServer | None = None
+
+    @property
+    def started_nodes(self) -> list[tuple[str, int]]:
+        return [(manager.host, port) for manager in self._managers for port in manager.ports]
+
+    def start_nodes(
+        self,
+        *,
+        host: str,
+        ports: list[int],
+        max_memory_per_port: float,
+        cluster_enabled: bool,
+    ) -> bool:
+        manager = RedisClusterManager(
+            ports=ports,
+            max_memory_per_port=max_memory_per_port,
+            host=host,
+            cluster_enabled=cluster_enabled,
+        )
+        if not manager.start_redis_cluster():
+            return False
+        self._managers.append(manager)
+        return True
+
+    def own_rendezvous_server(self, server: ThreadingHTTPServer) -> None:
+        self._rendezvous_server = server
+
+    def close(self) -> None:
+        if self._rendezvous_server is not None:
+            with suppress(Exception):
+                self._rendezvous_server.shutdown()
+            with suppress(Exception):
+                self._rendezvous_server.server_close()
+            self._rendezvous_server = None
+
+        for manager in reversed(self._managers):
+            with suppress(Exception):
+                manager.stop_redis_cluster()
+        self._managers.clear()
+
+
+REDIS_LIFECYCLE: _RedisLifecycle | None = None
 
 
 def uint(value: str) -> int:
@@ -144,8 +194,13 @@ def _load_experiment_module(argv: list[str]):  # type: ignore[no-untyped-def]
     return None
 
 
+def _restore_signal_handlers(previous_handlers: dict[int, Any]) -> None:
+    for signum, previous_handler in previous_handlers.items():
+        signal.signal(signum, previous_handler)
+
+
 def main(argv: list[str]) -> int:
-    global CHILD_PROCESS, STARTED_NODES
+    global CHILD_PROCESS, REDIS_LIFECYCLE
 
     args = parse_args(argv)
     redis_cfg = build_redis_cfg(args.command)
@@ -172,7 +227,12 @@ def main(argv: list[str]) -> int:
         print("--head-addr is required for multi-node Redis jobs", file=sys.stderr)
         return 2
 
-    STARTED_NODES = []
+    lifecycle = _RedisLifecycle()
+    REDIS_LIFECYCLE = lifecycle
+    previous_signal_handlers = {
+        signal.SIGTERM: signal.getsignal(signal.SIGTERM),
+        signal.SIGINT: signal.getsignal(signal.SIGINT),
+    }
     signal.signal(signal.SIGTERM, handle_signal)
     signal.signal(signal.SIGINT, handle_signal)
 
@@ -187,11 +247,11 @@ def main(argv: list[str]) -> int:
                 head_addr=head_addr,
                 rendezvous_port=args.rendezvous_port,
                 timeout_s=args.wait_timeout,
-                started_nodes=STARTED_NODES,
+                lifecycle=lifecycle,
             )
             redis_status = startup_node is not None
         elif redis_cfg.redis_cache_enabled:
-            startup_node = start_local_redis(redis_cfg, STARTED_NODES)
+            startup_node = start_local_redis(redis_cfg, lifecycle)
             redis_status = startup_node is not None
 
         print(f"Redis status:\033[32m{redis_status}\033[0m", flush=True)
@@ -220,14 +280,15 @@ def main(argv: list[str]) -> int:
             wait_for_rendezvous_finish(
                 head_addr=head_addr,
                 rendezvous_port=args.rendezvous_port,
-                node_id=redis_node_id(STARTED_NODES),
+                node_id=redis_node_id(lifecycle.started_nodes),
                 timeout_s=args.wait_timeout,
             )
         return exit_code
     finally:
         CHILD_PROCESS = None
-        cleanup_started_nodes(STARTED_NODES)
-        STARTED_NODES = []
+        lifecycle.close()
+        REDIS_LIFECYCLE = None
+        _restore_signal_handlers(previous_signal_handlers)
 
 
 def build_redis_cfg(argv: list[str]) -> Any:
@@ -262,23 +323,17 @@ def build_redis_cfg(argv: list[str]) -> Any:
     return cfg.redis_cfg
 
 
-def start_local_redis(redis_cfg: Any, started_nodes: list[tuple[str, int]]) -> tuple[str, list[int]] | None:
+def start_local_redis(redis_cfg: Any, lifecycle: _RedisLifecycle) -> tuple[str, list[int]] | None:
     host = str(redis_cfg.redis_cluster_host)
     ports = [int(port) for port in redis_cfg.redis_cluster_ports]
-    max_memory_bytes = max(1, int((float(redis_cfg.redis_cache_max_memory) / len(ports)) * (1024**3)))
-    local_started_nodes: list[tuple[str, int]] = []
-    for port in ports:
-        if not start_redis_node(
-            host=host,
-            port=port,
-            max_memory_bytes=max_memory_bytes,
-            cluster_enabled=False,
-        ):
-            cleanup_started_nodes(local_started_nodes)
-            return None
-        local_started_nodes.append((host, port))
-        print(f"Redis server started on {host}:{port}", flush=True)
-    started_nodes.extend(local_started_nodes)
+    max_memory_per_port = float(redis_cfg.redis_cache_max_memory) / len(ports)
+    if not lifecycle.start_nodes(
+        host=host,
+        ports=ports,
+        max_memory_per_port=max_memory_per_port,
+        cluster_enabled=False,
+    ):
+        return None
     return host, ports
 
 
@@ -290,7 +345,7 @@ def start_rendezvous_redis_cluster(
     head_addr: str,
     rendezvous_port: int,
     timeout_s: int,
-    started_nodes: list[tuple[str, int]],
+    lifecycle: _RedisLifecycle,
 ) -> tuple[str, list[int]] | None:
     ports = [int(port) for port in redis_cfg.redis_cluster_ports]
     node_count = world_size * len(ports)
@@ -313,24 +368,20 @@ def start_rendezvous_redis_cluster(
         )
         return None
 
-    max_memory_bytes = max(1, int((float(redis_cfg.redis_cache_max_memory) / node_count) * (1024**3)))
-    local_started_nodes: list[tuple[str, int]] = []
-    for port in ports:
-        if not start_redis_node(
-            host=node_host,
-            port=port,
-            max_memory_bytes=max_memory_bytes,
-            cluster_enabled=True,
-        ):
-            cleanup_started_nodes(local_started_nodes)
-            return None
-        local_started_nodes.append((node_host, port))
-        print(f"Redis Cluster node started on {node_host}:{port}", flush=True)
-    started_nodes.extend(local_started_nodes)
+    max_memory_per_port = float(redis_cfg.redis_cache_max_memory) / node_count
+    if not lifecycle.start_nodes(
+        host=node_host,
+        ports=ports,
+        max_memory_per_port=max_memory_per_port,
+        cluster_enabled=True,
+    ):
+        return None
 
     server = start_rendezvous_server(head_addr, rendezvous_port, world_size, redis_cli_path) if node_rank == 0 else None
-    if node_rank == 0 and server is None:
-        return None
+    if node_rank == 0:
+        if server is None:
+            return None
+        lifecycle.own_rendezvous_server(server)
 
     return register_redis_node(
         head_addr=head_addr,
@@ -607,137 +658,6 @@ def wait_for_redis_cluster(startup_host: str, startup_ports: list[int], timeout_
     return False
 
 
-def start_redis_node(*, host: str, port: int, max_memory_bytes: int, cluster_enabled: bool) -> bool:
-    shutdown_redis(host, port)
-    pidfile = redis_pidfile(port)
-    log_file = Path(f"/tmp/tinyexp-redis-{int(port)}.log")  # noqa: S108
-    if cluster_enabled:
-        with suppress(FileNotFoundError):
-            Path(f"/tmp/tinyexp-redis-{int(port)}.nodes.conf").unlink()  # noqa: S108
-
-    command = [
-        "redis-server",
-        "--bind",
-        host,
-        "--protected-mode",
-        "no",
-        "--port",
-        str(int(port)),
-        "--daemonize",
-        "no",
-        "--dir",
-        "/tmp",  # noqa: S108
-        "--save",
-        "",
-        "--appendonly",
-        "no",
-        "--maxmemory",
-        str(int(max_memory_bytes)),
-    ]
-    if cluster_enabled:
-        command.extend(
-            [
-                "--cluster-enabled",
-                "yes",
-                "--cluster-config-file",
-                f"tinyexp-redis-{int(port)}.nodes.conf",
-                "--cluster-node-timeout",
-                "5000",
-                "--cluster-announce-ip",
-                host,
-                "--cluster-announce-port",
-                str(int(port)),
-                "--cluster-announce-bus-port",
-                str(int(port) + 10000),
-            ]
-        )
-
-    try:
-        with log_file.open("ab") as output:
-            process = subprocess.Popen(  # noqa: S603
-                command,
-                stdout=output,
-                stderr=subprocess.STDOUT,
-                start_new_session=True,
-            )
-        pidfile.write_text(str(process.pid))
-    except OSError as exc:
-        print(f"failed to start redis-server on {host}:{port}: {exc}", file=sys.stderr)
-        return False
-
-    if wait_for_redis(host, port):
-        return True
-    kill_pidfile(pidfile)
-    return False
-
-
-def cleanup_started_nodes(started_nodes: list[tuple[str, int]]) -> None:
-    for host, port in started_nodes:
-        shutdown_redis(host, int(port))
-        kill_matching_redis(host, int(port))
-
-
-def shutdown_redis(host: str, port: int) -> None:
-    client = redis.Redis(host=host, port=int(port), socket_connect_timeout=0.5, socket_timeout=0.5)
-    with suppress(redis.exceptions.RedisError):
-        client.shutdown(nosave=True)
-    with suppress(Exception):
-        client.close()
-    kill_pidfile(redis_pidfile(port))
-
-
-def redis_pidfile(port: int) -> Path:
-    return Path(f"/tmp/tinyexp-redis-{int(port)}.pid")  # noqa: S108
-
-
-def kill_pidfile(pidfile: Path) -> None:
-    try:
-        pid = int(pidfile.read_text().strip())
-    except (FileNotFoundError, ValueError):
-        pid = 0
-    if pid:
-        with suppress(ProcessLookupError, PermissionError):
-            os.kill(pid, signal.SIGKILL)
-    with suppress(FileNotFoundError):
-        pidfile.unlink()
-
-
-def kill_matching_redis(host: str, port: int) -> None:
-    with suppress(subprocess.TimeoutExpired):
-        result = subprocess.run(  # noqa: S603
-            ["ps", "-eo", "pid=,args="],  # noqa: S607
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            timeout=5,
-        )
-        target = f"redis-server {host}:{int(port)}"
-        for line in result.stdout.splitlines():
-            if target not in line:
-                continue
-            with suppress(ValueError, ProcessLookupError, PermissionError):
-                os.kill(int(line.split(None, 1)[0]), signal.SIGKILL)
-
-
-def wait_for_redis(host: str, port: int) -> bool:
-    client = redis.StrictRedis(host=host, port=int(port), socket_connect_timeout=1, socket_timeout=1)
-    deadline = time.monotonic() + 15
-    last_error: Exception | None = None
-    while time.monotonic() < deadline:
-        try:
-            client.ping()
-        except redis.exceptions.RedisError as exc:
-            last_error = exc
-            time.sleep(0.2)
-        else:
-            client.close()
-            return True
-    client.close()
-    print(f"Redis node {host}:{port} failed health check: {last_error}", file=sys.stderr)
-    return False
-
-
 def signal_process_group(process: subprocess.Popen[Any], signum: int) -> None:
     pid = getattr(process, "pid", None)
     killpg = getattr(os, "killpg", None)
@@ -776,7 +696,8 @@ def stop_child_process(process: subprocess.Popen[Any], signum: int, timeout_s: i
 def handle_signal(signum: int, _frame: object) -> None:
     if CHILD_PROCESS is not None:
         stop_child_process(CHILD_PROCESS, signum)
-    cleanup_started_nodes(STARTED_NODES)
+    if REDIS_LIFECYCLE is not None:
+        REDIS_LIFECYCLE.close()
     raise SystemExit(128 + signum)
 
 

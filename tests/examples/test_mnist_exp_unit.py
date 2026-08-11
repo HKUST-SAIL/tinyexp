@@ -48,3 +48,67 @@ def test_mnist_evaluate_loads_model_state_from_checkpoint(tmp_path) -> None:
     )
 
     assert isinstance(metric, float)
+
+
+def test_mnist_evaluate_reduces_correct_and_seen_counts_globally(tmp_path) -> None:
+    exp = Exp(output_root=str(tmp_path), exp_name="mnist_metric_test")
+
+    class FixedModule(torch.nn.Module):
+        def forward(self, features):  # type: ignore[no-untyped-def]
+            return torch.tensor([[1.0, 0.0], [0.0, 1.0]], device=features.device)
+
+    class UnevenDistributedAccelerator:
+        device = "cpu"
+        is_main_process = True
+        reduce_calls = 0
+
+        def reduce_sum(self, tensor):  # type: ignore[no-untyped-def]
+            remote_count = (2, 3)[self.reduce_calls]
+            self.reduce_calls += 1
+            return tensor + remote_count
+
+        def wait_for_everyone(self) -> None:
+            pass
+
+    class DummyDataLoader(list):
+        def __init__(self):
+            super().__init__([(torch.zeros(2, 1), torch.tensor([0, 0]))])
+            self.dataset = [0, 1]
+
+    accelerator = UnevenDistributedAccelerator()
+    metric = exp._evaluate(
+        accelerator=accelerator,
+        logger=SimpleNamespace(info=lambda *args, **kwargs: None),
+        module_or_module_path=FixedModule(),
+        val_dataloader=DummyDataLoader(),
+    )
+
+    assert metric == 3 / 5
+    assert accelerator.reduce_calls == 2
+
+
+def test_mnist_evaluate_empty_dataset_returns_zero(tmp_path) -> None:
+    exp = Exp(output_root=str(tmp_path), exp_name="mnist_empty_metric_test")
+
+    class EmptyAccelerator:
+        device = "cpu"
+
+        def reduce_sum(self, tensor):  # type: ignore[no-untyped-def]
+            return tensor
+
+        def wait_for_everyone(self) -> None:
+            pass
+
+    class EmptyDataLoader(list):
+        def __init__(self):
+            super().__init__()
+            self.dataset: list[int] = []
+
+    metric = exp._evaluate(
+        accelerator=EmptyAccelerator(),
+        logger=SimpleNamespace(info=lambda *args, **kwargs: None),
+        module_or_module_path=torch.nn.Identity(),
+        val_dataloader=EmptyDataLoader(),
+    )
+
+    assert metric == 0.0
