@@ -4,6 +4,9 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
+
+import tinyexp.cli.run_with_ray_cluster as ray_cluster
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -21,6 +24,11 @@ def run_command(args: list[str], env: dict[str, str] | None = None) -> subproces
 
 def test_run_with_ray_cluster_python_syntax() -> None:
     assert run_command([sys.executable, "-m", "py_compile", "tinyexp/cli/run_with_ray_cluster.py"]).returncode == 0
+
+
+def test_run_quiet_returns_failure_when_ray_command_times_out() -> None:
+    with patch.object(subprocess, "run", side_effect=subprocess.TimeoutExpired("ray", 5)):
+        assert ray_cluster.run_quiet(["ray", "status"]) == 1
 
 
 def test_project_scripts_define_ray_cluster_command() -> None:

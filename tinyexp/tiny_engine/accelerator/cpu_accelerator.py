@@ -5,6 +5,7 @@ from contextlib import suppress
 import psutil
 import torch
 import torch.distributed as dist
+from torch import nn
 
 from .base_accelerator import BaseAccelerator
 
@@ -55,10 +56,10 @@ class CPUAccelerator(BaseAccelerator):
             self.destroy()
 
     def unwrap_model(self, model):
-        return model
+        return model.module if isinstance(model, nn.parallel.DistributedDataParallel) else model
 
     def prepare(self, model, optimizer=None):
-        model.to(self.device)
+        model = self.prepare_model(model)
         if optimizer is not None:
             optimizer = self.prepare_optimizer(optimizer)
             return model, optimizer
@@ -67,6 +68,8 @@ class CPUAccelerator(BaseAccelerator):
 
     def prepare_model(self, model):
         model.to(self.device)
+        if self.world_size > 1:
+            model = nn.parallel.DistributedDataParallel(model)
         return model
 
     def prepare_optimizer(self, optimizer):

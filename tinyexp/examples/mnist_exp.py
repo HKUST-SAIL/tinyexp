@@ -59,6 +59,7 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
     ray_cfg: RayCfg = field(default_factory=RayCfg)
     mode: str = "train"
     launcher: str = "ray"
+    seed: int = 42
 
     @dataclass
     class AcceleratorCfg:
@@ -211,6 +212,7 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
         return eval_metric
 
     def _train(self, accelerator, logger, cfg_dict, run_dir: str) -> None:  # noqa: C901
+        torch.manual_seed(self.seed)
         train_dataloader = self.dataloader_cfg.build_train_dataloader(accelerator)
         val_dataloader = self.dataloader_cfg.build_val_dataloader(accelerator)
         ori_module = self.module_cfg.build_module()

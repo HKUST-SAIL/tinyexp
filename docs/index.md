@@ -15,6 +15,13 @@ definition so iteration stays fast and predictable.
 - Training loops that stay close to plain PyTorch
 - The same experiment definition from local debug to distributed launch
 
+## Running Experiments
+
+TinyExp supports plain Python, TorchRun, Accelerate launch, and static Ray cluster workflows. These commands use
+different process owners and must be paired with the correct TinyExp `launcher` setting and accelerator. See
+[Running Modes and Environment Requirements](running-modes.md) for the mode matrix, setup requirements, and verified
+command patterns.
+
 ## Design Philosophy
 
 TinyExp is intentionally light.

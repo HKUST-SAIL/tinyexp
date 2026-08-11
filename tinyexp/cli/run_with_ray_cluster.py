@@ -143,13 +143,17 @@ def prepend_no_proxy(env: dict[str, str], head_addr: str) -> None:
 
 
 def run_quiet(args: list[str], env: dict[str, str] | None = None) -> int:
-    return subprocess.run(  # noqa: S603
-        args,
-        env=env,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    ).returncode
+    try:
+        return subprocess.run(  # noqa: S603
+            args,
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=5,
+        ).returncode
+    except subprocess.TimeoutExpired:
+        return 1
 
 
 def cleanup_ray() -> None:

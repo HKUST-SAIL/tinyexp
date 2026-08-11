@@ -95,23 +95,54 @@ Print all configs plus your overrides:
 uv run python tinyexp/examples/mnist_exp.py mode=help dataloader_cfg.train_batch_size_per_device=16
 ```
 
-Worker processes are launched according to the `launcher` config: `launcher=ray` spawns Ray workers from the driver
-process, while `launcher=mp` runs in the current process. The bundled examples default to `launcher=ray`, so when
-using an external multi-process launcher such as `torchrun` or `accelerate launch`, override it explicitly:
+Worker processes are selected by both the command and TinyExp's `launcher` config. The base `TinyExp` class defaults to
+`launcher=mp`, while the bundled examples default to `launcher=ray`.
+
+| Run style | Command owner | TinyExp launcher |
+| --- | --- | --- |
+| Plain Python, direct process | `python` | `launcher=mp` |
+| Plain Python, local Ray workers | TinyExp and Ray | `launcher=ray` |
+| TorchRun | `torchrun` | `launcher=mp` |
+| Accelerate launch | `accelerate launch` | `launcher=mp` |
+| Static Ray cluster | `tinyexp-run-with-ray-cluster` | `launcher=ray` |
+
+`torchrun` and `accelerate launch` create processes externally, so bundled examples must override `launcher=mp`:
 
 ```bash
-uv run torchrun --standalone --nproc-per-node 2 tinyexp/examples/mnist_exp.py launcher=mp
+uv run torchrun \
+  --nnodes 1 \
+  --node-rank 0 \
+  --nproc-per-node 2 \
+  --master-addr 127.0.0.1 \
+  --master-port 29500 \
+  tinyexp/examples/mnist_exp.py launcher=mp
+uv run accelerate launch --cpu --num-processes 1 -m tinyexp.examples.pi_exp launcher=mp
 ```
+
+A static Ray cluster must be started on every node with the same node count and head address, and a unique node rank.
+The experiment command runs on node rank 0 and should use `launcher=ray`:
+
+```bash
+tinyexp-run-with-ray-cluster \
+  --node-count 2 \
+  --node-rank 0 \
+  --head-addr 10.0.0.1 \
+  --ray-port 6380 \
+  -- \
+  python your_exp.py launcher=ray
+```
+
+See [Running Modes and Environment Requirements](docs/running-modes.md) for the complete Python, PyTorch, CUDA/NCCL,
+Accelerate, Ray multi-node, network, data, Redis, and W&B requirements.
 
 The `mode` config selects what to execute: `train`, `val`, `run`, or `help`. Ray worker resources are explicit: set
 `ray_cfg.ray_num_cpus_per_worker` and `ray_cfg.ray_num_gpus_per_worker` for the resources required by one worker.
 The fields can be overridden in the experiment's nested `RayCfg` or from the command line.
 
-Run a command with TinyExp launch helpers after installing the package:
+Run a command with TinyExp's Redis helper after installing the package:
 
 ```bash
 tinyexp-run-with-redis -- python your_exp.py redis_cfg.redis_cache_enabled=true
-tinyexp-run-with-ray-cluster --node-count 2 --head-addr 10.0.0.1 -- python your_exp.py
 ```
 
 `tinyexp-run-with-redis` owns and stops only the Redis processes it starts. If a configured port is already served by
@@ -189,6 +220,7 @@ make release VERSION=0.0.4
 ## Documentation
 
 - Docs site: https://zengarden.github.io/TinyExp/
+- Running modes and environment requirements: [`docs/running-modes.md`](docs/running-modes.md)
 - API/module overview: [`docs/modules.md`](docs/modules.md)
 
 ## Contributing
