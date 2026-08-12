@@ -96,6 +96,8 @@ Requirements:
 - `ray_cfg.ray_num_worker` must be `-1` or a positive integer. `-1` fills the available CPU or GPU capacity.
 - `ray_cfg.ray_num_cpus_per_worker` must be positive.
 - `ray_cfg.ray_num_gpus_per_worker` must be non-negative.
+- `ray_cfg.ray_placement_timeout_s` controls how long TinyExp waits for the placement group; the default is 120 seconds.
+- Requests that exceed the cluster's total CPU or GPU capacity fail before placement starts. If the total capacity is sufficient but currently busy, placement waits up to the configured timeout.
 - GPU workers require a CUDA-enabled PyTorch installation and visible GPUs.
 
 If `RAY_ADDRESS` already points to a reachable Ray cluster, `ray.init()` can attach to that cluster. Otherwise, Ray starts a local runtime.

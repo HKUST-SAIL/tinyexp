@@ -85,9 +85,19 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
         train_data_worker_per_gpu: int = 2
         val_data_worker_per_gpu: int = 1
 
+        def _build_mnist_dataset(self, accelerator, *, train: bool, transform):
+            if accelerator.rank == 0:
+                dataset = datasets.MNIST(self.data_root, train=train, download=True, transform=transform)
+
+            accelerator.wait_for_everyone()
+
+            if accelerator.rank != 0:
+                dataset = datasets.MNIST(self.data_root, train=train, download=False, transform=transform)
+            return dataset
+
         def build_train_dataloader(self, accelerator):
             transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
-            ds_train = datasets.MNIST(self.data_root, train=True, download=True, transform=transform)
+            ds_train = self._build_mnist_dataset(accelerator, train=True, transform=transform)
             sampler = torch.utils.data.DistributedSampler(
                 ds_train, num_replicas=accelerator.world_size, rank=accelerator.rank
             )
@@ -103,7 +113,7 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
 
         def build_val_dataloader(self, accelerator):
             transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
-            ds_val = datasets.MNIST(self.data_root, train=False, download=True, transform=transform)
+            ds_val = self._build_mnist_dataset(accelerator, train=False, transform=transform)
             ds_val = torch.utils.data.Subset(
                 ds_val,
                 range(accelerator.rank, len(ds_val), accelerator.world_size),

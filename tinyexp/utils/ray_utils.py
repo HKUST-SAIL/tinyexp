@@ -4,6 +4,7 @@ import os
 import socket
 from collections import Counter
 from collections.abc import Sequence
+from contextlib import suppress
 from typing import Optional
 
 import ray
@@ -47,6 +48,7 @@ def get_placement_group(
     num_gpus_per_worker: float = 1.0,
     num_cpus_per_worker=10,
     strategy="PACK",
+    timeout_s: float = 120.0,
 ):
     """Create and return a placement group for worker allocation."""
     bundles = [{"CPU": num_cpus_per_worker, "GPU": num_gpus_per_worker} for _ in range(num_worker)]
@@ -56,7 +58,20 @@ def get_placement_group(
         # uses the Ray head address, so rank 0's bundle must be scheduled on the head.
         bundles[0][_RAY_HEAD_NODE_RESOURCE] = _RAY_NODE_RESOURCE_PIN
     pg = placement_group(bundles=bundles, strategy=strategy)
-    ray.get(pg.ready())
+    try:
+        ray.get(pg.ready(), timeout=timeout_s)
+    except ray.exceptions.GetTimeoutError as exc:
+        with suppress(Exception):
+            ray.util.remove_placement_group(pg)
+        raise TimeoutError(  # noqa: TRY003
+            f"Ray placement group timed out after {timeout_s}s: "
+            f"workers={num_worker}, CPU/worker={num_cpus_per_worker}, "
+            f"GPU/worker={num_gpus_per_worker}, strategy={strategy}"
+        ) from exc
+    except Exception:
+        with suppress(Exception):
+            ray.util.remove_placement_group(pg)
+        raise
     return pg
 
 

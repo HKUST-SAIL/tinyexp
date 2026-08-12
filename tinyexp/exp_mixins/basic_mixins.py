@@ -92,9 +92,10 @@ class RayCfgMixin:
         ray_num_cpus_per_worker: int = 1
         ray_num_gpus_per_worker: float = 1.0
         ray_placement_strategy: str = "PACK"
+        ray_placement_timeout_s: float = 120.0
 
         @classmethod
-        def run(cls, exp_class: type[Any], experiment_cfg: DictConfig) -> None:
+        def run(cls, exp_class: type[Any], experiment_cfg: DictConfig) -> None:  # noqa: C901
             """
             Run the Ray driver-side orchestration.
 
@@ -109,6 +110,10 @@ class RayCfgMixin:
                 raise ValueError("ray_num_cpus_per_worker must be greater than 0")  # noqa: TRY003
             if num_gpus_per_worker < 0:
                 raise ValueError("ray_num_gpus_per_worker must not be negative")  # noqa: TRY003
+
+            placement_timeout_s = float(getattr(ray_cfg, "ray_placement_timeout_s", 120.0))
+            if placement_timeout_s <= 0:
+                raise ValueError("ray_placement_timeout_s must be greater than 0")  # noqa: TRY003
 
             if ray_cfg.ray_num_worker < -1 or ray_cfg.ray_num_worker == 0:
                 raise InvalidWorkerCountError(ray_cfg.ray_num_worker)
@@ -133,10 +138,17 @@ class RayCfgMixin:
                 needed_num_cpus_per_worker = num_cpus_per_worker
 
                 needed_cpu = ray_num_worker * needed_num_cpus_per_worker
+                needed_gpu = ray_num_worker * num_gpus_per_worker
                 total_cpu = int(cluster_resources.get("CPU", 0))
+                total_gpu = float(cluster_resources.get("GPU", 0))
 
-                if needed_cpu > total_cpu:
-                    raise InsufficientCPUError(total_cpu=total_cpu, needed_cpu=needed_cpu)
+                if needed_cpu > total_cpu or needed_gpu > total_gpu:
+                    raise InsufficientCPUError(
+                        total_cpu=total_cpu,
+                        needed_cpu=needed_cpu,
+                        total_gpu=total_gpu,
+                        needed_gpu=needed_gpu,
+                    )
 
                 redis_manager = _maybe_start_ray_redis_cache(experiment_cfg)
                 # -------------------- allocate resources for run ----------------- #
@@ -146,6 +158,7 @@ class RayCfgMixin:
                     num_gpus_per_worker=num_gpus_per_worker,
                     num_cpus_per_worker=needed_num_cpus_per_worker,
                     strategy=ray_cfg.ray_placement_strategy,
+                    timeout_s=placement_timeout_s,
                 )
                 master_addr, master_port = get_network_config()
                 options_list = get_num_worker_options(

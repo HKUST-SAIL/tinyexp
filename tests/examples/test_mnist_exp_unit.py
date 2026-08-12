@@ -7,6 +7,36 @@ import torch
 from tinyexp.examples.mnist_exp import Exp
 
 
+def test_mnist_dataset_download_is_owned_by_rank_zero(tmp_path, monkeypatch) -> None:
+    calls = []
+    dataset = torch.utils.data.TensorDataset(torch.arange(2), torch.arange(2))
+
+    def fake_mnist(*args, **kwargs):
+        calls.append(kwargs["download"])
+        return dataset
+
+    monkeypatch.setattr("tinyexp.examples.mnist_exp.datasets.MNIST", fake_mnist)
+    cfg = Exp.DataloaderCfg(data_root=str(tmp_path))
+    transform = object()
+
+    class DummyAccelerator:
+        def __init__(self, rank: int) -> None:
+            self.rank = rank
+            self.barrier_calls = 0
+
+        def wait_for_everyone(self) -> None:
+            self.barrier_calls += 1
+
+    rank_zero = DummyAccelerator(rank=0)
+    rank_one = DummyAccelerator(rank=1)
+    cfg._build_mnist_dataset(rank_zero, train=True, transform=transform)
+    cfg._build_mnist_dataset(rank_one, train=True, transform=transform)
+
+    assert calls == [True, False]
+    assert rank_zero.barrier_calls == 1
+    assert rank_one.barrier_calls == 1
+
+
 def test_mnist_evaluate_loads_model_state_from_checkpoint(tmp_path) -> None:
     exp = Exp(output_root=str(tmp_path), exp_name="mnist_test")
     checkpoint_path = exp.checkpoint_cfg.save_checkpoint(

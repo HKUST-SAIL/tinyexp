@@ -78,8 +78,13 @@ def test_mnist_val_dataloader_partitions_without_padding(tmp_path: Path, monkeyp
         val_data_worker_per_gpu=0,
     )
     partitions = []
+
+    class DummyAccelerator(SimpleNamespace):
+        def wait_for_everyone(self) -> None:
+            return None
+
     for rank in range(3):
-        dataloader = cfg.build_val_dataloader(SimpleNamespace(rank=rank, world_size=3))
+        dataloader = cfg.build_val_dataloader(DummyAccelerator(rank=rank, world_size=3))
         assert dataloader.drop_last is False
         partitions.append(list(dataloader.dataset.indices))
 

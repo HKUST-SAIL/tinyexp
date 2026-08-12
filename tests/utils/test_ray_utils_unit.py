@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import pytest
+import ray
 from omegaconf import OmegaConf
 
-from tinyexp.exceptions import InvalidWorkerCountError
+from tinyexp.exceptions import InsufficientCPUError, InvalidWorkerCountError
 from tinyexp.exp_mixins import RayCfgMixin
 from tinyexp.utils.ray_utils import (
     _build_worker_env_vars,
@@ -24,6 +25,7 @@ def test_ray_cfg_run_uses_explicit_resources_without_dataloader_cfg(
                 "ray_num_cpus_per_worker": 3,
                 "ray_num_gpus_per_worker": 0,
                 "ray_placement_strategy": "PACK",
+                "ray_placement_timeout_s": 7,
             }
         }
     )
@@ -53,6 +55,7 @@ def test_ray_cfg_run_uses_explicit_resources_without_dataloader_cfg(
     assert captured["num_worker"] == 1
     assert captured["num_cpus_per_worker"] == 3
     assert captured["num_gpus_per_worker"] == 0
+    assert captured["timeout_s"] == 7.0
 
 
 def test_ray_cfg_run_rejects_invalid_ray_worker_count_without_starting_ray(
@@ -197,6 +200,57 @@ def test_ray_cfg_run_rejects_invalid_worker_resources_before_ray_init(
         RayCfgMixin.RayCfg.run(object, cfg)
 
 
+def test_ray_cfg_run_rejects_explicit_gpu_shortage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = OmegaConf.create(
+        {
+            "ray_cfg": {
+                "ray_num_worker": 2,
+                "ray_num_cpus_per_worker": 1,
+                "ray_num_gpus_per_worker": 1,
+                "ray_placement_strategy": "PACK",
+            }
+        }
+    )
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.init", lambda: None)
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.ray.cluster_resources",
+        lambda: {"CPU": 8.0, "GPU": 1.0},
+    )
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.is_initialized", lambda: True)
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.shutdown", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.get_placement_group",
+        lambda **kwargs: pytest.fail("placement group should not be created"),
+    )
+
+    with pytest.raises(InsufficientCPUError, match="needed GPU=2.0, available GPU=1.0"):
+        RayCfgMixin.RayCfg.run(object, cfg)
+
+
+def test_ray_cfg_run_rejects_non_positive_placement_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = OmegaConf.create(
+        {
+            "ray_cfg": {
+                "ray_num_worker": 1,
+                "ray_num_cpus_per_worker": 1,
+                "ray_num_gpus_per_worker": 0,
+                "ray_placement_timeout_s": 0,
+            }
+        }
+    )
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.ray.init",
+        lambda: pytest.fail("ray.init should not be called"),
+    )
+
+    with pytest.raises(ValueError, match="ray_placement_timeout_s"):
+        RayCfgMixin.RayCfg.run(object, cfg)
+
+
 def test_ray_cfg_run_rejects_missing_cluster_gpus(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -312,7 +366,7 @@ def test_get_placement_group_defaults_to_pack(monkeypatch: pytest.MonkeyPatch) -
         return FakePlacementGroup()
 
     monkeypatch.setattr("tinyexp.utils.ray_utils.placement_group", fake_placement_group)
-    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.get", lambda ref: ref)
+    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.get", lambda ref, **kwargs: ref)
     monkeypatch.setattr("tinyexp.utils.ray_utils.ray.is_initialized", lambda: False)
 
     get_placement_group(num_worker=2, num_gpus_per_worker=0, num_cpus_per_worker=3)
@@ -321,6 +375,59 @@ def test_get_placement_group_defaults_to_pack(monkeypatch: pytest.MonkeyPatch) -
         "bundles": [{"CPU": 3, "GPU": 0}, {"CPU": 3, "GPU": 0}],
         "strategy": "PACK",
     }
+
+
+def test_get_placement_group_timeout_removes_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    removed = []
+
+    class FakePlacementGroup:
+        def ready(self):
+            return "ready"
+
+    def fake_get(ref, **kwargs):  # type: ignore[no-untyped-def]
+        assert kwargs == {"timeout": 3.5}
+        raise ray.exceptions.GetTimeoutError("timed out")  # noqa: TRY003
+
+    monkeypatch.setattr("tinyexp.utils.ray_utils.placement_group", lambda **kwargs: FakePlacementGroup())
+    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.get", fake_get)
+    monkeypatch.setattr(
+        "tinyexp.utils.ray_utils.ray.util.remove_placement_group",
+        lambda pg: removed.append(pg),
+    )
+
+    with pytest.raises(TimeoutError, match="workers=2.*GPU/worker=0.5.*strategy=SPREAD"):
+        get_placement_group(
+            num_worker=2,
+            num_gpus_per_worker=0.5,
+            num_cpus_per_worker=3,
+            strategy="SPREAD",
+            timeout_s=3.5,
+        )
+
+    assert len(removed) == 1
+
+
+def test_get_placement_group_error_removes_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    removed = []
+
+    class FakePlacementGroup:
+        def ready(self):
+            return "ready"
+
+    monkeypatch.setattr("tinyexp.utils.ray_utils.placement_group", lambda **kwargs: FakePlacementGroup())
+    monkeypatch.setattr(
+        "tinyexp.utils.ray_utils.ray.get",
+        lambda ref, **kwargs: (_ for _ in ()).throw(RuntimeError("ready failed")),
+    )
+    monkeypatch.setattr(
+        "tinyexp.utils.ray_utils.ray.util.remove_placement_group",
+        lambda pg: removed.append(pg),
+    )
+
+    with pytest.raises(RuntimeError, match="ready failed"):
+        get_placement_group(num_worker=1, num_gpus_per_worker=0, num_cpus_per_worker=1)
+
+    assert len(removed) == 1
 
 
 def test_get_placement_group_pins_first_bundle_to_head_when_ray_initialized(
@@ -338,7 +445,7 @@ def test_get_placement_group_pins_first_bundle_to_head_when_ray_initialized(
         return FakePlacementGroup()
 
     monkeypatch.setattr("tinyexp.utils.ray_utils.placement_group", fake_placement_group)
-    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.get", lambda ref: ref)
+    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.get", lambda ref, **kwargs: ref)
     monkeypatch.setattr("tinyexp.utils.ray_utils.ray.is_initialized", lambda: True)
     monkeypatch.setattr(
         "tinyexp.utils.ray_utils.ray.cluster_resources",
@@ -370,7 +477,7 @@ def test_get_placement_group_accepts_explicit_strategy(
         return FakePlacementGroup()
 
     monkeypatch.setattr("tinyexp.utils.ray_utils.placement_group", fake_placement_group)
-    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.get", lambda ref: ref)
+    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.get", lambda ref, **kwargs: ref)
 
     get_placement_group(num_worker=2, strategy="SPREAD")
 
