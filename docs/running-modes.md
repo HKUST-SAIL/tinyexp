@@ -99,6 +99,7 @@ Requirements:
 - `ray_cfg.ray_placement_timeout_s` controls how long TinyExp waits for the placement group; the default is 120 seconds.
 - Requests that exceed the cluster's total CPU or GPU capacity fail before placement starts. If the total capacity is sufficient but currently busy, placement waits up to the configured timeout.
 - GPU workers require a CUDA-enabled PyTorch installation and visible GPUs.
+- TinyExp derives `RANK`, `LOCAL_RANK`, and `LOCAL_WORLD_SIZE` from the nodes where Ray actually places the actors. When actors are interleaved in Ray's returned actor list, global ranks are reassigned so ranks remain contiguous within each node (for example, node-local workers receive `0..N-1`, then the next node receives the following range).
 
 If `RAY_ADDRESS` already points to a reachable Ray cluster, `ray.init()` can attach to that cluster. Otherwise, Ray starts a local runtime.
 

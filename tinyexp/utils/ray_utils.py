@@ -20,7 +20,9 @@ _RAY_HEAD_NODE_RESOURCE = "node:__internal_head__"
 _RAY_NODE_RESOURCE_PIN = 0.001
 
 
-def _maybe_start_ray_redis_cache(cfg: DictConfig) -> Optional[RayRedisClusterManager]:  # noqa: UP007
+def _maybe_start_ray_redis_cache(
+    cfg: DictConfig,
+) -> Optional[RayRedisClusterManager]:  # noqa: UP007
     redis_cfg = getattr(cfg, "redis_cfg", None)
     if redis_cfg is None or not bool(getattr(redis_cfg, "redis_cache_enabled", False)):
         return None
@@ -126,15 +128,22 @@ def build_ray_worker_env_vars(
         return []
 
     local_world_sizes = Counter(node_ids)
+    node_ranks = {node_id: node_rank for node_rank, node_id in enumerate(dict.fromkeys(node_ids))}
+    node_rank_offsets: dict[str, int] = {}
+    rank_offset = 0
+    for node_id in node_ranks:
+        node_rank_offsets[node_id] = rank_offset
+        rank_offset += local_world_sizes[node_id]
+
     local_ranks: Counter[str] = Counter()
     env_vars = []
-    for rank, node_id in enumerate(node_ids):
+    for node_id in node_ids:
         local_rank = local_ranks[node_id]
         local_ranks[node_id] += 1
         env_vars.append(
             _build_worker_env_vars(
                 num_worker=num_worker,
-                rank=rank,
+                rank=node_rank_offsets[node_id] + local_rank,
                 local_rank=local_rank,
                 master_addr=master_addr,
                 master_port=master_port,

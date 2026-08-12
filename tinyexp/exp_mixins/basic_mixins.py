@@ -180,9 +180,13 @@ class RayCfgMixin:
                 )
                 print("==> Ray worker topology:", flush=True)
                 node_ranks = {node_id: node_rank for node_rank, node_id in enumerate(dict.fromkeys(worker_node_ids))}
-                for rank, (node_id, env_vars) in enumerate(zip(worker_node_ids, runtime_envs)):
+                topology = sorted(
+                    zip(worker_node_ids, runtime_envs),
+                    key=lambda item: int(item[1]["RANK"]),
+                )
+                for node_id, env_vars in topology:
                     print(
-                        f"    rank={rank}/{ray_cfg.ray_num_worker} node={node_id} "
+                        f"    rank={env_vars['RANK']}/{ray_cfg.ray_num_worker} node={node_id} "
                         f"node_rank={node_ranks[node_id]} "
                         f"local_rank={env_vars['LOCAL_RANK']}/{env_vars['LOCAL_WORLD_SIZE']}",
                         flush=True,

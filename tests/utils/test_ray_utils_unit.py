@@ -332,6 +332,26 @@ def test_build_ray_worker_env_vars_uses_actual_node_local_ranks(
     ]
 
 
+def test_build_ray_worker_env_vars_groups_global_ranks_by_node(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("GLOO_SOCKET_IFNAME", raising=False)
+
+    env_vars = build_ray_worker_env_vars(
+        num_worker=4,
+        node_ids=["node-a", "node-b", "node-a", "node-b"],
+        master_addr="10.0.0.1",
+        master_port=12345,
+    )
+
+    assert [(env["RANK"], env["LOCAL_RANK"], env["LOCAL_WORLD_SIZE"]) for env in env_vars] == [
+        ("0", "0", "2"),
+        ("2", "0", "2"),
+        ("1", "1", "2"),
+        ("3", "1", "2"),
+    ]
+
+
 def test_build_ray_worker_env_vars_rejects_mismatched_worker_count() -> None:
     with pytest.raises(ValueError, match="one node id for every Ray worker"):
         build_ray_worker_env_vars(
@@ -377,7 +397,9 @@ def test_get_placement_group_defaults_to_pack(monkeypatch: pytest.MonkeyPatch) -
     }
 
 
-def test_get_placement_group_timeout_removes_group(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_placement_group_timeout_removes_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     removed = []
 
     class FakePlacementGroup:
@@ -407,7 +429,9 @@ def test_get_placement_group_timeout_removes_group(monkeypatch: pytest.MonkeyPat
     assert len(removed) == 1
 
 
-def test_get_placement_group_error_removes_group(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_get_placement_group_error_removes_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     removed = []
 
     class FakePlacementGroup:
