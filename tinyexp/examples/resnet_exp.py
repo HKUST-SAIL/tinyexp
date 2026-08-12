@@ -321,6 +321,8 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
         else:
             raise NotImplementedError(f"Mode {self.mode} is not implemented")
 
+        accelerator.destroy()
+
     def _evaluate(self, accelerator, logger, module_or_module_path, val_dataloader=None) -> None:
         if isinstance(module_or_module_path, str):
             module: nn.Module = self.module_cfg.build_module()

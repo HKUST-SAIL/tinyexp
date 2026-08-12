@@ -1,4 +1,3 @@
-from contextlib import suppress
 from typing import Literal
 
 import torch
@@ -27,16 +26,14 @@ class DDPAccelerator(BaseAccelerator):
         )
 
     def destroy(self):
-        """Explicitly destroy the distributed process group"""
-        if hasattr(self, "_process_group_initialized") and self._process_group_initialized:
+        """Destroy the distributed process group once, if this accelerator owns it."""
+        if self._destroyed:
+            return
+        if self._process_group_initialized:
             if dist.is_initialized():
                 dist.destroy_process_group()
             self._process_group_initialized = False
-
-    def __del__(self):
-        """Destructor, which is automatically called when the object is garbage collected"""
-        with suppress(Exception):
-            self.destroy()
+        self._destroyed = True
 
     def unwrap_model(self, model):
         return model.module if hasattr(model, "module") else model

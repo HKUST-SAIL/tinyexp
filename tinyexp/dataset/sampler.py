@@ -1,5 +1,6 @@
 import itertools
-from typing import Optional
+from collections.abc import Iterator
+from typing import Any, Optional
 
 import torch
 from torch.utils.data.sampler import Sampler
@@ -7,15 +8,20 @@ from torch.utils.data.sampler import Sampler
 __all__ = ["InfiniteSampler"]
 
 
-class InfiniteSampler(Sampler):
-    """
-    In training, we only care about the "infinite stream" of training data.
-    So this sampler produces an infinite stream of indices and
-    all workers cooperate to correctly shuffle the indices and sample different indices.
-    The samplers in each worker effectively produces `indices[worker_id::num_workers]`
-    where `indices` is an infinite stream of indices consisting of
-    `shuffle(range(size)) + shuffle(range(size)) + ...` (if shuffle is True)
-    or `range(size) + range(size) + ...` (if shuffle is False)
+class InfiniteSampler(Sampler[int]):
+    """Sample an infinite, rank-sharded stream of dataset indices.
+
+    The global stream is ``shuffle(range(size))`` repeated forever when
+    ``shuffle`` is true, or ``range(size)`` repeated forever otherwise. Each
+    rank consumes ``global_stream[rank::world_size]``. This is a continuous
+    stream sampler; ``set_epoch`` only positions that stream at a logical
+    epoch boundary for training loops that use epochs.
+
+    ``drop_last`` affects only the logical epoch length returned by ``len``.
+    It does not stop the infinite stream or remove samples permanently. With
+    a non-divisible ``size``, ``drop_last=False`` gives each rank the ceiling
+    number of samples per logical epoch, while ``drop_last=True`` gives the
+    floor number.
     """
 
     def __init__(
@@ -23,53 +29,70 @@ class InfiniteSampler(Sampler):
         size: int,
         shuffle: bool = True,
         seed: Optional[int] = 0,
-        drop_last=False,
-        accelerator=None,
+        drop_last: bool = False,
+        accelerator: Any = None,
     ):
-        """
+        """Create an infinite stream sampler.
+
         Args:
-            size (int): the total number of data of the underlying dataset to sample from
-            shuffle (bool): whether to shuffle the indices or not
-            seed (int): the initial seed of the shuffle. Must be the same
-                across all workers. If None, will use a random seed shared
-                among workers (require synchronization among all workers).
-            drop_last (bool): whether to drop the last incomplete batch
+            size: The positive number of samples in the underlying dataset.
+            shuffle: Whether to shuffle each repeated dataset permutation.
+            seed: The initial shuffle seed. ``None`` creates a random seed
+                once when the sampler is constructed. Distributed callers
+                should pass the same explicit seed to every rank.
+            drop_last: Whether a logical epoch uses the floor rather than the
+                ceiling number of samples per rank. This only affects ``len``
+                and the position selected by ``set_epoch``.
+            accelerator: Optional object providing ``rank`` and ``world_size``.
         """
+        if not isinstance(size, int) or isinstance(size, bool) or size < 1:
+            raise ValueError("size must be a positive integer")  # noqa: TRY003
+
+        if accelerator is not None:
+            rank = accelerator.rank
+            world_size = accelerator.world_size
+        else:
+            rank = 0
+            world_size = 1
+
+        if not isinstance(world_size, int) or isinstance(world_size, bool) or world_size < 1:
+            raise ValueError("world_size must be a positive integer")  # noqa: TRY003
+        if not isinstance(rank, int) or isinstance(rank, bool) or not 0 <= rank < world_size:
+            raise ValueError("rank must be an integer in [0, world_size)")  # noqa: TRY003
+
         self._size = size
         self._shuffle = shuffle
-        self._seed = int(seed)
+        self._seed = torch.Generator().seed() if seed is None else int(seed)
         self.drop_last = drop_last
-        if accelerator is not None:
-            self._rank = accelerator.rank
-            self._world_size = accelerator.world_size
-        else:
-            self._rank = 0
-            self._world_size = 1
+        self._rank = rank
+        self._world_size = world_size
         self._sample_offset = 0
 
     def set_epoch(self, epoch: int) -> None:
-        """Position the sampler at the start of an epoch in the fixed stream."""
+        """Position the continuous stream at the start of logical ``epoch``.
+
+        This is epoch-level positioning only. The sampler deliberately does
+        not expose step-level resume state.
+        """
         epoch = int(epoch)
         if epoch < 0:
             raise ValueError("epoch must not be negative")  # noqa: TRY003
         self._sample_offset = epoch * len(self) * self._world_size
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[int]:
         start = self._rank + self._sample_offset
         yield from itertools.islice(self._infinite_indices(), start, None, self._world_size)
 
-    def _infinite_indices(self):
+    def _infinite_indices(self) -> Iterator[int]:
         g = torch.Generator()
         g.manual_seed(self._seed)
         while True:
             if self._shuffle:
                 yield from torch.randperm(self._size, generator=g).tolist()
             else:
-                # yield from torch.arange(self._size)
-                yield from list(range(self._size))
+                yield from range(self._size)
 
-    def __len__(self):
+    def __len__(self) -> int:
         if self.drop_last:
             return self._size // self._world_size
-        else:
-            return (self._size + self._world_size - 1) // self._world_size
+        return (self._size + self._world_size - 1) // self._world_size

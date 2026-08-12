@@ -53,12 +53,11 @@ class Exp(TinyExp, RayCfgMixin, LoggerCfgMixin):
         logger = self.logger_cfg.build_logger(save_dir=self.get_run_dir(), distributed_rank=accelerator.rank)
         self.print_cfg(logger)
 
-        try:
-            pi = self._estimate_pi(accelerator)
-            if accelerator.is_main_process:
-                logger.info(f"pi ~= {pi:.6f} (error={abs(pi - torch.pi):.6f}, samples={self.pi_cfg.total_samples})")
-        finally:
-            accelerator.destroy()
+        pi = self._estimate_pi(accelerator)
+        if accelerator.is_main_process:
+            logger.info(f"pi ~= {pi:.6f} (error={abs(pi - torch.pi):.6f}, samples={self.pi_cfg.total_samples})")
+
+        accelerator.destroy()
 
     def _estimate_pi(self, accelerator) -> float:
         generator = torch.Generator().manual_seed(self.pi_cfg.seed + accelerator.rank)

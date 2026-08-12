@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import abc
+import contextlib
 import os
 from abc import abstractmethod
 from typing import Any, Protocol, runtime_checkable
@@ -56,6 +57,8 @@ class BaseAccelerator(abc.ABC):
         self.local_rank = int(os.getenv("LOCAL_RANK", 0))
         self.local_world_size = int(os.getenv("LOCAL_WORLD_SIZE", 1))
         self.sync_gradients = True
+        self._destroyed = False
+        self._process_group_initialized = False
         self.master_addr = os.getenv("MASTER_ADDR", "127.0.0.1")
         self.master_port = int(os.getenv("MASTER_PORT", 12345))
 
@@ -110,6 +113,11 @@ class BaseAccelerator(abc.ABC):
     @abstractmethod
     def destroy(self) -> None:
         pass
+
+    def __del__(self) -> None:
+        """Best-effort cleanup when explicit cleanup was skipped."""
+        with contextlib.suppress(Exception):
+            self.destroy()
 
     @property
     def is_main_process(self):  # type: ignore[no-untyped-def]

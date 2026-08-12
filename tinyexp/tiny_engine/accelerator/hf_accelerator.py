@@ -1,10 +1,13 @@
 try:
+    import contextlib
+
     import torch
     from accelerate import Accelerator
 
     class HFAccelerator(Accelerator):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
+            self._destroyed = False
             self._set_attributes()
 
         def _set_attributes(self):
@@ -22,7 +25,14 @@ try:
             return self.reduce(tensor, reduction="mean")
 
         def destroy(self) -> None:
+            if self._destroyed:
+                return
             self.end_training()
+            self._destroyed = True
+
+        def __del__(self) -> None:
+            with contextlib.suppress(Exception):
+                self.destroy()
 
 except ImportError:
     import warnings

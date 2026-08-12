@@ -11,8 +11,12 @@ from tinyexp.examples.mnist_exp import Exp
 
 def test_mnist_run_val_mode_requires_resume_from(tmp_path: Path, monkeypatch) -> None:
     exp = Exp(output_root=str(tmp_path), exp_name="mnist_val", mode="val", resume_from="")
-
-    dummy_accelerator = SimpleNamespace(rank=0, device="cpu", is_main_process=True)
+    dummy_accelerator = SimpleNamespace(
+        rank=0,
+        device="cpu",
+        is_main_process=True,
+        destroy=lambda: None,
+    )
     dummy_logger = SimpleNamespace(info=lambda *args, **kwargs: None)
 
     monkeypatch.setattr(exp.accelerator_cfg, "build_accelerator", lambda: dummy_accelerator)
@@ -33,8 +37,13 @@ def test_mnist_run_val_mode_uses_checkpoint(tmp_path: Path, monkeypatch) -> None
     )
 
     exp = Exp(output_root=str(tmp_path), exp_name="mnist_val", mode="val", resume_from=checkpoint_path)
-
-    dummy_accelerator = SimpleNamespace(rank=0, device="cpu", is_main_process=True)
+    destroy_calls = []
+    dummy_accelerator = SimpleNamespace(
+        rank=0,
+        device="cpu",
+        is_main_process=True,
+        destroy=lambda: destroy_calls.append(True),
+    )
     dummy_logger = SimpleNamespace(info=lambda *args, **kwargs: None)
 
     monkeypatch.setattr(exp.accelerator_cfg, "build_accelerator", lambda: dummy_accelerator)
@@ -56,6 +65,7 @@ def test_mnist_run_val_mode_uses_checkpoint(tmp_path: Path, monkeypatch) -> None
     assert called["accelerator"] is dummy_accelerator
     assert called["logger"] is dummy_logger
     assert called["module_or_module_path"] == checkpoint_path
+    assert destroy_calls == [True]
 
 
 def test_mnist_val_dataloader_partitions_without_padding(tmp_path: Path, monkeypatch) -> None:

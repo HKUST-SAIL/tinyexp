@@ -167,8 +167,12 @@ def test_resnet_dataloader_passes_complete_redis_cfg_to_cached_folder(
 
 def test_resnet_run_val_mode_requires_resume_from(tmp_path: Path, monkeypatch) -> None:
     exp = ResNetExp(output_root=str(tmp_path), exp_name="resnet_val", mode="val", resume_from="")
-
-    dummy_accelerator = SimpleNamespace(rank=0, device="cpu", is_main_process=True)
+    dummy_accelerator = SimpleNamespace(
+        rank=0,
+        device="cpu",
+        is_main_process=True,
+        destroy=lambda: None,
+    )
     dummy_logger = SimpleNamespace(info=lambda *args, **kwargs: None)
 
     monkeypatch.setattr(exp.accelerator_cfg, "build_accelerator", lambda: dummy_accelerator)
@@ -181,8 +185,12 @@ def test_resnet_run_val_mode_requires_resume_from(tmp_path: Path, monkeypatch) -
 def test_resnet_run_logs_overrides_with_experiment_logger(tmp_path: Path, monkeypatch) -> None:
     exp = ResNetExp(mode="val", resume_from="")
     exp.set_cfg(OmegaConf.create({"output_root": str(tmp_path), "exp_name": "resnet_val"}))
-
-    dummy_accelerator = SimpleNamespace(rank=0, device="cpu", is_main_process=True)
+    dummy_accelerator = SimpleNamespace(
+        rank=0,
+        device="cpu",
+        is_main_process=True,
+        destroy=lambda: None,
+    )
     messages = []
     dummy_logger = SimpleNamespace(info=lambda message: messages.append(message))
 
@@ -211,8 +219,13 @@ def test_resnet_run_val_mode_uses_checkpoint(tmp_path: Path, monkeypatch) -> Non
         mode="val",
         resume_from=checkpoint_path,
     )
-
-    dummy_accelerator = SimpleNamespace(rank=0, device="cpu", is_main_process=True)
+    destroy_calls = []
+    dummy_accelerator = SimpleNamespace(
+        rank=0,
+        device="cpu",
+        is_main_process=True,
+        destroy=lambda: destroy_calls.append(True),
+    )
     dummy_logger = SimpleNamespace(info=lambda *args, **kwargs: None)
 
     monkeypatch.setattr(exp.accelerator_cfg, "build_accelerator", lambda: dummy_accelerator)
@@ -234,6 +247,7 @@ def test_resnet_run_val_mode_uses_checkpoint(tmp_path: Path, monkeypatch) -> Non
     assert called["accelerator"] is dummy_accelerator
     assert called["logger"] is dummy_logger
     assert called["module_or_module_path"] == checkpoint_path
+    assert destroy_calls == [True]
     assert called["val_dataloader"] is None
 
 

@@ -4,6 +4,7 @@ import os
 import socket
 from collections import Counter
 from collections.abc import Sequence
+from typing import Optional
 
 import ray
 from omegaconf import DictConfig
@@ -18,7 +19,7 @@ _RAY_HEAD_NODE_RESOURCE = "node:__internal_head__"
 _RAY_NODE_RESOURCE_PIN = 0.001
 
 
-def _maybe_start_ray_redis_cache(cfg: DictConfig) -> RayRedisClusterManager | None:
+def _maybe_start_ray_redis_cache(cfg: DictConfig) -> Optional[RayRedisClusterManager]:  # noqa: UP007
     redis_cfg = getattr(cfg, "redis_cfg", None)
     if redis_cfg is None or not bool(getattr(redis_cfg, "redis_cache_enabled", False)):
         return None

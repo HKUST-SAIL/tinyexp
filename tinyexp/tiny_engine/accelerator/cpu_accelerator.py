@@ -19,10 +19,8 @@ class CPUAccelerator(BaseAccelerator):
         super().__init__()
         self.device = torch.device("cpu")
         if self.world_size > 1:
-            self._init_process_group()
             self._process_group_initialized = True
-        else:
-            self._process_group_initialized = False
+            self._init_process_group()
 
     def _init_process_group(self) -> None:
         if not os.getenv("GLOO_SOCKET_IFNAME"):
@@ -43,17 +41,15 @@ class CPUAccelerator(BaseAccelerator):
             world_size=self.world_size,
         )
 
-    def destroy(self):
-        """Explicitly destroy the distributed process group"""
+    def destroy(self) -> None:
+        """Destroy the distributed process group once, if this accelerator owns it."""
+        if self._destroyed:
+            return
         if self._process_group_initialized:
             if dist.is_initialized():
                 dist.destroy_process_group()
             self._process_group_initialized = False
-
-    def __del__(self):
-        """Destructor, which is automatically called when the object is garbage collected"""
-        with suppress(Exception):
-            self.destroy()
+        self._destroyed = True
 
     def unwrap_model(self, model):
         return model.module if isinstance(model, nn.parallel.DistributedDataParallel) else model
