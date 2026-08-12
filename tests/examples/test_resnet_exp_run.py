@@ -456,3 +456,25 @@ def test_resnet_train_resume_loads_checkpoint_state(tmp_path: Path, monkeypatch)
     assert saved[0]["epoch"] == 5
     assert saved[0]["global_step"] == 18
     assert saved[0]["best_metric"] == 0.7
+
+
+def test_resnet_val_dataloader_partitions_without_padding(tmp_path: Path, monkeypatch) -> None:
+    dataset = torch.utils.data.TensorDataset(torch.arange(10), torch.arange(10))
+    monkeypatch.setattr(
+        "tinyexp.examples.resnet_exp.LocalCachedImageFolder",
+        lambda **kwargs: dataset,
+    )
+
+    cfg = ResNetExp.DataloaderCfg(
+        data_root=str(tmp_path),
+        val_batch_size_per_device=4,
+        val_data_worker_per_gpu=1,
+    )
+    partitions = []
+    for rank in range(3):
+        dataloader = cfg.build_val_dataloader(SimpleNamespace(rank=rank, world_size=3))
+        assert dataloader.drop_last is False
+        partitions.append(list(dataloader.dataset.indices))
+
+    assert partitions == [[0, 3, 6, 9], [1, 4, 7], [2, 5, 8]]
+    assert sorted(index for partition in partitions for index in partition) == list(range(10))

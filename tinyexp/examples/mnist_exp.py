@@ -104,16 +104,16 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
         def build_val_dataloader(self, accelerator):
             transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
             ds_val = datasets.MNIST(self.data_root, train=False, download=True, transform=transform)
-            sampler = torch.utils.data.DistributedSampler(
-                ds_val, num_replicas=accelerator.world_size, rank=accelerator.rank
+            ds_val = torch.utils.data.Subset(
+                ds_val,
+                range(accelerator.rank, len(ds_val), accelerator.world_size),
             )
             dl_val = torch.utils.data.DataLoader(
                 ds_val,
                 batch_size=self.train_batch_size_per_device,
                 shuffle=False,
                 num_workers=self.val_data_worker_per_gpu,
-                drop_last=True,
-                sampler=sampler,
+                drop_last=False,
             )
             return dl_val
 
@@ -186,6 +186,8 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
         if val_dataloader is None:
             val_dataloader = self.dataloader_cfg.build_val_dataloader(accelerator)
 
+        # Ranks may have different eval batch counts when the dataset is not divisible.
+        module = accelerator.unwrap_model(module)
         module.eval()
         accurate = torch.tensor(0, dtype=torch.long, device=accelerator.device)
         seen = torch.tensor(0, dtype=torch.long, device=accelerator.device)

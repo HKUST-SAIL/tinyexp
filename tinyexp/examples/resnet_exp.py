@@ -282,18 +282,15 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
             transform = transform_template_imagenet(is_train=False, interpolation=2)
             ds_val = LocalCachedImageFolder(root=os.path.join(self.data_root, "val"), transform=transform)
             # ds_val = datasets.ImageFolder(root=os.path.join(self.data_root, "val"), transform=transform)
-            sampler = torch.utils.data.distributed.DistributedSampler(
+            ds_val = torch.utils.data.Subset(
                 ds_val,
-                num_replicas=accelerator.world_size,
-                rank=accelerator.rank,
-                shuffle=False,
+                range(accelerator.rank, len(ds_val), accelerator.world_size),
             )
             val_kwargs = {
                 "batch_size": self.val_batch_size_per_device,
                 "num_workers": self.val_data_worker_per_gpu,
                 "pin_memory": True,
-                "sampler": sampler,
-                "persistent_workers": True,  # Keep workers alive for multiple epochs
+                "persistent_workers": True,
             }
             val_dataloader = torch.utils.data.DataLoader(ds_val, **val_kwargs)
             return val_dataloader
@@ -339,6 +336,8 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
         if val_dataloader is None:
             val_dataloader = self.dataloader_cfg.build_val_dataloader(accelerator)
 
+        # Ranks may have different eval batch counts when the dataset is not divisible.
+        module = accelerator.unwrap_model(module)
         module.eval()
         accurate = torch.tensor(0, dtype=torch.long, device=accelerator.device)
         seen = torch.tensor(0, dtype=torch.long, device=accelerator.device)
