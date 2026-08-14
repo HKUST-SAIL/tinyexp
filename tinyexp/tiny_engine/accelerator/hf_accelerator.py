@@ -1,9 +1,13 @@
 try:
+    import contextlib
+
+    import torch
     from accelerate import Accelerator
 
     class HFAccelerator(Accelerator):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
+            self._destroyed = False
             self._set_attributes()
 
         def _set_attributes(self):
@@ -13,6 +17,22 @@ try:
             self.rank = self.process_index
             self.world_size = self.num_processes
             self.local_rank = self.local_process_index
+
+        def reduce_sum(self, tensor: torch.Tensor) -> torch.Tensor:
+            return self.reduce(tensor, reduction="sum")
+
+        def reduce_mean(self, tensor: torch.Tensor) -> torch.Tensor:
+            return self.reduce(tensor, reduction="mean")
+
+        def destroy(self) -> None:
+            if self._destroyed:
+                return
+            self.end_training()
+            self._destroyed = True
+
+        def __del__(self) -> None:
+            with contextlib.suppress(Exception):
+                self.destroy()
 
 except ImportError:
     import warnings

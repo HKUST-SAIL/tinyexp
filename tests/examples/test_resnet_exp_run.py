@@ -11,6 +11,14 @@ from omegaconf import ListConfig, OmegaConf
 from tinyexp.examples.resnet_exp import RedisCachedImageFolder, ResNetExp
 
 
+def test_resnet_warmup_milestone_uses_configured_epoch() -> None:
+    module = nn.Linear(1, 1)
+    optimizer = torch.optim.SGD(module.parameters(), lr=0.1)
+    scheduler = ResNetExp.LrSchedulerCfg(warmup_epoch=5).build_lr_scheduler(optimizer)
+
+    assert scheduler._milestones == [5]
+
+
 def test_redis_cached_image_folder_uses_standalone_clients_for_localhost(tmp_path: Path, monkeypatch) -> None:
     train_root = tmp_path / "train" / "class0"
     train_root.mkdir(parents=True)
@@ -159,8 +167,12 @@ def test_resnet_dataloader_passes_complete_redis_cfg_to_cached_folder(
 
 def test_resnet_run_val_mode_requires_resume_from(tmp_path: Path, monkeypatch) -> None:
     exp = ResNetExp(output_root=str(tmp_path), exp_name="resnet_val", mode="val", resume_from="")
-
-    dummy_accelerator = SimpleNamespace(rank=0, device="cpu", is_main_process=True)
+    dummy_accelerator = SimpleNamespace(
+        rank=0,
+        device="cpu",
+        is_main_process=True,
+        destroy=lambda: None,
+    )
     dummy_logger = SimpleNamespace(info=lambda *args, **kwargs: None)
 
     monkeypatch.setattr(exp.accelerator_cfg, "build_accelerator", lambda: dummy_accelerator)
@@ -173,8 +185,12 @@ def test_resnet_run_val_mode_requires_resume_from(tmp_path: Path, monkeypatch) -
 def test_resnet_run_logs_overrides_with_experiment_logger(tmp_path: Path, monkeypatch) -> None:
     exp = ResNetExp(mode="val", resume_from="")
     exp.set_cfg(OmegaConf.create({"output_root": str(tmp_path), "exp_name": "resnet_val"}))
-
-    dummy_accelerator = SimpleNamespace(rank=0, device="cpu", is_main_process=True)
+    dummy_accelerator = SimpleNamespace(
+        rank=0,
+        device="cpu",
+        is_main_process=True,
+        destroy=lambda: None,
+    )
     messages = []
     dummy_logger = SimpleNamespace(info=lambda message: messages.append(message))
 
@@ -203,8 +219,13 @@ def test_resnet_run_val_mode_uses_checkpoint(tmp_path: Path, monkeypatch) -> Non
         mode="val",
         resume_from=checkpoint_path,
     )
-
-    dummy_accelerator = SimpleNamespace(rank=0, device="cpu", is_main_process=True)
+    destroy_calls = []
+    dummy_accelerator = SimpleNamespace(
+        rank=0,
+        device="cpu",
+        is_main_process=True,
+        destroy=lambda: destroy_calls.append(True),
+    )
     dummy_logger = SimpleNamespace(info=lambda *args, **kwargs: None)
 
     monkeypatch.setattr(exp.accelerator_cfg, "build_accelerator", lambda: dummy_accelerator)
@@ -226,6 +247,7 @@ def test_resnet_run_val_mode_uses_checkpoint(tmp_path: Path, monkeypatch) -> Non
     assert called["accelerator"] is dummy_accelerator
     assert called["logger"] is dummy_logger
     assert called["module_or_module_path"] == checkpoint_path
+    assert destroy_calls == [True]
     assert called["val_dataloader"] is None
 
 
@@ -286,7 +308,7 @@ def test_resnet_train_saves_last_and_best_checkpoints(tmp_path: Path, monkeypatc
     assert saved[0]["name"] == exp.checkpoint_cfg.last_ckpt_name
     assert saved[0]["epoch"] == 0
     assert saved[0]["global_step"] == 1
-    assert saved[0]["best_metric"] is None
+    assert saved[0]["best_metric"] == 0.5
     assert saved[1]["name"] == exp.checkpoint_cfg.best_ckpt_name
     assert saved[1]["best_metric"] == 0.5
 
@@ -448,3 +470,25 @@ def test_resnet_train_resume_loads_checkpoint_state(tmp_path: Path, monkeypatch)
     assert saved[0]["epoch"] == 5
     assert saved[0]["global_step"] == 18
     assert saved[0]["best_metric"] == 0.7
+
+
+def test_resnet_val_dataloader_partitions_without_padding(tmp_path: Path, monkeypatch) -> None:
+    dataset = torch.utils.data.TensorDataset(torch.arange(10), torch.arange(10))
+    monkeypatch.setattr(
+        "tinyexp.examples.resnet_exp.LocalCachedImageFolder",
+        lambda **kwargs: dataset,
+    )
+
+    cfg = ResNetExp.DataloaderCfg(
+        data_root=str(tmp_path),
+        val_batch_size_per_device=4,
+        val_data_worker_per_gpu=1,
+    )
+    partitions = []
+    for rank in range(3):
+        dataloader = cfg.build_val_dataloader(SimpleNamespace(rank=rank, world_size=3))
+        assert dataloader.drop_last is False
+        partitions.append(list(dataloader.dataset.indices))
+
+    assert partitions == [[0, 3, 6, 9], [1, 4, 7], [2, 5, 8]]
+    assert sorted(index for partition in partitions for index in partition) == list(range(10))

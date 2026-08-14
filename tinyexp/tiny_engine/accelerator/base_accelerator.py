@@ -1,10 +1,49 @@
+from __future__ import annotations
+
 import abc
+import contextlib
 import os
 from abc import abstractmethod
+from typing import Any, Protocol, runtime_checkable
 
 import torch
 
-__all__ = ["BaseAccelerator"]
+__all__ = ["AcceleratorProtocol", "BaseAccelerator"]
+
+
+@runtime_checkable
+class AcceleratorProtocol(Protocol):
+    rank: int
+    world_size: int
+    local_rank: int
+    device: torch.device
+    sync_gradients: bool
+
+    @property
+    def is_main_process(self) -> bool: ...
+
+    @property
+    def is_local_main_process(self) -> bool: ...
+
+    def unwrap_model(self, model: Any) -> Any: ...
+
+    def prepare(self, model: Any, optimizer: Any = None) -> Any: ...
+
+    def prepare_model(self, model: Any) -> Any: ...
+
+    def prepare_optimizer(self, optimizer: Any) -> Any: ...
+
+    def backward(self, loss: torch.Tensor) -> None: ...
+
+    def wait_for_everyone(self) -> None: ...
+
+    def reduce_sum(self, tensor: torch.Tensor) -> torch.Tensor: ...
+
+    def reduce_mean(self, tensor: torch.Tensor) -> torch.Tensor: ...
+
+    def print(self, *args: Any, **kwargs: Any) -> None: ...
+
+    def destroy(self) -> None: ...
 
 
 class BaseAccelerator(abc.ABC):
@@ -17,6 +56,9 @@ class BaseAccelerator(abc.ABC):
         self.world_size = int(os.getenv("WORLD_SIZE", 1))
         self.local_rank = int(os.getenv("LOCAL_RANK", 0))
         self.local_world_size = int(os.getenv("LOCAL_WORLD_SIZE", 1))
+        self.sync_gradients = True
+        self._destroyed = False
+        self._process_group_initialized = False
         self.master_addr = os.getenv("MASTER_ADDR", "127.0.0.1")
         self.master_port = int(os.getenv("MASTER_PORT", 12345))
 
@@ -41,6 +83,14 @@ class BaseAccelerator(abc.ABC):
         pass
 
     @abstractmethod
+    def prepare_model(self, model):  # type: ignore[no-untyped-def]
+        pass
+
+    @abstractmethod
+    def prepare_optimizer(self, optimizer):  # type: ignore[no-untyped-def]
+        pass
+
+    @abstractmethod
     def backward(self, loss: torch.Tensor) -> None:
         pass
 
@@ -53,8 +103,21 @@ class BaseAccelerator(abc.ABC):
         pass
 
     @abstractmethod
+    def reduce_mean(self, tensor: torch.Tensor) -> torch.Tensor:
+        pass
+
+    @abstractmethod
     def print(self, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
         pass
+
+    @abstractmethod
+    def destroy(self) -> None:
+        pass
+
+    def __del__(self) -> None:
+        """Best-effort cleanup when explicit cleanup was skipped."""
+        with contextlib.suppress(Exception):
+            self.destroy()
 
     @property
     def is_main_process(self):  # type: ignore[no-untyped-def]

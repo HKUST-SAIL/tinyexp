@@ -12,6 +12,7 @@ from torchvision import datasets, transforms
 from tinyexp import TinyExp, store_and_run_exp
 from tinyexp.exceptions import UnknownAcceleratorTypeError
 from tinyexp.exp_mixins import CheckpointCfgMixin, LoggerCfgMixin, RayCfgMixin, WandbCfgMixin
+from tinyexp.tiny_engine.accelerator import AcceleratorProtocol
 
 
 class Net(nn.Module):
@@ -52,17 +53,19 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
     @dataclass
     class RayCfg(RayCfgMixin.RayCfg):
         ray_num_worker: int = 2
+        ray_num_cpus_per_worker: int = 4  # Main process plus train/validation dataloader workers.
         ray_num_gpus_per_worker: float = 0.0  # 0.0 means do not use GPU
 
     ray_cfg: RayCfg = field(default_factory=RayCfg)
     mode: str = "train"
     launcher: str = "ray"
+    seed: int = 42
 
     @dataclass
     class AcceleratorCfg:
         accelerator: str = "cpu"
 
-        def build_accelerator(self):
+        def build_accelerator(self) -> AcceleratorProtocol:
             from tinyexp.tiny_engine.accelerator import CPUAccelerator, DDPAccelerator
 
             if self.accelerator == "cpu":
@@ -82,9 +85,19 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
         train_data_worker_per_gpu: int = 2
         val_data_worker_per_gpu: int = 1
 
+        def _build_mnist_dataset(self, accelerator, *, train: bool, transform):
+            if accelerator.rank == 0:
+                dataset = datasets.MNIST(self.data_root, train=train, download=True, transform=transform)
+
+            accelerator.wait_for_everyone()
+
+            if accelerator.rank != 0:
+                dataset = datasets.MNIST(self.data_root, train=train, download=False, transform=transform)
+            return dataset
+
         def build_train_dataloader(self, accelerator):
             transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
-            ds_train = datasets.MNIST(self.data_root, train=True, download=True, transform=transform)
+            ds_train = self._build_mnist_dataset(accelerator, train=True, transform=transform)
             sampler = torch.utils.data.DistributedSampler(
                 ds_train, num_replicas=accelerator.world_size, rank=accelerator.rank
             )
@@ -100,17 +113,17 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
 
         def build_val_dataloader(self, accelerator):
             transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.1307,), (0.3081,))])
-            ds_val = datasets.MNIST(self.data_root, train=False, download=True, transform=transform)
-            sampler = torch.utils.data.DistributedSampler(
-                ds_val, num_replicas=accelerator.world_size, rank=accelerator.rank
+            ds_val = self._build_mnist_dataset(accelerator, train=False, transform=transform)
+            ds_val = torch.utils.data.Subset(
+                ds_val,
+                range(accelerator.rank, len(ds_val), accelerator.world_size),
             )
             dl_val = torch.utils.data.DataLoader(
                 ds_val,
                 batch_size=self.train_batch_size_per_device,
                 shuffle=False,
                 num_workers=self.val_data_worker_per_gpu,
-                drop_last=True,
-                sampler=sampler,
+                drop_last=False,
             )
             return dl_val
 
@@ -168,6 +181,8 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
         else:
             raise NotImplementedError(f"Mode {self.mode} is not implemented")
 
+        accelerator.destroy()
+
     def _evaluate(self, accelerator, logger, module_or_module_path, val_dataloader=None) -> float:
         if isinstance(module_or_module_path, str):
             module = Net()
@@ -183,18 +198,23 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
         if val_dataloader is None:
             val_dataloader = self.dataloader_cfg.build_val_dataloader(accelerator)
 
+        # Ranks may have different eval batch counts when the dataset is not divisible.
+        module = accelerator.unwrap_model(module)
         module.eval()
-        accurate = torch.tensor(0.0, device=accelerator.device)
+        accurate = torch.tensor(0, dtype=torch.long, device=accelerator.device)
+        seen = torch.tensor(0, dtype=torch.long, device=accelerator.device)
 
         for batch in val_dataloader:
             features, labels = (item.to(accelerator.device) for item in batch)
             with torch.no_grad():
                 preds = module(features)
             predictions = preds.argmax(dim=-1)
-            accurate_preds = predictions == labels
-            accurate_preds_sum = accelerator.reduce_sum(accurate_preds.sum())
-            accurate += accurate_preds_sum
-        eval_metric = accurate.item() / len(val_dataloader.dataset)
+            accurate += (predictions == labels).sum()
+            seen += labels.numel()
+
+        global_accurate = accelerator.reduce_sum(accurate)
+        global_seen = accelerator.reduce_sum(seen)
+        eval_metric = global_accurate.item() / global_seen.item() if global_seen.item() else 0.0
 
         accelerator.wait_for_everyone()
         nowtime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -205,7 +225,8 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
 
         return eval_metric
 
-    def _train(self, accelerator, logger, cfg_dict, run_dir: str) -> None:
+    def _train(self, accelerator, logger, cfg_dict, run_dir: str) -> None:  # noqa: C901
+        torch.manual_seed(self.seed)
         train_dataloader = self.dataloader_cfg.build_train_dataloader(accelerator)
         val_dataloader = self.dataloader_cfg.build_val_dataloader(accelerator)
         ori_module = self.module_cfg.build_module()
@@ -227,8 +248,10 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
             start_epoch = int(checkpoint.get("epoch", -1)) + 1
             global_step = int(checkpoint.get("global_step", 0))
             best_metric = checkpoint.get("best_metric")
+            rng_state = (checkpoint.get("extra_state") or {}).get("rng_state")
+            if rng_state is not None and getattr(accelerator, "world_size", 1) == 1:
+                self.checkpoint_cfg.restore_rng_state(rng_state)
 
-        train_iter = iter(train_dataloader)
         if self.wandb_cfg.enable_wandb and accelerator.rank == 0:
             self.wandb_cfg.build_wandb(
                 accelerator=accelerator,
@@ -236,7 +259,14 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
                 config=cfg_dict,
             )
 
+        train_sampler = getattr(train_dataloader, "sampler", None)
+        if train_sampler is not None and hasattr(train_sampler, "set_epoch"):
+            train_sampler.set_epoch(start_epoch)
+        train_iter = iter(train_dataloader)
+
         for epoch in range(start_epoch, 3):
+            if epoch != start_epoch and train_sampler is not None and hasattr(train_sampler, "set_epoch"):
+                train_sampler.set_epoch(epoch)
             module.train()
 
             for step in range(len(train_dataloader)):
@@ -270,7 +300,15 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
                 module_or_module_path=module,
                 val_dataloader=val_dataloader,
             )
+            lr_scheduler.step()
+            is_best = best_metric is None or eval_metric > best_metric
+            if is_best:
+                best_metric = eval_metric
+
             if accelerator.is_main_process:
+                checkpoint_extra_state = None
+                if getattr(accelerator, "world_size", 1) == 1:
+                    checkpoint_extra_state = {"rng_state": self.checkpoint_cfg.capture_rng_state()}
                 self.checkpoint_cfg.save_checkpoint(
                     run_dir=run_dir,
                     name=self.checkpoint_cfg.last_ckpt_name,
@@ -282,9 +320,9 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
                     best_metric=best_metric,
                     exp_name=self.exp_name,
                     exp_class=self.exp_class,
+                    extra_state=checkpoint_extra_state,
                 )
-                if best_metric is None or eval_metric > best_metric:
-                    best_metric = eval_metric
+                if is_best:
                     self.checkpoint_cfg.save_checkpoint(
                         run_dir=run_dir,
                         name=self.checkpoint_cfg.best_ckpt_name,
@@ -296,9 +334,8 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
                         best_metric=best_metric,
                         exp_name=self.exp_name,
                         exp_class=self.exp_class,
+                        extra_state=checkpoint_extra_state,
                     )
-
-            lr_scheduler.step()
 
 
 # import hydra

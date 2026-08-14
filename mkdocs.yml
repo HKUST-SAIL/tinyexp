@@ -9,6 +9,7 @@ copyright: Maintained by <a href="https://zengarden.com">zengarden</a>.
 
 nav:
   - Home: index.md
+  - Running Modes: running-modes.md
   - Philosophy: philosophy.md
   - Modules: modules.md
 plugins:

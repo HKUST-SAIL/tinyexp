@@ -17,6 +17,7 @@ from tinyexp import TinyExp, store_and_run_exp
 from tinyexp.dataset.sampler import InfiniteSampler
 from tinyexp.exceptions import UnknownAcceleratorTypeError
 from tinyexp.exp_mixins import CheckpointCfgMixin, LoggerCfgMixin, RayCfgMixin, RedisCfgMixin, WandbCfgMixin
+from tinyexp.tiny_engine.accelerator import AcceleratorProtocol
 
 
 def transform_template_imagenet(
@@ -168,10 +169,16 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
     max_train_steps: int = -1
 
     @dataclass
+    class RayCfg(RayCfgMixin.RayCfg):
+        ray_num_cpus_per_worker: int = 12  # Main process plus train/validation dataloader workers.
+
+    ray_cfg: RayCfg = field(default_factory=RayCfg)
+
+    @dataclass
     class AcceleratorCfg:
         accelerator: str = "ddp"
 
-        def build_accelerator(self):
+        def build_accelerator(self) -> AcceleratorProtocol:
             from tinyexp.tiny_engine.accelerator import CPUAccelerator, DDPAccelerator
 
             if self.accelerator == "cpu":
@@ -219,7 +226,6 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
 
             if self.warmup_epoch > 0:
                 warmup_factor: float = 0.001
-                train_warmup_epoch: int = 3
 
                 warmup_scheduler = LinearLR(
                     optimizer,
@@ -230,7 +236,7 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
                 scheduler = SequentialLR(
                     optimizer,
                     schedulers=[warmup_scheduler, main_scheduler],
-                    milestones=[train_warmup_epoch],
+                    milestones=[self.warmup_epoch],
                 )
             else:
                 scheduler = main_scheduler
@@ -276,18 +282,15 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
             transform = transform_template_imagenet(is_train=False, interpolation=2)
             ds_val = LocalCachedImageFolder(root=os.path.join(self.data_root, "val"), transform=transform)
             # ds_val = datasets.ImageFolder(root=os.path.join(self.data_root, "val"), transform=transform)
-            sampler = torch.utils.data.distributed.DistributedSampler(
+            ds_val = torch.utils.data.Subset(
                 ds_val,
-                num_replicas=accelerator.world_size,
-                rank=accelerator.rank,
-                shuffle=False,
+                range(accelerator.rank, len(ds_val), accelerator.world_size),
             )
             val_kwargs = {
                 "batch_size": self.val_batch_size_per_device,
                 "num_workers": self.val_data_worker_per_gpu,
                 "pin_memory": True,
-                "sampler": sampler,
-                "persistent_workers": True,  # Keep workers alive for multiple epochs
+                "persistent_workers": True,
             }
             val_dataloader = torch.utils.data.DataLoader(ds_val, **val_kwargs)
             return val_dataloader
@@ -318,6 +321,8 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
         else:
             raise NotImplementedError(f"Mode {self.mode} is not implemented")
 
+        accelerator.destroy()
+
     def _evaluate(self, accelerator, logger, module_or_module_path, val_dataloader=None) -> None:
         if isinstance(module_or_module_path, str):
             module: nn.Module = self.module_cfg.build_module()
@@ -333,21 +338,25 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
         if val_dataloader is None:
             val_dataloader = self.dataloader_cfg.build_val_dataloader(accelerator)
 
+        # Ranks may have different eval batch counts when the dataset is not divisible.
+        module = accelerator.unwrap_model(module)
         module.eval()
-        accurate = torch.tensor(0.0, device=accelerator.device)
+        accurate = torch.tensor(0, dtype=torch.long, device=accelerator.device)
+        seen = torch.tensor(0, dtype=torch.long, device=accelerator.device)
 
         for step, batch in enumerate(val_dataloader):
             images, labels = (item.to(accelerator.device) for item in batch)
             with torch.no_grad():
                 preds = module(images)
             predictions = preds.argmax(dim=-1)
-            accurate_preds = predictions == labels
-            accurate_preds_sum = accelerator.reduce_sum(accurate_preds.sum())
-            accurate += accurate_preds_sum
+            accurate += (predictions == labels).sum()
+            seen += labels.numel()
             if step % 20 == 0:
                 logger.info(f"Eval step {step}, accurate: {accurate.item()}")
 
-        eval_metric = accurate.item() / len(val_dataloader.dataset)
+        global_accurate = accelerator.reduce_sum(accurate)
+        global_seen = accelerator.reduce_sum(seen)
+        eval_metric = global_accurate.item() / global_seen.item() if global_seen.item() else 0.0
 
         nowtime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         logger.info(f"{nowtime} --> eval_metric= {100 * eval_metric:.2f}%")
@@ -357,7 +366,7 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
 
         return eval_metric
 
-    def _train(self, accelerator, logger, cfg_dict, run_dir: str) -> None:
+    def _train(self, accelerator, logger, cfg_dict, run_dir: str) -> None:  # noqa: C901
         train_dataloader = self.dataloader_cfg.build_train_dataloader(accelerator, self.redis_cfg)
         val_dataloader = self.dataloader_cfg.build_val_dataloader(accelerator)
         ori_module = self.module_cfg.build_module()
@@ -379,6 +388,9 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
             start_epoch = int(checkpoint.get("epoch", -1)) + 1
             global_step = int(checkpoint.get("global_step", 0))
             best_metric = checkpoint.get("best_metric")
+            rng_state = (checkpoint.get("extra_state") or {}).get("rng_state")
+            if rng_state is not None and getattr(accelerator, "world_size", 1) == 1:
+                self.checkpoint_cfg.restore_rng_state(rng_state)
 
         if self.wandb_cfg.enable_wandb and accelerator.rank == 0:
             self.wandb_cfg.build_wandb(
@@ -388,9 +400,14 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
                 name=self.__class__.__name__,
             )
 
+        train_sampler = getattr(train_dataloader, "sampler", None)
+        if train_sampler is not None and hasattr(train_sampler, "set_epoch"):
+            train_sampler.set_epoch(start_epoch)
         train_iter = iter(train_dataloader)
 
         for global_epoch in range(start_epoch, self.max_train_epochs):
+            if global_epoch != start_epoch and train_sampler is not None and hasattr(train_sampler, "set_epoch"):
+                train_sampler.set_epoch(global_epoch)
             module.train()
 
             epoch_start_time = time.time()
@@ -435,7 +452,13 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
                 module_or_module_path=module,
                 val_dataloader=val_dataloader,
             )
+            is_best = best_metric is None or eval_metric > best_metric
+            if is_best:
+                best_metric = eval_metric
             if accelerator.is_main_process:
+                checkpoint_extra_state = None
+                if getattr(accelerator, "world_size", 1) == 1:
+                    checkpoint_extra_state = {"rng_state": self.checkpoint_cfg.capture_rng_state()}
                 self.checkpoint_cfg.save_checkpoint(
                     run_dir=run_dir,
                     name=self.checkpoint_cfg.last_ckpt_name,
@@ -447,9 +470,9 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
                     best_metric=best_metric,
                     exp_name=self.exp_name,
                     exp_class=self.exp_class,
+                    extra_state=checkpoint_extra_state,
                 )
-                if best_metric is None or eval_metric > best_metric:
-                    best_metric = eval_metric
+                if is_best:
                     self.checkpoint_cfg.save_checkpoint(
                         run_dir=run_dir,
                         name=self.checkpoint_cfg.best_ckpt_name,
@@ -461,6 +484,7 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
                         best_metric=best_metric,
                         exp_name=self.exp_name,
                         exp_class=self.exp_class,
+                        extra_state=checkpoint_extra_state,
                     )
 
 

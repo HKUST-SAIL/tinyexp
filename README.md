@@ -8,7 +8,7 @@ Simple experiment management for PyTorch.
 TinyExp is built around one idea:
 your configured experiment is your entrypoint.
 
-<img src="docs/assets/tinyexp-demo-short.min.gif" alt="TinyExp demo" width="480"/>
+<img src="docs/assets/tinyexp-demo-short.min.gif" alt="Run a TinyExp experiment and override its configuration directly from the terminal" width="720"/>
 
 Instead of splitting config, launcher, and execution across many files, TinyExp keeps them together in one experiment
 definition so iteration stays fast and predictable.
@@ -95,23 +95,59 @@ Print all configs plus your overrides:
 uv run python tinyexp/examples/mnist_exp.py mode=help dataloader_cfg.train_batch_size_per_device=16
 ```
 
-Worker processes are launched according to the `launcher` config: `launcher=ray` spawns Ray workers from the driver
-process, while `launcher=mp` runs in the current process. The bundled examples default to `launcher=ray`, so when
-using an external multi-process launcher such as `torchrun` or `accelerate launch`, override it explicitly:
+Worker processes are selected by both the command and TinyExp's `launcher` config. The base `TinyExp` class defaults to
+`launcher=mp`, while the bundled examples default to `launcher=ray`.
+
+| Run style | Command owner | TinyExp launcher |
+| --- | --- | --- |
+| Plain Python, direct process | `python` | `launcher=mp` |
+| Plain Python, local Ray workers | TinyExp and Ray | `launcher=ray` |
+| TorchRun | `torchrun` | `launcher=mp` |
+| Accelerate launch | `accelerate launch` | `launcher=mp` |
+| Static Ray cluster | `tinyexp-run-with-ray-cluster` | `launcher=ray` |
+
+`torchrun` and `accelerate launch` create processes externally, so bundled examples must override `launcher=mp`:
 
 ```bash
-uv run torchrun --standalone --nproc-per-node 2 tinyexp/examples/mnist_exp.py launcher=mp
+uv run torchrun \
+  --nnodes 1 \
+  --node-rank 0 \
+  --nproc-per-node 2 \
+  --master-addr 127.0.0.1 \
+  --master-port 29500 \
+  tinyexp/examples/mnist_exp.py launcher=mp
+uv run accelerate launch --cpu --num-processes 1 -m tinyexp.examples.pi_exp launcher=mp
 ```
 
-The `mode` config selects what to execute: `train`, `val`, `run`, or `help`. `mode=run` is for general
-distributed programs without dataloaders — with `launcher=ray`, no dataloader CPUs are reserved (1 CPU per worker).
+A static Ray cluster must be started on every node with the same node count and head address, and a unique node rank.
+The experiment command runs on node rank 0 and should use `launcher=ray`:
 
-Run a command with TinyExp launch helpers after installing the package:
+```bash
+tinyexp-run-with-ray-cluster \
+  --node-count 2 \
+  --node-rank 0 \
+  --head-addr 10.0.0.1 \
+  --ray-port 6380 \
+  -- \
+  python your_exp.py launcher=ray
+```
+
+See [Running Modes and Environment Requirements](docs/running-modes.md) for the complete Python, PyTorch, CUDA/NCCL,
+Accelerate, Ray multi-node, network, data, Redis, and W&B requirements.
+
+The `mode` config selects what to execute: `train`, `val`, `run`, or `help`. Ray worker resources are explicit: set
+`ray_cfg.ray_num_cpus_per_worker` and `ray_cfg.ray_num_gpus_per_worker` for the resources required by one worker.
+The fields can be overridden in the experiment's nested `RayCfg` or from the command line.
+
+Run a command with TinyExp's Redis helper after installing the package:
 
 ```bash
 tinyexp-run-with-redis -- python your_exp.py redis_cfg.redis_cache_enabled=true
-tinyexp-run-with-ray-cluster --node-count 2 --head-addr 10.0.0.1 -- python your_exp.py
 ```
+
+`tinyexp-run-with-redis` owns and stops only the Redis processes it starts. If a configured port is already served by
+another Redis process, startup fails without shutting down or taking ownership of that server. Connect to externally
+managed Redis directly through `redis_cfg` instead of wrapping the command with `tinyexp-run-with-redis`.
 
 ## Example Experiments
 
@@ -139,7 +175,9 @@ uv run python -m tinyexp.examples.pi_exp pi_cfg.total_samples=100000000 ray_cfg.
 3. Implement `run()` (and train/eval helpers) in the same experiment definition.
 4. Launch the script and override config from CLI when needed.
 
-This gives you a single, explicit place to manage experiment behavior.
+This gives you a single, explicit place to manage experiment behavior. Training helpers can depend on
+`tinyexp.tiny_engine.accelerator.AcceleratorProtocol`, so CPU, DDP, and Hugging Face Accelerate backends expose the same
+model preparation, reduction, synchronization, and cleanup methods.
 
 ## Development
 
@@ -182,6 +220,7 @@ make release VERSION=0.0.4
 ## Documentation
 
 - Docs site: https://zengarden.github.io/TinyExp/
+- Running modes and environment requirements: [`docs/running-modes.md`](docs/running-modes.md)
 - API/module overview: [`docs/modules.md`](docs/modules.md)
 
 ## Contributing

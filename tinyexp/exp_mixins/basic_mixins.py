@@ -1,10 +1,13 @@
 import os
+import random
+import tempfile
 from contextlib import suppress
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+import numpy as np
 import ray
 import torch
 from loguru._logger import Logger
@@ -19,7 +22,8 @@ from ..exceptions import (
 from ..utils.log_utils import tiny_logger_setup
 from ..utils.ray_utils import (
     _maybe_start_ray_redis_cache,
-    _needed_num_cpus_per_worker,
+    build_ray_worker_env_vars,
+    get_network_config,
     get_num_worker_options,
     get_placement_group,
 )
@@ -44,17 +48,54 @@ class LoggerCfgMixin:
     logger_cfg: LoggerCfg = field(default_factory=LoggerCfg)
 
 
+def _resolve_ray_num_worker(
+    ray_num_worker: int,
+    num_cpus_per_worker: int,
+    num_gpus_per_worker: float,
+    cluster_resources: dict[str, float],
+) -> int:
+    if ray_num_worker != -1:
+        return ray_num_worker
+
+    cpu_worker_count = int(cluster_resources.get("CPU", 0) // num_cpus_per_worker)
+    if num_gpus_per_worker > 0:
+        gpu_worker_count = int(cluster_resources.get("GPU", 0) // num_gpus_per_worker)
+        resolved_worker_count = min(cpu_worker_count, gpu_worker_count)
+        resource_name = "GPU and CPU"
+    else:
+        resolved_worker_count = cpu_worker_count
+        resource_name = "CPU"
+
+    if resolved_worker_count <= 0:
+        raise InvalidWorkerCountError(resolved_worker_count)
+    print(
+        f"==> ray_num_worker is -1, using available {resource_name} resources: {resolved_worker_count}",
+        flush=True,
+    )
+    return resolved_worker_count
+
+
 @dataclass
 class RayCfgMixin:
+    def _get_ray_node_id(self) -> str:
+        """Return the Ray node hosting this worker actor."""
+        return str(ray.get_runtime_context().get_node_id())
+
+    def _set_ray_runtime_env(self, env_vars: dict[str, str]) -> None:
+        """Apply launcher-provided environment variables before the experiment runs."""
+        os.environ.update({key: str(value) for key, value in env_vars.items()})
+
     @dataclass
     class RayCfg:
         # ---------------- luancher configuration ---------------- #
-        ray_num_worker: int = -1  # Number of Ray workers, -1 means using all Ray cluster GPU resources.
-        ray_num_gpus_per_worker: float = 1.0  # Number of GPUs per Ray worker, should be a float value between 0 and 1.
+        ray_num_worker: int = -1  # Number of Ray workers, -1 means fill available worker resources.
+        ray_num_cpus_per_worker: int = 1
+        ray_num_gpus_per_worker: float = 1.0
         ray_placement_strategy: str = "PACK"
+        ray_placement_timeout_s: float = 120.0
 
         @classmethod
-        def run(cls, exp_class: type[Any], experiment_cfg: DictConfig) -> None:
+        def run(cls, exp_class: type[Any], experiment_cfg: DictConfig) -> None:  # noqa: C901
             """
             Run the Ray driver-side orchestration.
 
@@ -63,6 +104,16 @@ class RayCfgMixin:
                 experiment_cfg: Complete Hydra configuration for exp_class.
             """
             ray_cfg = experiment_cfg.ray_cfg
+            num_cpus_per_worker = int(ray_cfg.ray_num_cpus_per_worker)
+            num_gpus_per_worker = float(ray_cfg.ray_num_gpus_per_worker)
+            if num_cpus_per_worker <= 0:
+                raise ValueError("ray_num_cpus_per_worker must be greater than 0")  # noqa: TRY003
+            if num_gpus_per_worker < 0:
+                raise ValueError("ray_num_gpus_per_worker must not be negative")  # noqa: TRY003
+
+            placement_timeout_s = float(getattr(ray_cfg, "ray_placement_timeout_s", 120.0))
+            if placement_timeout_s <= 0:
+                raise ValueError("ray_placement_timeout_s must be greater than 0")  # noqa: TRY003
 
             if ray_cfg.ray_num_worker < -1 or ray_cfg.ray_num_worker == 0:
                 raise InvalidWorkerCountError(ray_cfg.ray_num_worker)
@@ -72,45 +123,80 @@ class RayCfgMixin:
             worker_group = []
 
             try:
-                ray_num_worker = ray_cfg.ray_num_worker
-                if ray_num_worker == -1:
-                    ray_num_worker = int(ray.cluster_resources().get("GPU", 0))
-                    if ray_num_worker <= 0:
-                        raise InvalidWorkerCountError(ray_num_worker)
-                    print(
-                        f"==> ray_num_worker is -1, using all Ray cluster GPU resources: {ray_num_worker}",
-                        flush=True,
-                    )
+                cluster_resources = ray.cluster_resources()
+                ray_num_worker = _resolve_ray_num_worker(
+                    ray_cfg.ray_num_worker,
+                    num_cpus_per_worker,
+                    num_gpus_per_worker,
+                    cluster_resources,
+                )
+                if ray_cfg.ray_num_worker == -1:
                     ray_cfg.ray_num_worker = ray_num_worker
 
                 remote_exp = ray.remote(exp_class)
 
-                # -------------------- check cpu count for run ----------------- #
-                needed_num_cpus_per_worker = _needed_num_cpus_per_worker(experiment_cfg)
+                needed_num_cpus_per_worker = num_cpus_per_worker
 
                 needed_cpu = ray_num_worker * needed_num_cpus_per_worker
-                total_cpu = int(ray.cluster_resources().get("CPU", 0))
+                needed_gpu = ray_num_worker * num_gpus_per_worker
+                total_cpu = int(cluster_resources.get("CPU", 0))
+                total_gpu = float(cluster_resources.get("GPU", 0))
 
-                if needed_cpu > total_cpu:
-                    raise InsufficientCPUError(total_cpu=total_cpu, needed_cpu=needed_cpu)
+                if needed_cpu > total_cpu or needed_gpu > total_gpu:
+                    raise InsufficientCPUError(
+                        total_cpu=total_cpu,
+                        needed_cpu=needed_cpu,
+                        total_gpu=total_gpu,
+                        needed_gpu=needed_gpu,
+                    )
 
                 redis_manager = _maybe_start_ray_redis_cache(experiment_cfg)
                 # -------------------- allocate resources for run ----------------- #
 
                 pg = get_placement_group(
                     num_worker=ray_cfg.ray_num_worker,
-                    num_gpus_per_worker=ray_cfg.ray_num_gpus_per_worker,
+                    num_gpus_per_worker=num_gpus_per_worker,
                     num_cpus_per_worker=needed_num_cpus_per_worker,
                     strategy=ray_cfg.ray_placement_strategy,
+                    timeout_s=placement_timeout_s,
                 )
+                master_addr, master_port = get_network_config()
                 options_list = get_num_worker_options(
                     pg,
                     ray_cfg.ray_num_worker,
-                    gpu_ratio=ray_cfg.ray_num_gpus_per_worker,
+                    gpu_ratio=num_gpus_per_worker,
                     num_cpus_per_worker=needed_num_cpus_per_worker,
+                    master_addr=master_addr,
+                    master_port=master_port,
                 )
                 worker_group = [remote_exp.options(**options).remote() for options in options_list]
 
+                worker_node_ids = ray.get([worker._get_ray_node_id.remote() for worker in worker_group])
+                runtime_envs = build_ray_worker_env_vars(
+                    num_worker=ray_cfg.ray_num_worker,
+                    node_ids=worker_node_ids,
+                    master_addr=master_addr,
+                    master_port=master_port,
+                )
+                print("==> Ray worker topology:", flush=True)
+                node_ranks = {node_id: node_rank for node_rank, node_id in enumerate(dict.fromkeys(worker_node_ids))}
+                topology = sorted(
+                    zip(worker_node_ids, runtime_envs),
+                    key=lambda item: int(item[1]["RANK"]),
+                )
+                for node_id, env_vars in topology:
+                    print(
+                        f"    rank={env_vars['RANK']}/{ray_cfg.ray_num_worker} node={node_id} "
+                        f"node_rank={node_ranks[node_id]} "
+                        f"local_rank={env_vars['LOCAL_RANK']}/{env_vars['LOCAL_WORLD_SIZE']}",
+                        flush=True,
+                    )
+                ray.get(
+                    [
+                        worker._set_ray_runtime_env.remote(env_vars)
+                        for worker, env_vars in zip(worker_group, runtime_envs)
+                    ]
+                )
                 ray.get([worker.set_cfg.remote(experiment_cfg) for worker in worker_group])
                 ray.get([worker.run.remote() for worker in worker_group])
             finally:
@@ -124,7 +210,7 @@ class RayCfgMixin:
 
                 if ray.is_initialized():
                     with suppress(Exception):
-                        ray.shutdown(_exiting_interpreter=True)
+                        ray.shutdown()
 
     ray_cfg: RayCfg = field(default_factory=RayCfg)
 
@@ -190,6 +276,7 @@ class CheckpointCfgMixin:
             model=None,
             optimizer=None,
             scheduler=None,
+            scaler=None,
             epoch: Optional[int] = None,
             global_step: Optional[int] = None,
             best_metric: Optional[float] = None,
@@ -216,10 +303,29 @@ class CheckpointCfgMixin:
                 checkpoint["optimizer_state_dict"] = optimizer.state_dict()
             if scheduler is not None:
                 checkpoint["scheduler_state_dict"] = scheduler.state_dict()
+            if scaler is not None:
+                checkpoint["scaler_state_dict"] = scaler.state_dict()
             if extra_state is not None:
                 checkpoint["extra_state"] = extra_state
 
-            torch.save(checkpoint, save_path)
+            temp_path: Optional[Path] = None
+            try:
+                with tempfile.NamedTemporaryFile(
+                    mode="wb",
+                    dir=save_path.parent,
+                    prefix=f".{save_path.name}.",
+                    suffix=".tmp",
+                    delete=False,
+                ) as temp_file:
+                    temp_path = Path(temp_file.name)
+                    torch.save(checkpoint, temp_file)
+                    temp_file.flush()
+                    os.fsync(temp_file.fileno())
+                os.replace(temp_path, save_path)
+            except Exception:
+                if temp_path is not None:
+                    temp_path.unlink(missing_ok=True)
+                raise
             return str(save_path)
 
         def _validate_checkpoint_payload(self, path: str, checkpoint: Any) -> dict[str, Any]:
@@ -252,6 +358,7 @@ class CheckpointCfgMixin:
             model=None,
             optimizer=None,
             scheduler=None,
+            scaler=None,
             strict: bool = True,
         ) -> None:
             if model is not None:
@@ -266,6 +373,29 @@ class CheckpointCfgMixin:
                 if "scheduler_state_dict" not in checkpoint:
                     raise KeyError("scheduler_state_dict")
                 scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
+            if scaler is not None:
+                if "scaler_state_dict" not in checkpoint:
+                    raise KeyError("scaler_state_dict")
+                scaler.load_state_dict(checkpoint["scaler_state_dict"])
+
+        @staticmethod
+        def capture_rng_state() -> dict[str, Any]:
+            state: dict[str, Any] = {
+                "python": random.getstate(),
+                "numpy": np.random.get_state(),
+                "torch": torch.get_rng_state(),
+            }
+            if torch.cuda.is_available():
+                state["torch_cuda"] = torch.cuda.get_rng_state_all()
+            return state
+
+        @staticmethod
+        def restore_rng_state(state: dict[str, Any]) -> None:
+            random.setstate(state["python"])
+            np.random.set_state(state["numpy"])
+            torch.set_rng_state(state["torch"])
+            if torch.cuda.is_available() and "torch_cuda" in state:
+                torch.cuda.set_rng_state_all(state["torch_cuda"])
 
         def load_checkpoint(
             self,
@@ -274,6 +404,7 @@ class CheckpointCfgMixin:
             model=None,
             optimizer=None,
             scheduler=None,
+            scaler=None,
             strict: bool = True,
             map_location=None,
         ) -> dict[str, Any]:
@@ -283,6 +414,7 @@ class CheckpointCfgMixin:
                 model=model,
                 optimizer=optimizer,
                 scheduler=scheduler,
+                scaler=scaler,
                 strict=strict,
             )
 

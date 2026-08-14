@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import random
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 import pytest
 import torch
 
@@ -42,12 +44,17 @@ def test_logger_cfg_creates_run_dir(tmp_path: Path) -> None:
 
 def test_checkpoint_cfg_save_and_load_roundtrip(tmp_path: Path) -> None:
     model = torch.nn.Linear(2, 1)
-    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1)
 
     with torch.no_grad():
         model.weight.fill_(1.5)
         model.bias.fill_(0.5)
+
+    loss = model(torch.ones(1, 2)).sum()
+    loss.backward()
+    optimizer.step()
+    scheduler.step()
 
     checkpoint_cfg = CheckpointCfgMixin.CheckpointCfg()
     checkpoint_path = checkpoint_cfg.save_checkpoint(
@@ -65,7 +72,7 @@ def test_checkpoint_cfg_save_and_load_roundtrip(tmp_path: Path) -> None:
     )
 
     reloaded_model = torch.nn.Linear(2, 1)
-    reloaded_optimizer = torch.optim.SGD(reloaded_model.parameters(), lr=0.1)
+    reloaded_optimizer = torch.optim.SGD(reloaded_model.parameters(), lr=0.1, momentum=0.9)
     reloaded_scheduler = torch.optim.lr_scheduler.StepLR(reloaded_optimizer, step_size=1)
 
     checkpoint = checkpoint_cfg.load_checkpoint(
@@ -86,6 +93,82 @@ def test_checkpoint_cfg_save_and_load_roundtrip(tmp_path: Path) -> None:
 
     for original_param, reloaded_param in zip(model.parameters(), reloaded_model.parameters()):
         assert torch.equal(original_param, reloaded_param)
+    for original_state, reloaded_state in zip(optimizer.state.values(), reloaded_optimizer.state.values()):
+        assert original_state.keys() == reloaded_state.keys()
+        for key in original_state:
+            assert torch.equal(original_state[key], reloaded_state[key])
+    assert reloaded_scheduler.state_dict() == scheduler.state_dict()
+
+
+def test_checkpoint_cfg_scaler_state_roundtrip(tmp_path: Path) -> None:
+    class DummyScaler:
+        def __init__(self, scale: float) -> None:
+            self.scale = scale
+
+        def state_dict(self) -> dict[str, float]:
+            return {"scale": self.scale}
+
+        def load_state_dict(self, state: dict[str, float]) -> None:
+            self.scale = state["scale"]
+
+    checkpoint_cfg = CheckpointCfgMixin.CheckpointCfg()
+    checkpoint_path = checkpoint_cfg.save_checkpoint(
+        run_dir=str(tmp_path),
+        name=checkpoint_cfg.last_ckpt_name,
+        scaler=DummyScaler(1024.0),
+    )
+    reloaded_scaler = DummyScaler(1.0)
+
+    checkpoint_cfg.load_checkpoint(checkpoint_path, scaler=reloaded_scaler)
+
+    assert reloaded_scaler.scale == 1024.0
+
+
+def test_checkpoint_cfg_rng_state_restores_continuation() -> None:
+    checkpoint_cfg = CheckpointCfgMixin.CheckpointCfg()
+    random.seed(7)
+    np.random.seed(7)
+    torch.manual_seed(7)
+    state = checkpoint_cfg.capture_rng_state()
+    expected = (random.random(), np.random.random(), torch.rand(3))  # noqa: S311
+
+    random.random()  # noqa: S311
+    np.random.random()
+    torch.rand(3)
+    checkpoint_cfg.restore_rng_state(state)
+    resumed = (random.random(), np.random.random(), torch.rand(3))  # noqa: S311
+
+    assert resumed[0] == expected[0]
+    assert resumed[1] == expected[1]
+    assert torch.equal(resumed[2], expected[2])
+
+
+def test_checkpoint_cfg_atomic_save_preserves_previous_checkpoint_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    checkpoint_cfg = CheckpointCfgMixin.CheckpointCfg()
+    checkpoint_path = checkpoint_cfg.save_checkpoint(
+        run_dir=str(tmp_path),
+        name=checkpoint_cfg.last_ckpt_name,
+        epoch=3,
+    )
+
+    def fail_save(*args, **kwargs):
+        file_obj = args[1]
+        file_obj.write(b"partial checkpoint")
+        raise RuntimeError("simulated checkpoint write failure")  # noqa: TRY003
+
+    monkeypatch.setattr(torch, "save", fail_save)
+    with pytest.raises(RuntimeError, match="simulated checkpoint write failure"):
+        checkpoint_cfg.save_checkpoint(
+            run_dir=str(tmp_path),
+            name=checkpoint_cfg.last_ckpt_name,
+            epoch=4,
+        )
+
+    checkpoint = checkpoint_cfg.load_checkpoint(checkpoint_path)
+    assert checkpoint["epoch"] == 3
+    assert list(tmp_path.glob(f".{checkpoint_cfg.last_ckpt_name}.*.tmp")) == []
 
 
 def test_checkpoint_cfg_extra_state_does_not_override_reserved_keys(

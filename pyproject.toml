@@ -22,6 +22,7 @@ classifiers = [
 dependencies = [
     "loguru>=0.7.3",
     "numpy",
+    "psutil",
     "tabulate",
     "hydra-core",
     "omegaconf",

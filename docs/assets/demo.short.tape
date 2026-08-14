@@ -11,32 +11,10 @@ Set Theme "Catppuccin Mocha"
 Type "clear"
 Enter
 
-Type "echo '$ pip install tinyexp'"
-Enter
-Sleep 1s
-
-Type "echo 'from tinyexp import store_and_run_exp' > run_mnist_demo.py"
-Enter
-Type "echo 'from tinyexp.examples.mnist_exp import Exp' >> run_mnist_demo.py"
-Enter
-Type "echo >> run_mnist_demo.py"
-Enter
-Type "echo 'store_and_run_exp(Exp)' >> run_mnist_demo.py"
-Enter
-Sleep 1s
-
-Type "cat run_mnist_demo.py"
-Enter
-Sleep 2s
-
-Type "uv run python run_mnist_demo.py mode=help"
-Enter
-Sleep 5s
-
-Type "uv run python run_mnist_demo.py mode=help dataloader_cfg.train_batch_size_per_device=16 ray_num_worker=1"
+Type "uv run python tinyexp/examples/mnist_exp.py mode=help"
 Enter
 Sleep 6s
 
-Type "echo 'Configured experiment = entrypoint.'"
+Type "uv run python tinyexp/examples/mnist_exp.py mode=help dataloader_cfg.train_batch_size_per_device=16 ray_cfg.ray_num_worker=1"
 Enter
-Sleep 2s
+Sleep 6s

@@ -22,14 +22,16 @@ from tinyexp.exp_mixins import LoggerCfgMixin, RayCfgMixin
 
 @dataclass(repr=False)
 class Exp(TinyExp, RayCfgMixin, LoggerCfgMixin):
+    mode: str = "run"
+    launcher: str = "ray"
+
     @dataclass
     class RayCfg(RayCfgMixin.RayCfg):
         ray_num_worker: int = 2
+        ray_num_cpus_per_worker: int = 1
         ray_num_gpus_per_worker: float = 0.0  # 0.0 means do not use GPU
 
     ray_cfg: RayCfg = field(default_factory=RayCfg)
-    mode: str = "run"
-    launcher: str = "ray"
 
     @dataclass
     class PiCfg:
@@ -52,12 +54,11 @@ class Exp(TinyExp, RayCfgMixin, LoggerCfgMixin):
         logger = self.logger_cfg.build_logger(save_dir=self.get_run_dir(), distributed_rank=accelerator.rank)
         self.print_cfg(logger)
 
-        try:
-            pi = self._estimate_pi(accelerator)
-            if accelerator.is_main_process:
-                logger.info(f"pi ~= {pi:.6f} (error={abs(pi - torch.pi):.6f}, samples={self.pi_cfg.total_samples})")
-        finally:
-            accelerator.destroy()
+        pi = self._estimate_pi(accelerator)
+        if accelerator.is_main_process:
+            logger.info(f"pi ~= {pi:.6f} (error={abs(pi - torch.pi):.6f}, samples={self.pi_cfg.total_samples})")
+
+        accelerator.destroy()
 
     def _estimate_pi(self, accelerator) -> float:
         generator = torch.Generator().manual_seed(self.pi_cfg.seed + accelerator.rank)

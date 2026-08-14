@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import os
 import socket
+from collections import Counter
+from collections.abc import Sequence
+from contextlib import suppress
+from typing import Optional
 
 import ray
 from omegaconf import DictConfig
 from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
-from ..exceptions import UnknownExperimentModeError
 from .redis_utils import RayRedisClusterManager
 
 _RAY_HEAD_NODE_RESOURCE = "node:__internal_head__"
@@ -17,7 +20,9 @@ _RAY_HEAD_NODE_RESOURCE = "node:__internal_head__"
 _RAY_NODE_RESOURCE_PIN = 0.001
 
 
-def _maybe_start_ray_redis_cache(cfg: DictConfig) -> RayRedisClusterManager | None:
+def _maybe_start_ray_redis_cache(
+    cfg: DictConfig,
+) -> Optional[RayRedisClusterManager]:  # noqa: UP007
     redis_cfg = getattr(cfg, "redis_cfg", None)
     if redis_cfg is None or not bool(getattr(redis_cfg, "redis_cache_enabled", False)):
         return None
@@ -40,28 +45,13 @@ def _maybe_start_ray_redis_cache(cfg: DictConfig) -> RayRedisClusterManager | No
     return manager
 
 
-def _needed_num_cpus_per_worker(cfg: DictConfig) -> int:
-    """
-    Compute the number of CPUs to reserve for each Ray worker based on ``cfg.mode``.
-
-    Every worker gets 1 CPU for the main process, plus CPUs for its dataloader workers:
-    - "train": train and val dataloader workers.
-    - "val": val dataloader workers only.
-    - "run" / "help": no dataloader workers, so only the 1 main-process CPU.
-    """
-    if cfg.mode not in {"run", "train", "val", "help"}:
-        raise UnknownExperimentModeError(cfg.mode)
-
-    needed_num_cpus_per_worker = 1
-    if cfg.mode == "train":
-        needed_num_cpus_per_worker += cfg.dataloader_cfg.val_data_worker_per_gpu
-        needed_num_cpus_per_worker += cfg.dataloader_cfg.train_data_worker_per_gpu
-    elif cfg.mode == "val":
-        needed_num_cpus_per_worker += cfg.dataloader_cfg.val_data_worker_per_gpu
-    return needed_num_cpus_per_worker
-
-
-def get_placement_group(num_worker, num_gpus_per_worker: float = 1.0, num_cpus_per_worker=10, strategy="PACK"):
+def get_placement_group(
+    num_worker,
+    num_gpus_per_worker: float = 1.0,
+    num_cpus_per_worker=10,
+    strategy="PACK",
+    timeout_s: float = 120.0,
+):
     """Create and return a placement group for worker allocation."""
     bundles = [{"CPU": num_cpus_per_worker, "GPU": num_gpus_per_worker} for _ in range(num_worker)]
     cluster_resources = ray.cluster_resources() if ray.is_initialized() else {}
@@ -70,7 +60,20 @@ def get_placement_group(num_worker, num_gpus_per_worker: float = 1.0, num_cpus_p
         # uses the Ray head address, so rank 0's bundle must be scheduled on the head.
         bundles[0][_RAY_HEAD_NODE_RESOURCE] = _RAY_NODE_RESOURCE_PIN
     pg = placement_group(bundles=bundles, strategy=strategy)
-    ray.get(pg.ready())
+    try:
+        ray.get(pg.ready(), timeout=timeout_s)
+    except ray.exceptions.GetTimeoutError as exc:
+        with suppress(Exception):
+            ray.util.remove_placement_group(pg)
+        raise TimeoutError(  # noqa: TRY003
+            f"Ray placement group timed out after {timeout_s}s: "
+            f"workers={num_worker}, CPU/worker={num_cpus_per_worker}, "
+            f"GPU/worker={num_gpus_per_worker}, strategy={strategy}"
+        ) from exc
+    except Exception:
+        with suppress(Exception):
+            ray.util.remove_placement_group(pg)
+        raise
     return pg
 
 
@@ -91,35 +94,89 @@ def get_worker_options(gpu_ratio, num_cpus, pg, rank, local_rank, num_worker, ma
     }
 
 
-def _build_worker_env_vars(num_worker, rank, local_rank, master_addr, master_port):
+def _build_worker_env_vars(
+    num_worker,
+    rank,
+    local_rank,
+    master_addr,
+    master_port,
+    local_world_size=1,
+):
     env_vars = {
         "WORLD_SIZE": str(num_worker),
         "RANK": str(rank),
         "MASTER_ADDR": master_addr,
         "MASTER_PORT": str(master_port),
         "LOCAL_RANK": str(local_rank),
+        "LOCAL_WORLD_SIZE": str(local_world_size),
     }
     if os.getenv("GLOO_SOCKET_IFNAME"):
         env_vars["GLOO_SOCKET_IFNAME"] = os.environ["GLOO_SOCKET_IFNAME"]
     return env_vars
 
 
+def build_ray_worker_env_vars(
+    num_worker: int,
+    node_ids: Sequence[str],
+    master_addr: str,
+    master_port: int,
+) -> list[dict[str, str]]:
+    """Build distributed environment variables from the actual Ray node layout."""
+    if len(node_ids) != num_worker:
+        raise ValueError("node_ids must contain one node id for every Ray worker")  # noqa: TRY003
+    if not node_ids:
+        return []
+
+    local_world_sizes = Counter(node_ids)
+    node_ranks = {node_id: node_rank for node_rank, node_id in enumerate(dict.fromkeys(node_ids))}
+    node_rank_offsets: dict[str, int] = {}
+    rank_offset = 0
+    for node_id in node_ranks:
+        node_rank_offsets[node_id] = rank_offset
+        rank_offset += local_world_sizes[node_id]
+
+    local_ranks: Counter[str] = Counter()
+    env_vars = []
+    for node_id in node_ids:
+        local_rank = local_ranks[node_id]
+        local_ranks[node_id] += 1
+        env_vars.append(
+            _build_worker_env_vars(
+                num_worker=num_worker,
+                rank=node_rank_offsets[node_id] + local_rank,
+                local_rank=local_rank,
+                master_addr=master_addr,
+                master_port=master_port,
+                local_world_size=local_world_sizes[node_id],
+            )
+        )
+    return env_vars
+
+
 def get_network_config():
     """Get network configuration for distributed setup."""
-    master_addr = ray._private.services.get_node_ip_address()
+    master_addr = ray.util.get_node_ip_address()
     with socket.socket() as sock:
         sock.bind(("", 0))
         master_port = sock.getsockname()[1]
     return master_addr, master_port
 
 
-def get_num_worker_options(pg, num_worker, gpu_ratio=1.0, num_cpus_per_worker=None):
+def get_num_worker_options(
+    pg,
+    num_worker,
+    gpu_ratio=1.0,
+    num_cpus_per_worker=None,
+    master_addr=None,
+    master_port=None,
+):
     """Create options for multiple Ray workers with GPU allocation."""
 
     if num_cpus_per_worker is None:
         num_cpus_per_worker = pg.bundle_specs[0].get("CPU", 0)
 
-    master_addr, master_port = get_network_config()
+    if master_addr is None or master_port is None:
+        master_addr, master_port = get_network_config()
     options_list = []
     for i in range(num_worker):
         options = get_worker_options(

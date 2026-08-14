@@ -1,5 +1,6 @@
 import ray
 import torch
+from torch import nn
 
 from tinyexp.tiny_engine.accelerator import CPUAccelerator
 from tinyexp.utils.ray_utils import get_num_worker_options, get_placement_group
@@ -19,6 +20,13 @@ class CPUAcceleratorProxy:
         expected_result = torch.tensor([expected_val], device=device, dtype=torch.float32)
         assert torch.equal(res, expected_result)
         return True
+
+    def test_model_parameters_are_synchronized(self):
+        model = nn.Linear(1, 1, bias=False)
+        with torch.no_grad():
+            model.weight.fill_(self.accelerator.rank + 1)
+        prepared_model = self.accelerator.prepare_model(model)
+        return prepared_model.module.weight.detach().item()
 
 
 class TestCPUAcceleratorWithRay:
@@ -42,6 +50,9 @@ class TestCPUAcceleratorWithRay:
 
             # Verify that all tests passed.
             assert all(results)
+
+            model_results = ray.get([worker.test_model_parameters_are_synchronized.remote() for worker in worker_group])
+            assert model_results == [1.0] * num_worker
         finally:
             if pg:
                 ray.util.remove_placement_group(pg)
