@@ -22,6 +22,9 @@ from tinyexp.exp_mixins import LoggerCfgMixin, RayCfgMixin
 
 @dataclass(repr=False)
 class Exp(TinyExp, RayCfgMixin, LoggerCfgMixin):
+    mode: str = "run"
+    launcher: str = "ray"
+
     @dataclass
     class RayCfg(RayCfgMixin.RayCfg):
         ray_num_worker: int = 2
@@ -29,8 +32,6 @@ class Exp(TinyExp, RayCfgMixin, LoggerCfgMixin):
         ray_num_gpus_per_worker: float = 0.0  # 0.0 means do not use GPU
 
     ray_cfg: RayCfg = field(default_factory=RayCfg)
-    mode: str = "run"
-    launcher: str = "ray"
 
     @dataclass
     class PiCfg:
