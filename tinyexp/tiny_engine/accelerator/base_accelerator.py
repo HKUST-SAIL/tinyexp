@@ -55,7 +55,6 @@ class BaseAccelerator(abc.ABC):
         self.rank = int(os.getenv("RANK", 0))
         self.world_size = int(os.getenv("WORLD_SIZE", 1))
         self.local_rank = int(os.getenv("LOCAL_RANK", 0))
-        self.local_world_size = int(os.getenv("LOCAL_WORLD_SIZE", 1))
         self.sync_gradients = True
         self._destroyed = False
         self._process_group_initialized = False

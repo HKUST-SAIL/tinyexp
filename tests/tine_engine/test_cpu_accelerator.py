@@ -3,7 +3,7 @@ import torch
 from torch import nn
 
 from tinyexp.tiny_engine.accelerator import CPUAccelerator
-from tinyexp.utils.ray_utils import get_num_worker_options, get_placement_group
+from tinyexp.utils.ray_utils import get_num_worker_options, get_placement_group, get_placement_group_node_ids
 
 
 @ray.remote
@@ -40,7 +40,13 @@ class TestCPUAcceleratorWithRay:
                 num_gpus_per_worker=0.0,  # CPU workers, so no GPUs
                 num_cpus_per_worker=2,  # Each worker gets 2 CPUs
             )
-            options_list = get_num_worker_options(pg, num_worker=num_worker, gpu_ratio=0.0)
+            node_ids = get_placement_group_node_ids(pg, num_worker)
+            options_list = get_num_worker_options(
+                pg,
+                num_worker=num_worker,
+                gpu_ratio=0.0,
+                node_ids=node_ids,
+            )
             # Create the remote actors.
             worker_group = [CPUAcceleratorProxy.options(**options).remote() for options in options_list]
 
