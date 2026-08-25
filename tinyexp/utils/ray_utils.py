@@ -5,7 +5,7 @@ import socket
 from collections import Counter
 from collections.abc import Sequence
 from contextlib import suppress
-from typing import Optional
+from typing import Any, Optional
 
 import ray
 from omegaconf import DictConfig
@@ -77,42 +77,63 @@ def get_placement_group(
     return pg
 
 
-def get_worker_options(gpu_ratio, num_cpus, pg, rank, local_rank, num_worker, master_addr, master_port):
-    """Create options for Ray workers."""
-    env_vars = _build_worker_env_vars(
-        num_worker=num_worker,
-        rank=rank,
-        local_rank=local_rank,
-        master_addr=master_addr,
-        master_port=master_port,
-    )
+def get_worker_options(
+    gpu_ratio: float,
+    num_cpus: int,
+    pg: Any,
+    bundle_index: int,
+    env_vars: dict[str, str],
+) -> dict[str, Any]:
+    """Create Ray actor options for one worker and one placement-group bundle."""
     return {
         "runtime_env": {"env_vars": env_vars},
-        "scheduling_strategy": PlacementGroupSchedulingStrategy(placement_group=pg, placement_group_bundle_index=rank),
+        "scheduling_strategy": PlacementGroupSchedulingStrategy(
+            placement_group=pg,
+            placement_group_bundle_index=bundle_index,
+        ),
         "num_cpus": num_cpus,
         "num_gpus": gpu_ratio,
     }
 
 
 def _build_worker_env_vars(
-    num_worker,
-    rank,
-    local_rank,
-    master_addr,
-    master_port,
-    local_world_size=1,
-):
+    *,
+    num_worker: int,
+    rank: int,
+    local_rank: int,
+    master_addr: str,
+    master_port: int,
+) -> dict[str, str]:
     env_vars = {
         "WORLD_SIZE": str(num_worker),
         "RANK": str(rank),
         "MASTER_ADDR": master_addr,
         "MASTER_PORT": str(master_port),
         "LOCAL_RANK": str(local_rank),
-        "LOCAL_WORLD_SIZE": str(local_world_size),
     }
     if os.getenv("GLOO_SOCKET_IFNAME"):
         env_vars["GLOO_SOCKET_IFNAME"] = os.environ["GLOO_SOCKET_IFNAME"]
     return env_vars
+
+
+def get_placement_group_node_ids(pg: Any, num_worker: int) -> list[str]:
+    """Return the node hosting each placement-group bundle in bundle-index order."""
+    placement_group_state = ray.util.placement_group_table(pg)
+    bundles_to_node_id = placement_group_state.get("bundles_to_node_id")
+    if not isinstance(bundles_to_node_id, dict):
+        raise RuntimeError("Ray did not return placement-group bundle-to-node assignments")  # noqa: TRY003, TRY004
+
+    node_ids = []
+    for bundle_index in range(num_worker):
+        node_id = bundles_to_node_id.get(bundle_index)
+        if node_id is None:
+            node_id = bundles_to_node_id.get(str(bundle_index))
+        if node_id is None:
+            raise RuntimeError(  # noqa: TRY003
+                f"Ray did not return a node assignment for placement-group bundle {bundle_index}"
+            )
+        node_ids.append(str(node_id))
+    return node_ids
 
 
 def build_ray_worker_env_vars(
@@ -127,13 +148,21 @@ def build_ray_worker_env_vars(
     if not node_ids:
         return []
 
-    local_world_sizes = Counter(node_ids)
+    worker_counts = Counter(node_ids)
+    if len(set(worker_counts.values())) != 1:
+        counts = ", ".join(f"{node_id}={count}" for node_id, count in worker_counts.items())
+        raise ValueError(  # noqa: TRY003
+            "Ray distributed workers must be homogeneous: every worker node must host the same "
+            f"number of workers; counts: {counts}"
+        )
+
+    workers_per_node = next(iter(worker_counts.values()))
     node_ranks = {node_id: node_rank for node_rank, node_id in enumerate(dict.fromkeys(node_ids))}
     node_rank_offsets: dict[str, int] = {}
     rank_offset = 0
     for node_id in node_ranks:
         node_rank_offsets[node_id] = rank_offset
-        rank_offset += local_world_sizes[node_id]
+        rank_offset += workers_per_node
 
     local_ranks: Counter[str] = Counter()
     env_vars = []
@@ -147,7 +176,6 @@ def build_ray_worker_env_vars(
                 local_rank=local_rank,
                 master_addr=master_addr,
                 master_port=master_port,
-                local_world_size=local_world_sizes[node_id],
             )
         )
     return env_vars
@@ -163,31 +191,35 @@ def get_network_config():
 
 
 def get_num_worker_options(
-    pg,
-    num_worker,
-    gpu_ratio=1.0,
-    num_cpus_per_worker=None,
-    master_addr=None,
-    master_port=None,
-):
-    """Create options for multiple Ray workers with GPU allocation."""
+    pg: Any,
+    num_worker: int,
+    gpu_ratio: float = 1.0,
+    num_cpus_per_worker: int | None = None,
+    master_addr: str | None = None,
+    master_port: int | None = None,
+    *,
+    node_ids: Sequence[str],
+) -> list[dict[str, Any]]:
+    """Create actor options after the placement-group topology has been resolved."""
 
     if num_cpus_per_worker is None:
         num_cpus_per_worker = pg.bundle_specs[0].get("CPU", 0)
 
     if master_addr is None or master_port is None:
         master_addr, master_port = get_network_config()
-    options_list = []
-    for i in range(num_worker):
-        options = get_worker_options(
-            gpu_ratio,
-            num_cpus_per_worker,
-            pg,
-            i,
-            i,
-            num_worker,
-            master_addr,
-            master_port,
+    runtime_envs = build_ray_worker_env_vars(
+        num_worker=num_worker,
+        node_ids=node_ids,
+        master_addr=master_addr,
+        master_port=master_port,
+    )
+    return [
+        get_worker_options(
+            gpu_ratio=gpu_ratio,
+            num_cpus=num_cpus_per_worker,
+            pg=pg,
+            bundle_index=bundle_index,
+            env_vars=runtime_envs[bundle_index],
         )
-        options_list.append(options)
-    return options_list
+        for bundle_index in range(num_worker)
+    ]

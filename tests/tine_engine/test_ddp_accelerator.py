@@ -5,7 +5,7 @@ import ray
 import torch
 
 from tinyexp.tiny_engine.accelerator import DDPAccelerator
-from tinyexp.utils.ray_utils import get_num_worker_options, get_placement_group
+from tinyexp.utils.ray_utils import get_num_worker_options, get_placement_group, get_placement_group_node_ids
 
 
 @ray.remote
@@ -44,6 +44,7 @@ class TestDDPAcceleratorWithRay:
             num_gpus_per_worker=1.0,  # Each worker gets 1 GPU
             num_cpus_per_worker=4,
         )
+        node_ids = get_placement_group_node_ids(pg, num_workers)
         gpu_per_actor = 0.2
         cpus_per_actor = 1
 
@@ -54,6 +55,7 @@ class TestDDPAcceleratorWithRay:
                 num_workers,
                 gpu_ratio=gpu_per_actor,
                 num_cpus_per_worker=cpus_per_actor,
+                node_ids=node_ids,
             )
             worker_group1 = [DDPAcceleratorProxy.options(**options).remote() for options in options_list1]
 
@@ -62,6 +64,7 @@ class TestDDPAcceleratorWithRay:
                 num_workers,
                 gpu_ratio=gpu_per_actor,
                 num_cpus_per_worker=cpus_per_actor,
+                node_ids=node_ids,
             )
             worker_group2 = [DDPAcceleratorProxy.options(**options).remote() for options in options_list2]
 

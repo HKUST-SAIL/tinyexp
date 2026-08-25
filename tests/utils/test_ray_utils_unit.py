@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 import ray
 from omegaconf import OmegaConf
@@ -11,7 +13,9 @@ from tinyexp.utils.ray_utils import (
     _maybe_start_ray_redis_cache,
     build_ray_worker_env_vars,
     get_network_config,
+    get_num_worker_options,
     get_placement_group,
+    get_placement_group_node_ids,
 )
 
 
@@ -30,6 +34,7 @@ def test_ray_cfg_run_uses_explicit_resources_without_dataloader_cfg(
         }
     )
     captured: dict[str, object] = {}
+    shutdown_kwargs: list[dict[str, object]] = []
 
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.init", lambda: None)
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.remote", lambda exp_class: object())
@@ -38,7 +43,10 @@ def test_ray_cfg_run_uses_explicit_resources_without_dataloader_cfg(
         lambda: {"CPU": 3.0, "GPU": 0.0},
     )
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.is_initialized", lambda: True)
-    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.shutdown", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.ray.shutdown",
+        lambda **kwargs: shutdown_kwargs.append(kwargs),
+    )
 
     def stop_after_resource_resolution(**kwargs):  # type: ignore[no-untyped-def]
         captured.update(kwargs)
@@ -56,6 +64,7 @@ def test_ray_cfg_run_uses_explicit_resources_without_dataloader_cfg(
     assert captured["num_cpus_per_worker"] == 3
     assert captured["num_gpus_per_worker"] == 0
     assert captured["timeout_s"] == 7.0
+    assert shutdown_kwargs == [{"_exiting_interpreter": True}]
 
 
 def test_ray_cfg_run_rejects_invalid_ray_worker_count_without_starting_ray(
@@ -321,14 +330,13 @@ def test_build_ray_worker_env_vars_uses_actual_node_local_ranks(
             "MASTER_ADDR",
             "MASTER_PORT",
             "LOCAL_RANK",
-            "LOCAL_WORLD_SIZE",
         }
     ] * 4
-    assert [(env["RANK"], env["LOCAL_RANK"], env["LOCAL_WORLD_SIZE"]) for env in env_vars] == [
-        ("0", "0", "2"),
-        ("1", "1", "2"),
-        ("2", "0", "2"),
-        ("3", "1", "2"),
+    assert [(env["RANK"], env["LOCAL_RANK"]) for env in env_vars] == [
+        ("0", "0"),
+        ("1", "1"),
+        ("2", "0"),
+        ("3", "1"),
     ]
 
 
@@ -344,12 +352,22 @@ def test_build_ray_worker_env_vars_groups_global_ranks_by_node(
         master_port=12345,
     )
 
-    assert [(env["RANK"], env["LOCAL_RANK"], env["LOCAL_WORLD_SIZE"]) for env in env_vars] == [
-        ("0", "0", "2"),
-        ("2", "0", "2"),
-        ("1", "1", "2"),
-        ("3", "1", "2"),
+    assert [(env["RANK"], env["LOCAL_RANK"]) for env in env_vars] == [
+        ("0", "0"),
+        ("2", "0"),
+        ("1", "1"),
+        ("3", "1"),
     ]
+
+
+def test_build_ray_worker_env_vars_rejects_heterogeneous_worker_counts() -> None:
+    with pytest.raises(ValueError, match="homogeneous.*node-a=2.*node-b=1"):
+        build_ray_worker_env_vars(
+            num_worker=3,
+            node_ids=["node-a", "node-b", "node-a"],
+            master_addr="10.0.0.1",
+            master_port=12345,
+        )
 
 
 def test_build_ray_worker_env_vars_rejects_mismatched_worker_count() -> None:
@@ -360,6 +378,148 @@ def test_build_ray_worker_env_vars_rejects_mismatched_worker_count() -> None:
             master_addr="10.0.0.1",
             master_port=12345,
         )
+
+
+def test_get_placement_group_node_ids_reads_bundle_assignments(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "tinyexp.utils.ray_utils.ray.util.placement_group_table",
+        lambda pg: {"bundles_to_node_id": {0: "node-a", 1: "node-b"}},
+    )
+
+    assert get_placement_group_node_ids(object(), 2) == ["node-a", "node-b"]
+
+
+def test_get_placement_group_node_ids_accepts_string_bundle_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "tinyexp.utils.ray_utils.ray.util.placement_group_table",
+        lambda pg: {"bundles_to_node_id": {"0": "node-a", "1": "node-b"}},
+    )
+
+    assert get_placement_group_node_ids(object(), 2) == ["node-a", "node-b"]
+
+
+def test_get_placement_group_node_ids_rejects_missing_bundle_assignment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "tinyexp.utils.ray_utils.ray.util.placement_group_table",
+        lambda pg: {"bundles_to_node_id": {0: "node-a"}},
+    )
+
+    with pytest.raises(RuntimeError, match="bundle 1"):
+        get_placement_group_node_ids(object(), 2)
+
+
+def test_get_num_worker_options_uses_final_topology_env_for_each_bundle() -> None:
+    placement_group = SimpleNamespace(bundle_specs=[{"CPU": 2, "GPU": 0}])
+
+    options_list = get_num_worker_options(
+        placement_group,
+        num_worker=4,
+        gpu_ratio=0.0,
+        num_cpus_per_worker=2,
+        master_addr="10.0.0.1",
+        master_port=12345,
+        node_ids=["node-a", "node-b", "node-a", "node-b"],
+    )
+
+    assert [option["scheduling_strategy"].placement_group_bundle_index for option in options_list] == [
+        0,
+        1,
+        2,
+        3,
+    ]
+    assert [
+        (
+            option["runtime_env"]["env_vars"]["RANK"],
+            option["runtime_env"]["env_vars"]["LOCAL_RANK"],
+        )
+        for option in options_list
+    ] == [("0", "0"), ("2", "0"), ("1", "1"), ("3", "1")]
+    assert all(
+        set(option["runtime_env"]["env_vars"]) == {"WORLD_SIZE", "RANK", "MASTER_ADDR", "MASTER_PORT", "LOCAL_RANK"}
+        for option in options_list
+    )
+
+
+def test_ray_cfg_run_resolves_topology_before_constructing_worker_actors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = OmegaConf.create(
+        {
+            "ray_cfg": {
+                "ray_num_worker": 4,
+                "ray_num_cpus_per_worker": 1,
+                "ray_num_gpus_per_worker": 0,
+                "ray_placement_strategy": "PACK",
+            }
+        }
+    )
+    events: list[object] = []
+
+    class FakeWorker:
+        def __init__(self, env_vars: dict[str, str]) -> None:
+            self.set_cfg = SimpleNamespace(
+                remote=lambda cfg: events.append(("set_cfg", env_vars["RANK"], cfg)),
+            )
+            self.run = SimpleNamespace(
+                remote=lambda: events.append(("run", env_vars["RANK"])),
+            )
+
+    class FakeConfiguredActor:
+        def __init__(self, options: dict[str, object]) -> None:
+            self.options = options
+
+        def remote(self) -> FakeWorker:
+            env_vars = self.options["runtime_env"]["env_vars"]
+            assert isinstance(env_vars, dict)
+            events.append(("actor", dict(env_vars)))
+            return FakeWorker(env_vars)
+
+    class FakeRemoteClass:
+        def options(self, **options: object) -> FakeConfiguredActor:
+            return FakeConfiguredActor(options)
+
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.init", lambda: None)
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.remote", lambda exp_class: FakeRemoteClass())
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.ray.cluster_resources",
+        lambda: {"CPU": 4.0, "GPU": 0.0},
+    )
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.is_initialized", lambda: True)
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.shutdown", lambda **kwargs: None)
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.get", lambda refs, **kwargs: refs)
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.get_placement_group",
+        lambda **kwargs: SimpleNamespace(bundle_specs=[{"CPU": 1, "GPU": 0}]),
+    )
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.get_placement_group_node_ids",
+        lambda pg, num_worker: (
+            events.append(("topology",)),
+            ["node-a", "node-b", "node-a", "node-b"],
+        )[1],
+    )
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.get_network_config",
+        lambda: ("10.0.0.1", 12345),
+    )
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.ray.util.remove_placement_group",
+        lambda pg: None,
+    )
+
+    RayCfgMixin.RayCfg.run(object, cfg)
+
+    topology_index = events.index(("topology",))
+    actor_events = [event for event in events if event[0] == "actor"]
+    assert topology_index < events.index(actor_events[0])
+    assert [(event[1]["RANK"], event[1]["LOCAL_RANK"]) for event in actor_events] == [
+        ("0", "0"),
+        ("2", "0"),
+        ("1", "1"),
+        ("3", "1"),
+    ]
 
 
 def test_get_network_config_uses_public_ray_ip_api(

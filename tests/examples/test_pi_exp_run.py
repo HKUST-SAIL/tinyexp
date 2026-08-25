@@ -1,0 +1,42 @@
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from tinyexp.examples import pi_exp
+
+
+def test_pi_run_prints_result_on_stdout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    events: list[str] = []
+
+    class DummyAccelerator:
+        rank = 0
+        world_size = 1
+        is_main_process = True
+
+        def reduce_sum(self, tensor):
+            return tensor
+
+        def destroy(self) -> None:
+            events.append("destroy")
+
+    accelerator = DummyAccelerator()
+    logger = SimpleNamespace()
+    exp = pi_exp.Exp(output_root=str(tmp_path), exp_name="pi_test")
+
+    monkeypatch.setattr(pi_exp, "torch", SimpleNamespace(pi=3.14))
+    monkeypatch.setattr("tinyexp.tiny_engine.accelerator.CPUAccelerator", lambda: accelerator)
+    monkeypatch.setattr(exp.logger_cfg, "build_logger", lambda **kwargs: logger)
+    monkeypatch.setattr(exp, "print_cfg", lambda logger: {})
+    monkeypatch.setattr(exp, "_estimate_pi", lambda accelerator: 3.14)
+
+    exp.run()
+
+    assert events == ["destroy"]
+    assert "pi ~= 3.140000 (error=0.000000, samples=10000000)" in capsys.readouterr().out
