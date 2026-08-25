@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.3] - 2026-08-25
+
+
+### Fixed
+
+- harden distributed execution and expand run-mode coverage (#27)
+
+- 🐛 fix Ray topology before actor creation (#28)
+
+- 🐛 avoid duplicated help configuration output
+
+
 ## [0.1.2] - 2026-08-08
 
 
