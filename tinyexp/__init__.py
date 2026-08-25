@@ -13,7 +13,13 @@ from hydra.core.config_store import ConfigStore
 from omegaconf import DictConfig, OmegaConf
 
 from .exceptions import UnknownConfigurationKeyError, UnknownLauncherError
-from .exp_mixins import CheckpointCfgMixin, LoggerCfgMixin, RayCfgMixin, RedisCfgMixin, WandbCfgMixin
+from .exp_mixins import (
+    CheckpointCfgMixin,
+    LoggerCfgMixin,
+    RayCfgMixin,
+    RedisCfgMixin,
+    WandbCfgMixin,
+)
 
 __all__ = [
     "CheckpointCfgMixin",
@@ -154,21 +160,6 @@ def simple_launch_exp(cfg: DictConfig) -> None:
     exp_class = hydra.utils.get_class(cfg.exp_class)
 
     if cfg.mode == "help":
-        from omegaconf import OmegaConf
-
-        # Add ANSI color codes for colored output after '==>'
-        RESET = "\033[0m"
-        YELLOW = "\033[93m"
-        INDENT = "    "  # 4 spaces
-
-        print(
-            f"{YELLOW}==> Experiment Configurations (Available Configs):{RESET}",
-            flush=True,
-        )
-        print(
-            INDENT + OmegaConf.to_yaml(cfg).strip().replace("\n", f"\n{INDENT}"),
-            flush=True,
-        )
         exp_instance = exp_class()
         exp_instance.set_cfg(cfg)
 
