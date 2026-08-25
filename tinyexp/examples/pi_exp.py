@@ -56,7 +56,10 @@ class Exp(TinyExp, RayCfgMixin, LoggerCfgMixin):
 
         pi = self._estimate_pi(accelerator)
         if accelerator.is_main_process:
-            logger.info(f"pi ~= {pi:.6f} (error={abs(pi - torch.pi):.6f}, samples={self.pi_cfg.total_samples})")
+            print(
+                f"pi ~= {pi:.6f} (error={abs(pi - torch.pi):.6f}, samples={self.pi_cfg.total_samples})",
+                flush=True,
+            )
 
         accelerator.destroy()
 

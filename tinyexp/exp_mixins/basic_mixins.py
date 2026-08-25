@@ -191,7 +191,8 @@ class RayCfgMixin:
 
                 if ray.is_initialized():
                     with suppress(Exception):
-                        ray.shutdown()
+                        # Drain Ray's asynchronous worker logs before tearing down the runtime.
+                        ray.shutdown(_exiting_interpreter=True)
 
     ray_cfg: RayCfg = field(default_factory=RayCfg)
 

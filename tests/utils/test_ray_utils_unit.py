@@ -34,6 +34,7 @@ def test_ray_cfg_run_uses_explicit_resources_without_dataloader_cfg(
         }
     )
     captured: dict[str, object] = {}
+    shutdown_kwargs: list[dict[str, object]] = []
 
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.init", lambda: None)
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.remote", lambda exp_class: object())
@@ -42,7 +43,10 @@ def test_ray_cfg_run_uses_explicit_resources_without_dataloader_cfg(
         lambda: {"CPU": 3.0, "GPU": 0.0},
     )
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.is_initialized", lambda: True)
-    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.shutdown", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.ray.shutdown",
+        lambda **kwargs: shutdown_kwargs.append(kwargs),
+    )
 
     def stop_after_resource_resolution(**kwargs):  # type: ignore[no-untyped-def]
         captured.update(kwargs)
@@ -60,6 +64,7 @@ def test_ray_cfg_run_uses_explicit_resources_without_dataloader_cfg(
     assert captured["num_cpus_per_worker"] == 3
     assert captured["num_gpus_per_worker"] == 0
     assert captured["timeout_s"] == 7.0
+    assert shutdown_kwargs == [{"_exiting_interpreter": True}]
 
 
 def test_ray_cfg_run_rejects_invalid_ray_worker_count_without_starting_ray(
