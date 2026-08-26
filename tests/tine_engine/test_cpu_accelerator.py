@@ -1,3 +1,5 @@
+from contextlib import suppress
+
 import ray
 import torch
 from torch import nn
@@ -33,6 +35,7 @@ class TestCPUAcceleratorWithRay:
     def test_ddp_accelerator(self, ray_session):
         num_worker = 2
         pg = None
+        worker_group = []
         try:
             # This utility correctly sets up env vars and placement groups.
             pg = get_placement_group(
@@ -52,13 +55,19 @@ class TestCPUAcceleratorWithRay:
 
             # Run the test method on all workers and wait for them to complete.
             run_futures = [worker.test_reduce_sum.remote() for worker in worker_group]
-            results = ray.get(run_futures)
+            results = ray.get(run_futures, timeout=60)
 
             # Verify that all tests passed.
             assert all(results)
 
-            model_results = ray.get([worker.test_model_parameters_are_synchronized.remote() for worker in worker_group])
+            model_results = ray.get(
+                [worker.test_model_parameters_are_synchronized.remote() for worker in worker_group],
+                timeout=60,
+            )
             assert model_results == [1.0] * num_worker
         finally:
+            for worker in worker_group:
+                with suppress(Exception):
+                    ray.kill(worker, no_restart=True)
             if pg:
                 ray.util.remove_placement_group(pg)
