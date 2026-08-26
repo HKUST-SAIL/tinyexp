@@ -390,7 +390,10 @@ class CheckpointCfgMixin:
             strict: bool = True,
             map_location=None,
         ) -> dict[str, Any]:
-            checkpoint = self._validate_checkpoint_payload(path, torch.load(path, map_location=map_location))
+            checkpoint = self._validate_checkpoint_payload(
+                path,
+                torch.load(path, map_location=map_location, weights_only=False),
+            )
             self._load_required_state(
                 checkpoint,
                 model=model,

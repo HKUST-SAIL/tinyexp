@@ -20,19 +20,18 @@
   通用参数重绑定；HF Accelerate 1.10.1 的普通 CUDA 路径也不处理该特殊场景。若后续需要支持，
   应单独设计旧参数到新参数的映射和 optimizer state 迁移。
 
-### [ ] P0-2 修复 PyTorch 2.6+ checkpoint 无法加载的问题
+### [x] P0-2 修复 PyTorch 2.6+ checkpoint 无法加载的问题
 
-- **位置**：`tinyexp/exp_mixins/basic_mixins.py:393`
-- **关联保存逻辑**：`tinyexp/examples/mnist_exp.py:309-311`、
-  `tinyexp/examples/resnet_exp.py:459-461`
-- **问题**：`torch.load()` 未显式指定 `weights_only`。当前 PyTorch 2.7.1 的默认安全加载模式
-  无法反序列化 `numpy.random.get_state()` 保存的 RNG 对象。
-- **影响**：单进程训练保存的 checkpoint 使用 `resume_from` 时会抛出
-  `UnpicklingError`，无法恢复训练。
-- **方向**：对可信 checkpoint 显式使用 `weights_only=False`，或把 RNG 状态改为仅包含基础类型/
-  Tensor 的可安全序列化格式。
-- **验收**：在 PyTorch 2.7.1 下覆盖“保存带 RNG 状态 -> 新进程加载 -> 恢复随机序列”的测试，
-  同时明确不可信 checkpoint 的安全边界。
+- **位置**：`tinyexp/exp_mixins/basic_mixins.py:393-396`
+- **问题**：PyTorch 2.6+ 默认使用 `weights_only=True`，无法反序列化 checkpoint 中由
+  `numpy.random.get_state()` 保存的 RNG 对象。
+- **本次处理**：对可信 TinyExp checkpoint 显式使用 `weights_only=False`，保持现有
+  checkpoint 格式和历史文件兼容。
+- **验证**：新增带 Python/NumPy/Torch RNG 状态的保存、加载和恢复测试；相关 checkpoint
+  测试在 PyTorch 2.7.1 下通过（14 passed）。
+- **安全边界**：`weights_only=False` 使用完整 pickle，仅应加载可信来源的 checkpoint。
+- **后续可选改进**：如需支持安全模式，可另行将 RNG 状态规范化为基础类型/Tensor，并增加
+  checkpoint format version；本次不纳入。
 
 ## P1：分布式与数据正确性
 
