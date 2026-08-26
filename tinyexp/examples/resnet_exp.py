@@ -370,6 +370,8 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
         train_dataloader = self.dataloader_cfg.build_train_dataloader(accelerator, self.redis_cfg)
         val_dataloader = self.dataloader_cfg.build_val_dataloader(accelerator)
         ori_module = self.module_cfg.build_module()
+        # Keep the optimizer attached to the final device-side parameters.
+        ori_module.to(accelerator.device)
         ori_optimizer = self.optimizer_cfg.build_optimizer(ori_module, train_dataloader, accelerator)
         module, optimizer = accelerator.prepare(ori_module, ori_optimizer)
         lr_scheduler = self.lr_scheduler_cfg.build_lr_scheduler(optimizer)
