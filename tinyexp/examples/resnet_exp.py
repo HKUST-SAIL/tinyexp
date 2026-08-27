@@ -408,8 +408,6 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
         train_iter = iter(train_dataloader)
 
         for global_epoch in range(start_epoch, self.max_train_epochs):
-            if global_epoch != start_epoch and train_sampler is not None and hasattr(train_sampler, "set_epoch"):
-                train_sampler.set_epoch(global_epoch)
             module.train()
 
             epoch_start_time = time.time()

@@ -361,6 +361,70 @@ def test_resnet_train_stops_at_max_train_epochs(tmp_path: Path, monkeypatch) -> 
     assert [item["global_step"] for item in saved] == [1, 1, 2]
 
 
+def test_resnet_train_positions_sampler_once_before_creating_iterator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exp = ResNetExp(output_root=str(tmp_path), exp_name="resnet_train", max_train_epochs=2)
+    events: list[object] = []
+
+    class DummySampler:
+        def set_epoch(self, epoch: int) -> None:
+            events.append(("set_epoch", epoch))
+
+    class DummyDataLoader:
+        batch_size = 2
+        sampler = DummySampler()
+
+        def __len__(self) -> int:
+            return 1
+
+        def __iter__(self):
+            events.append("iter")
+            while True:
+                yield torch.randn(2, 2), torch.tensor([0, 1])
+
+    class DummyAccelerator:
+        rank = 0
+        device = "cpu"
+        is_main_process = True
+        world_size = 1
+
+        def prepare(self, module, optimizer):
+            return module, optimizer
+
+        def unwrap_model(self, module):
+            return module
+
+        def backward(self, loss):
+            loss.backward()
+
+    train_dataloader = DummyDataLoader()
+    monkeypatch.setattr(
+        exp.dataloader_cfg,
+        "build_train_dataloader",
+        lambda accelerator, redis_cfg: train_dataloader,
+    )
+    monkeypatch.setattr(exp.dataloader_cfg, "build_val_dataloader", lambda accelerator: [])
+    monkeypatch.setattr(exp.module_cfg, "build_module", lambda: nn.Linear(2, 2))
+    monkeypatch.setattr(
+        exp.optimizer_cfg,
+        "build_optimizer",
+        lambda module, dataloader, accelerator: torch.optim.SGD(module.parameters(), lr=0.1),
+    )
+    monkeypatch.setattr(exp, "_evaluate", lambda **kwargs: 0.5)
+    monkeypatch.setattr(exp.checkpoint_cfg, "save_checkpoint", lambda **kwargs: None)
+
+    exp._train(
+        accelerator=DummyAccelerator(),
+        logger=SimpleNamespace(info=lambda *args, **kwargs: None),
+        cfg_dict={},
+        run_dir=str(tmp_path / "resnet_train"),
+    )
+
+    assert events == [("set_epoch", 0), "iter"]
+
+
 def test_resnet_train_stops_at_max_train_steps(tmp_path: Path, monkeypatch) -> None:
     exp = ResNetExp(output_root=str(tmp_path), exp_name="resnet_train", max_train_steps=1)
 

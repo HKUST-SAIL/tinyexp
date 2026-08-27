@@ -14,14 +14,32 @@ class InfiniteSampler(Sampler[int]):
     The global stream is ``shuffle(range(size))`` repeated forever when
     ``shuffle`` is true, or ``range(size)`` repeated forever otherwise. Each
     rank consumes ``global_stream[rank::world_size]``. This is a continuous
-    stream sampler; ``set_epoch`` only positions that stream at a logical
-    epoch boundary for training loops that use epochs.
+    stream sampler; call ``set_epoch`` before creating the iterator to resume
+    from a logical epoch boundary. An existing iterator always continues the
+    same stream and does not need to be recreated between epochs.
 
     ``drop_last`` affects only the logical epoch length returned by ``len``.
     It does not stop the infinite stream or remove samples permanently. With
     a non-divisible ``size``, ``drop_last=False`` gives each rank the ceiling
     number of samples per logical epoch, while ``drop_last=True`` gives the
     floor number.
+
+    Resume contract:
+
+    - Resume is supported only at logical epoch boundaries. Call
+      ``set_epoch`` before creating the sampler/DataLoader iterator; calling it
+      after iterator creation does not reposition that iterator.
+    - ``set_epoch(epoch)`` assumes every completed logical epoch consumed
+      exactly ``len(self)`` indices per rank.
+    - Resume must keep the dataset size and index order, ``seed``, ``shuffle``,
+      ``drop_last``, world size, and rank assignment unchanged.
+    - The batching contract must also stay unchanged. In particular, changing
+      batch size, DataLoader ``drop_last``, batch sampler, or steps per epoch
+      when continuing from a checkpoint is unsupported and may change the
+      resumed stream position.
+    - Iteration-level or mid-epoch resume is intentionally not supported. If
+      batching consumes a different number of indices than ``len(self)`` per
+      rank, only the nominal epoch is restored, not the exact next batch.
     """
 
     def __init__(
@@ -71,8 +89,11 @@ class InfiniteSampler(Sampler[int]):
     def set_epoch(self, epoch: int) -> None:
         """Position the continuous stream at the start of logical ``epoch``.
 
-        This is epoch-level positioning only. The sampler deliberately does
-        not expose step-level resume state.
+        This only affects iterators created after the call. The sampler
+        deliberately does not expose iteration-level resume state. The caller
+        must keep the resume contract documented on ``InfiniteSampler`` and
+        consume exactly ``len(self)`` indices per rank for each completed
+        logical epoch.
         """
         epoch = int(epoch)
         if epoch < 0:
