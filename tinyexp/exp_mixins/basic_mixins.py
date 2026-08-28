@@ -26,6 +26,7 @@ from ..utils.ray_utils import (
     get_num_worker_options,
     get_placement_group,
     get_placement_group_node_ids,
+    start_ray_rendezvous_store,
 )
 
 
@@ -112,6 +113,7 @@ class RayCfgMixin:
             ray.init()
             pg = None
             redis_manager = None
+            rendezvous_actor = None
             worker_group = []
 
             try:
@@ -152,8 +154,15 @@ class RayCfgMixin:
                     strategy=ray_cfg.ray_placement_strategy,
                     timeout_s=placement_timeout_s,
                 )
-                master_addr, master_port = get_network_config()
                 worker_node_ids = get_placement_group_node_ids(pg, ray_cfg.ray_num_worker)
+                if ray_cfg.ray_num_worker > 1:
+                    rendezvous_actor, master_addr, master_port = start_ray_rendezvous_store(
+                        pg,
+                        ray_cfg.ray_num_worker,
+                        placement_timeout_s,
+                    )
+                else:
+                    master_addr, master_port = get_network_config(worker_node_ids[0])
                 options_list = get_num_worker_options(
                     pg,
                     ray_cfg.ray_num_worker,
@@ -181,6 +190,10 @@ class RayCfgMixin:
                 ray.get([worker.set_cfg.remote(experiment_cfg) for worker in worker_group])
                 ray.get([worker.run.remote() for worker in worker_group])
             finally:
+                if rendezvous_actor is not None:
+                    with suppress(Exception):
+                        ray.kill(rendezvous_actor, no_restart=True)
+
                 if pg is not None:
                     with suppress(Exception):
                         ray.util.remove_placement_group(pg)

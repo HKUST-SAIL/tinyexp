@@ -16,6 +16,7 @@ from tinyexp.utils.ray_utils import (
     get_num_worker_options,
     get_placement_group,
     get_placement_group_node_ids,
+    start_ray_rendezvous_store,
 )
 
 
@@ -311,6 +312,18 @@ def test_build_worker_env_vars_omits_ifname_by_default(
     assert "GLOO_SOCKET_IFNAME" not in env_vars
 
 
+def test_build_worker_env_vars_enables_torchelastic_agent_store_for_multiple_workers() -> None:
+    env_vars = _build_worker_env_vars(
+        num_worker=2,
+        rank=0,
+        local_rank=0,
+        master_addr="10.0.0.1",
+        master_port=12345,
+    )
+
+    assert env_vars["TORCHELASTIC_USE_AGENT_STORE"] == "True"
+
+
 def test_build_ray_worker_env_vars_uses_actual_node_local_ranks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -330,6 +343,7 @@ def test_build_ray_worker_env_vars_uses_actual_node_local_ranks(
             "MASTER_ADDR",
             "MASTER_PORT",
             "LOCAL_RANK",
+            "TORCHELASTIC_USE_AGENT_STORE",
         }
     ] * 4
     assert [(env["RANK"], env["LOCAL_RANK"]) for env in env_vars] == [
@@ -437,9 +451,30 @@ def test_get_num_worker_options_uses_final_topology_env_for_each_bundle() -> Non
         for option in options_list
     ] == [("0", "0"), ("2", "0"), ("1", "1"), ("3", "1")]
     assert all(
-        set(option["runtime_env"]["env_vars"]) == {"WORLD_SIZE", "RANK", "MASTER_ADDR", "MASTER_PORT", "LOCAL_RANK"}
+        set(option["runtime_env"]["env_vars"])
+        == {
+            "WORLD_SIZE",
+            "RANK",
+            "MASTER_ADDR",
+            "MASTER_PORT",
+            "LOCAL_RANK",
+            "TORCHELASTIC_USE_AGENT_STORE",
+        }
         for option in options_list
     )
+    assert all(option["runtime_env"]["env_vars"]["TORCHELASTIC_USE_AGENT_STORE"] == "True" for option in options_list)
+
+
+def test_get_num_worker_options_requires_managed_endpoint_for_multiple_workers() -> None:
+    placement_group = SimpleNamespace(bundle_specs=[{"CPU": 2, "GPU": 0}])
+
+    with pytest.raises(ValueError, match="start_ray_rendezvous_store"):
+        get_num_worker_options(
+            placement_group,
+            num_worker=2,
+            gpu_ratio=0.0,
+            node_ids=["node-a", "node-a"],
+        )
 
 
 def test_ray_cfg_run_resolves_topology_before_constructing_worker_actors(
@@ -456,6 +491,7 @@ def test_ray_cfg_run_resolves_topology_before_constructing_worker_actors(
         }
     )
     events: list[object] = []
+    rendezvous_actor = object()
 
     class FakeWorker:
         def __init__(self, env_vars: dict[str, str]) -> None:
@@ -501,8 +537,19 @@ def test_ray_cfg_run_resolves_topology_before_constructing_worker_actors(
         )[1],
     )
     monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.start_ray_rendezvous_store",
+        lambda pg, world_size, timeout_s: (
+            events.append(("rendezvous", world_size, timeout_s)),
+            (rendezvous_actor, "10.0.0.1", 12345),
+        )[1],
+    )
+    monkeypatch.setattr(
         "tinyexp.exp_mixins.basic_mixins.get_network_config",
-        lambda: ("10.0.0.1", 12345),
+        lambda master_node_id: pytest.fail("multi-worker Ray run should use the rendezvous store"),
+    )
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.ray.kill",
+        lambda actor, no_restart: events.append(("kill", actor, no_restart)),
     )
     monkeypatch.setattr(
         "tinyexp.exp_mixins.basic_mixins.ray.util.remove_placement_group",
@@ -512,14 +559,18 @@ def test_ray_cfg_run_resolves_topology_before_constructing_worker_actors(
     RayCfgMixin.RayCfg.run(object, cfg)
 
     topology_index = events.index(("topology",))
+    rendezvous_index = events.index(("rendezvous", 4, 120.0))
     actor_events = [event for event in events if event[0] == "actor"]
-    assert topology_index < events.index(actor_events[0])
+    assert topology_index < rendezvous_index < events.index(actor_events[0])
     assert [(event[1]["RANK"], event[1]["LOCAL_RANK"]) for event in actor_events] == [
         ("0", "0"),
         ("2", "0"),
         ("1", "1"),
         ("3", "1"),
     ]
+    assert {event[1]["MASTER_ADDR"] for event in actor_events} == {"10.0.0.1"}
+    assert {event[1]["TORCHELASTIC_USE_AGENT_STORE"] for event in actor_events} == {"True"}
+    assert ("kill", rendezvous_actor, True) in events
 
 
 def test_get_network_config_uses_public_ray_ip_api(
@@ -531,6 +582,124 @@ def test_get_network_config_uses_public_ray_ip_api(
 
     assert master_addr == "10.0.0.7"
     assert 0 < master_port <= 65535
+
+
+def test_get_network_config_uses_requested_ray_node_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "tinyexp.utils.ray_utils.ray.nodes",
+        lambda: [
+            {
+                "Alive": True,
+                "NodeID": "node-head",
+                "NodeManagerAddress": "10.0.0.1",
+            },
+            {
+                "Alive": True,
+                "NodeID": "node-worker",
+                "NodeManagerAddress": "10.0.0.2",
+            },
+        ],
+    )
+
+    master_addr, master_port = get_network_config("node-worker")
+
+    assert master_addr == "10.0.0.2"
+    assert 0 < master_port <= 65535
+
+
+def test_get_network_config_rejects_missing_ray_node(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.nodes", lambda: [])
+
+    with pytest.raises(RuntimeError, match="node-worker.*not alive or is missing"):
+        get_network_config("node-worker")
+
+
+def test_start_ray_rendezvous_store_uses_bundle_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = {}
+
+    class FakeEndpointMethod:
+        def remote(self) -> str:
+            return "endpoint-ref"
+
+    class FakeActor:
+        get_endpoint = FakeEndpointMethod()
+
+    actor = FakeActor()
+
+    class FakeConfiguredActorClass:
+        def remote(self, *args: object) -> FakeActor:
+            captured["actor_args"] = args
+            return actor
+
+    class FakeRemoteActorClass:
+        def options(self, **options: object) -> FakeConfiguredActorClass:
+            captured["options"] = options
+            return FakeConfiguredActorClass()
+
+    def fake_remote(**kwargs: object):  # type: ignore[no-untyped-def]
+        captured["remote_kwargs"] = kwargs
+        return lambda actor_cls: FakeRemoteActorClass()
+
+    monkeypatch.setattr("tinyexp.utils.ray_utils.ray.remote", fake_remote)
+    monkeypatch.setattr(
+        "tinyexp.utils.ray_utils.ray.get",
+        lambda ref, **kwargs: ("10.0.0.2", 23456),
+    )
+
+    result = start_ray_rendezvous_store(object(), world_size=2, timeout_s=7.0)
+
+    strategy = captured["options"]["scheduling_strategy"]
+    assert captured["remote_kwargs"] == {"num_cpus": 0}
+    assert captured["actor_args"] == (2, 7.0)
+    assert strategy.placement_group_bundle_index == 0
+    assert result == (actor, "10.0.0.2", 23456)
+
+
+def test_start_ray_rendezvous_store_timeout_kills_actor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    killed = []
+
+    class FakeEndpointMethod:
+        def remote(self) -> str:
+            return "endpoint-ref"
+
+    class FakeActor:
+        get_endpoint = FakeEndpointMethod()
+
+    actor = FakeActor()
+
+    class FakeConfiguredActorClass:
+        def remote(self, *args: object) -> FakeActor:
+            return actor
+
+    class FakeRemoteActorClass:
+        def options(self, **options: object) -> FakeConfiguredActorClass:
+            return FakeConfiguredActorClass()
+
+    monkeypatch.setattr(
+        "tinyexp.utils.ray_utils.ray.remote",
+        lambda **kwargs: lambda actor_cls: FakeRemoteActorClass(),
+    )
+    monkeypatch.setattr(
+        "tinyexp.utils.ray_utils.ray.get",
+        lambda ref, **kwargs: (_ for _ in ()).throw(ray.exceptions.GetTimeoutError("timed out")),
+    )
+    monkeypatch.setattr(
+        "tinyexp.utils.ray_utils.ray.kill",
+        lambda actor_handle, no_restart: killed.append((actor_handle, no_restart)),
+    )
+
+    with pytest.raises(TimeoutError, match="rendezvous store timed out.*bundle 0"):
+        start_ray_rendezvous_store(object(), world_size=2, timeout_s=3.5)
+
+    assert killed == [(actor, True)]
 
 
 def test_get_placement_group_defaults_to_pack(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -614,7 +783,7 @@ def test_get_placement_group_error_removes_group(
     assert len(removed) == 1
 
 
-def test_get_placement_group_pins_first_bundle_to_head_when_ray_initialized(
+def test_get_placement_group_does_not_pin_first_bundle_to_head_when_ray_initialized(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured = {}
@@ -640,7 +809,7 @@ def test_get_placement_group_pins_first_bundle_to_head_when_ray_initialized(
 
     assert captured == {
         "bundles": [
-            {"CPU": 3, "GPU": 1, "node:__internal_head__": 0.001},
+            {"CPU": 3, "GPU": 1},
             {"CPU": 3, "GPU": 1},
         ],
         "strategy": "PACK",

@@ -100,6 +100,7 @@ Requirements:
 - Requests that exceed the cluster's total CPU or GPU capacity fail before placement starts. If the total capacity is sufficient but currently busy, placement waits up to the configured timeout.
 - GPU workers require a CUDA-enabled PyTorch installation and visible GPUs.
 - TinyExp reads the placement-group bundle-to-node topology before creating Ray worker actors, then derives `RANK` and `LOCAL_RANK` from that topology. Ray workers must be homogeneous: every participating node must host the same number of workers, so every node has the same local-rank range. When bundles are interleaved across nodes, global ranks are reassigned so ranks remain contiguous within each node (for example, node-local workers receive `0..N-1`, then the next node receives the following range).
+- For multi-worker runs, TinyExp starts a zero-CPU TCPStore actor in placement-group bundle 0. The actor binds and holds a dynamic port before worker creation, and all ranks connect to it as clients. The Ray head therefore does not need to host rank 0 or provide a GPU.
 
 If `RAY_ADDRESS` already points to a reachable Ray cluster, `ray.init()` can attach to that cluster. Otherwise, Ray starts a local runtime.
 
@@ -247,6 +248,7 @@ Multi-node requirements:
 - The head address must be reachable from every worker and must not resolve to loopback for a multi-node job.
 - Firewalls and security groups must allow Ray's head port and Ray's node-to-node runtime traffic. The head port defaults to `6379`; choose an unused `--ray-port` when that port is occupied. The selected head port must also be outside Ray's configured worker port range. Dashboard, metrics, client, and other Ray runtime ports may also need explicit network policy.
 - Aggregate Ray cluster resources must satisfy the requested placement group. A job waits if resources exist in theory but cannot be placed with the requested bundle shape or placement strategy.
+- The Ray head may be CPU-only. GPU worker bundles and the distributed TCPStore are placed on eligible worker nodes according to the resolved placement group.
 
 When `--node-count=1`, the helper executes the command unchanged and does not start a static Ray cluster. A command with `launcher=ray` may still start a local Ray runtime itself.
 

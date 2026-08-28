@@ -5,7 +5,12 @@ import torch
 from torch import nn
 
 from tinyexp.tiny_engine.accelerator import CPUAccelerator
-from tinyexp.utils.ray_utils import get_num_worker_options, get_placement_group, get_placement_group_node_ids
+from tinyexp.utils.ray_utils import (
+    get_num_worker_options,
+    get_placement_group,
+    get_placement_group_node_ids,
+    start_ray_rendezvous_store,
+)
 
 
 @ray.remote
@@ -35,6 +40,7 @@ class TestCPUAcceleratorWithRay:
     def test_ddp_accelerator(self, ray_session):
         num_worker = 2
         pg = None
+        rendezvous_actor = None
         worker_group = []
         try:
             # This utility correctly sets up env vars and placement groups.
@@ -44,10 +50,17 @@ class TestCPUAcceleratorWithRay:
                 num_cpus_per_worker=2,  # Each worker gets 2 CPUs
             )
             node_ids = get_placement_group_node_ids(pg, num_worker)
+            rendezvous_actor, master_addr, master_port = start_ray_rendezvous_store(
+                pg,
+                num_worker,
+                timeout_s=30,
+            )
             options_list = get_num_worker_options(
                 pg,
                 num_worker=num_worker,
                 gpu_ratio=0.0,
+                master_addr=master_addr,
+                master_port=master_port,
                 node_ids=node_ids,
             )
             # Create the remote actors.
@@ -69,5 +82,8 @@ class TestCPUAcceleratorWithRay:
             for worker in worker_group:
                 with suppress(Exception):
                     ray.kill(worker, no_restart=True)
+            if rendezvous_actor is not None:
+                with suppress(Exception):
+                    ray.kill(rendezvous_actor, no_restart=True)
             if pg:
                 ray.util.remove_placement_group(pg)

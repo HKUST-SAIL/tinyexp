@@ -5,7 +5,12 @@ import ray
 import torch
 
 from tinyexp.tiny_engine.accelerator import DDPAccelerator
-from tinyexp.utils.ray_utils import get_num_worker_options, get_placement_group, get_placement_group_node_ids
+from tinyexp.utils.ray_utils import (
+    get_num_worker_options,
+    get_placement_group,
+    get_placement_group_node_ids,
+    start_ray_rendezvous_store,
+)
 
 
 @ray.remote
@@ -49,21 +54,38 @@ class TestDDPAcceleratorWithRay:
         cpus_per_actor = 1
 
         worker_group = []
+        rendezvous_actors = []
         try:
+            rendezvous_actor1, master_addr1, master_port1 = start_ray_rendezvous_store(
+                pg,
+                num_workers,
+                timeout_s=30,
+            )
+            rendezvous_actors.append(rendezvous_actor1)
             options_list1 = get_num_worker_options(
                 pg,
                 num_workers,
                 gpu_ratio=gpu_per_actor,
                 num_cpus_per_worker=cpus_per_actor,
+                master_addr=master_addr1,
+                master_port=master_port1,
                 node_ids=node_ids,
             )
             worker_group1 = [DDPAcceleratorProxy.options(**options).remote() for options in options_list1]
 
+            rendezvous_actor2, master_addr2, master_port2 = start_ray_rendezvous_store(
+                pg,
+                num_workers,
+                timeout_s=30,
+            )
+            rendezvous_actors.append(rendezvous_actor2)
             options_list2 = get_num_worker_options(
                 pg,
                 num_workers,
                 gpu_ratio=gpu_per_actor,
                 num_cpus_per_worker=cpus_per_actor,
+                master_addr=master_addr2,
+                master_port=master_port2,
                 node_ids=node_ids,
             )
             worker_group2 = [DDPAcceleratorProxy.options(**options).remote() for options in options_list2]
@@ -77,4 +99,7 @@ class TestDDPAcceleratorWithRay:
             for worker in worker_group:
                 with suppress(Exception):
                     ray.kill(worker, no_restart=True)
+            for rendezvous_actor in rendezvous_actors:
+                with suppress(Exception):
+                    ray.kill(rendezvous_actor, no_restart=True)
             ray.util.remove_placement_group(pg)
