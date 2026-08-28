@@ -43,6 +43,10 @@ def test_ray_cfg_run_uses_explicit_resources_without_dataloader_cfg(
         "tinyexp.exp_mixins.basic_mixins.ray.cluster_resources",
         lambda: {"CPU": 3.0, "GPU": 0.0},
     )
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.ray.available_resources",
+        lambda: pytest.fail("explicit worker sizing should not query available resources"),
+    )
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.is_initialized", lambda: True)
     monkeypatch.setattr(
         "tinyexp.exp_mixins.basic_mixins.ray.shutdown",
@@ -89,7 +93,7 @@ def test_ray_cfg_run_rejects_invalid_ray_worker_count_without_starting_ray(
         RayCfgMixin.RayCfg.run(object, cfg)
 
 
-def test_ray_cfg_run_resolves_auto_worker_count_from_cluster_gpus(
+def test_ray_cfg_run_resolves_auto_worker_count_from_available_gpus(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cfg = OmegaConf.create(
@@ -111,16 +115,56 @@ def test_ray_cfg_run_resolves_auto_worker_count_from_cluster_gpus(
         "tinyexp.exp_mixins.basic_mixins.ray.cluster_resources",
         lambda: {"CPU": 8.0, "GPU": 2.0},
     )
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.ray.available_resources",
+        lambda: {"CPU": 8.0, "GPU": 1.0},
+    )
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.is_initialized", lambda: True)
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.shutdown", lambda **kwargs: None)
 
     with pytest.raises(RuntimeError, match="resolved"):
         RayCfgMixin.RayCfg.run(object, cfg)
 
-    assert cfg.ray_cfg.ray_num_worker == 2
+    assert cfg.ray_cfg.ray_num_worker == 1
 
 
-def test_ray_cfg_run_caps_auto_worker_count_by_cpu_and_gpu_capacity(
+def test_ray_cfg_run_uses_total_resources_for_explicit_worker_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = OmegaConf.create(
+        {
+            "ray_cfg": {
+                "ray_num_worker": 2,
+                "ray_num_cpus_per_worker": 1,
+                "ray_num_gpus_per_worker": 0,
+            }
+        }
+    )
+    calls: list[str] = []
+
+    def stop_after_resolution(exp_class):  # type: ignore[no-untyped-def]
+        raise RuntimeError("resolved")
+
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.init", lambda: None)
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.remote", stop_after_resolution)
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.ray.cluster_resources",
+        lambda: (calls.append("total"), {"CPU": 2.0, "GPU": 0.0})[1],
+    )
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.ray.available_resources",
+        lambda: (calls.append("available"), {"CPU": 0.0, "GPU": 0.0})[1],
+    )
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.is_initialized", lambda: True)
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.shutdown", lambda **kwargs: None)
+
+    with pytest.raises(RuntimeError, match="resolved"):
+        RayCfgMixin.RayCfg.run(object, cfg)
+
+    assert calls == ["total"]
+
+
+def test_ray_cfg_run_caps_auto_worker_count_by_available_cpu_and_gpu_capacity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cfg = OmegaConf.create(
@@ -142,16 +186,20 @@ def test_ray_cfg_run_caps_auto_worker_count_by_cpu_and_gpu_capacity(
         "tinyexp.exp_mixins.basic_mixins.ray.cluster_resources",
         lambda: {"CPU": 8.0, "GPU": 4.0},
     )
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.ray.available_resources",
+        lambda: {"CPU": 3.0, "GPU": 2.0},
+    )
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.is_initialized", lambda: True)
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.shutdown", lambda **kwargs: None)
 
     with pytest.raises(RuntimeError, match="resolved"):
         RayCfgMixin.RayCfg.run(object, cfg)
 
-    assert cfg.ray_cfg.ray_num_worker == 2
+    assert cfg.ray_cfg.ray_num_worker == 1
 
 
-def test_ray_cfg_run_resolves_auto_worker_count_from_cluster_cpus_for_cpu_workers(
+def test_ray_cfg_run_resolves_auto_worker_count_from_available_cpus_for_cpu_workers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cfg = OmegaConf.create(
@@ -173,13 +221,17 @@ def test_ray_cfg_run_resolves_auto_worker_count_from_cluster_cpus_for_cpu_worker
         "tinyexp.exp_mixins.basic_mixins.ray.cluster_resources",
         lambda: {"CPU": 8.0, "GPU": 0.0},
     )
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.ray.available_resources",
+        lambda: {"CPU": 4.0, "GPU": 0.0},
+    )
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.is_initialized", lambda: True)
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.shutdown", lambda **kwargs: None)
 
     with pytest.raises(RuntimeError, match="resolved"):
         RayCfgMixin.RayCfg.run(object, cfg)
 
-    assert cfg.ray_cfg.ray_num_worker == 4
+    assert cfg.ray_cfg.ray_num_worker == 2
 
 
 @pytest.mark.parametrize(
@@ -275,6 +327,7 @@ def test_ray_cfg_run_rejects_missing_cluster_gpus(
     )
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.init", lambda: None)
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.cluster_resources", lambda: {"CPU": 8.0})
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.available_resources", lambda: {"CPU": 8.0})
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.is_initialized", lambda: True)
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.shutdown", lambda **kwargs: None)
 
@@ -730,6 +783,7 @@ def test_get_placement_group_timeout_removes_group(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     removed = []
+    events = []
 
     class FakePlacementGroup:
         def ready(self):
@@ -743,10 +797,26 @@ def test_get_placement_group_timeout_removes_group(
     monkeypatch.setattr("tinyexp.utils.ray_utils.ray.get", fake_get)
     monkeypatch.setattr(
         "tinyexp.utils.ray_utils.ray.util.remove_placement_group",
-        lambda pg: removed.append(pg),
+        lambda pg: (removed.append(pg), events.append("remove")),
+    )
+    monkeypatch.setattr(
+        "tinyexp.utils.ray_utils.ray.cluster_resources",
+        lambda: (events.append("total"), {"CPU": 8.0, "GPU": 2.0})[1],
+    )
+    monkeypatch.setattr(
+        "tinyexp.utils.ray_utils.ray.available_resources",
+        lambda: (events.append("available"), {"CPU": 1.0, "GPU": 0.0})[1],
     )
 
-    with pytest.raises(TimeoutError, match="workers=2.*GPU/worker=0.5.*strategy=SPREAD"):
+    with pytest.raises(
+        TimeoutError,
+        match=(
+            r"workers=2.*GPU/worker=0.5.*strategy=SPREAD.*"
+            r"requested CPU=6.*requested GPU=1.0.*"
+            r"total CPU=8.0.*total GPU=2.0.*"
+            r"available CPU=1.0.*available GPU=0.0"
+        ),
+    ):
         get_placement_group(
             num_worker=2,
             num_gpus_per_worker=0.5,
@@ -756,6 +826,7 @@ def test_get_placement_group_timeout_removes_group(
         )
 
     assert len(removed) == 1
+    assert events == ["total", "available", "remove"]
 
 
 def test_get_placement_group_error_removes_group(

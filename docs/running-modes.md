@@ -93,11 +93,14 @@ Requirements:
 
 - The `ray` Python package must import successfully.
 - The machine must have enough resources for every worker bundle.
-- `ray_cfg.ray_num_worker` must be `-1` or a positive integer. `-1` fills the available CPU or GPU capacity.
+- `ray_cfg.ray_num_worker` must be `-1` or a positive integer. `-1` sizes workers from the CPU/GPU resources
+  available when the run starts.
 - `ray_cfg.ray_num_cpus_per_worker` must be positive.
 - `ray_cfg.ray_num_gpus_per_worker` must be non-negative.
 - `ray_cfg.ray_placement_timeout_s` controls how long TinyExp waits for the placement group; the default is 120 seconds.
-- Requests that exceed the cluster's total CPU or GPU capacity fail before placement starts. If the total capacity is sufficient but currently busy, placement waits up to the configured timeout.
+- Requests that exceed the cluster's total CPU or GPU capacity fail before placement starts. If the total capacity is
+  sufficient but currently busy, placement waits up to the configured timeout; a timeout reports total and currently
+  available CPU/GPU resources.
 - GPU workers require a CUDA-enabled PyTorch installation and visible GPUs.
 - TinyExp reads the placement-group bundle-to-node topology before creating Ray worker actors, then derives `RANK` and `LOCAL_RANK` from that topology. Ray workers must be homogeneous: every participating node must host the same number of workers, so every node has the same local-rank range. When bundles are interleaved across nodes, global ranks are reassigned so ranks remain contiguous within each node (for example, node-local workers receive `0..N-1`, then the next node receives the following range).
 - For multi-worker runs, TinyExp starts a zero-CPU TCPStore actor in placement-group bundle 0. The actor binds and holds a dynamic port before worker creation, and all ranks connect to it as clients. The Ray head therefore does not need to host rank 0 or provide a GPU.

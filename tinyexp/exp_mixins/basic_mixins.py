@@ -118,11 +118,12 @@ class RayCfgMixin:
 
             try:
                 cluster_resources = ray.cluster_resources()
+                sizing_resources = ray.available_resources() if ray_cfg.ray_num_worker == -1 else cluster_resources
                 ray_num_worker = _resolve_ray_num_worker(
                     ray_cfg.ray_num_worker,
                     num_cpus_per_worker,
                     num_gpus_per_worker,
-                    cluster_resources,
+                    sizing_resources,
                 )
                 if ray_cfg.ray_num_worker == -1:
                     ray_cfg.ray_num_worker = ray_num_worker

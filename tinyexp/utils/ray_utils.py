@@ -55,12 +55,26 @@ def get_placement_group(
     try:
         ray.get(pg.ready(), timeout=timeout_s)
     except ray.exceptions.GetTimeoutError as exc:
+        try:
+            total_resources = ray.cluster_resources()
+        except Exception:
+            total_resources = {}
+        try:
+            available_resources = ray.available_resources()
+        except Exception:
+            available_resources = {}
         with suppress(Exception):
             ray.util.remove_placement_group(pg)
         raise TimeoutError(  # noqa: TRY003
             f"Ray placement group timed out after {timeout_s}s: "
             f"workers={num_worker}, CPU/worker={num_cpus_per_worker}, "
-            f"GPU/worker={num_gpus_per_worker}, strategy={strategy}"
+            f"GPU/worker={num_gpus_per_worker}, strategy={strategy}; "
+            f"requested CPU={num_worker * num_cpus_per_worker}, "
+            f"requested GPU={num_worker * num_gpus_per_worker}; "
+            f"total CPU={total_resources.get('CPU', 'unknown')}, "
+            f"total GPU={total_resources.get('GPU', 'unknown')}; "
+            f"available CPU={available_resources.get('CPU', 'unknown')}, "
+            f"available GPU={available_resources.get('GPU', 'unknown')}"
         ) from exc
     except Exception:
         with suppress(Exception):
