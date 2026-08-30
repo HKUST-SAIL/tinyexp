@@ -9,7 +9,6 @@ from typing import Any, Optional
 
 import numpy as np
 import ray
-import torch
 from loguru._logger import Logger
 from omegaconf import DictConfig
 from omegaconf.listconfig import ListConfig
@@ -280,6 +279,8 @@ class CheckpointCfgMixin:
             exp_class: str = "",
             extra_state: Optional[dict[str, Any]] = None,
         ) -> str:
+            import torch
+
             save_path = Path(run_dir) / name
             save_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -376,6 +377,8 @@ class CheckpointCfgMixin:
 
         @staticmethod
         def capture_rng_state() -> dict[str, Any]:
+            import torch
+
             state: dict[str, Any] = {
                 "python": random.getstate(),
                 "numpy": np.random.get_state(),
@@ -387,6 +390,8 @@ class CheckpointCfgMixin:
 
         @staticmethod
         def restore_rng_state(state: dict[str, Any]) -> None:
+            import torch
+
             random.setstate(state["python"])
             np.random.set_state(state["numpy"])
             torch.set_rng_state(state["torch"])
@@ -404,6 +409,8 @@ class CheckpointCfgMixin:
             strict: bool = True,
             map_location=None,
         ) -> dict[str, Any]:
+            import torch
+
             checkpoint = self._validate_checkpoint_payload(
                 path,
                 torch.load(path, map_location=map_location, weights_only=False),

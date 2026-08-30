@@ -51,7 +51,7 @@ For a longer explanation, see [`docs/philosophy.md`](docs/philosophy.md).
 ### Option A: Install with pip and use import-based entrypoint
 
 ```bash
-pip install tinyexp
+pip install "tinyexp[pytorch]"
 ```
 
 ```python
@@ -71,7 +71,7 @@ python your_exp.py dataloader_cfg.train_batch_size_per_device=16
 ```bash
 git clone https://github.com/HKUST-SAIL/tinyexp.git
 cd tinyexp
-make install
+make install-pytorch
 uv run python tinyexp/examples/mnist_exp.py
 ```
 
@@ -181,11 +181,13 @@ model preparation, reduction, synchronization, and cleanup methods.
 
 ## Development
 
-Install environment and hooks:
+Install the core environment and hooks:
 
 ```bash
 make install
 ```
+
+`make install` installs the core environment and hooks without selecting or removing optional accelerator packages. For the default PyPI stack, run `make install-pytorch` before `make test`. On a machine with a preselected CUDA, ROCm, or vendor PyTorch build, `make install` (or the more explicit `make install-without-pytorch`) preserves that environment; install `torch`, `torchvision`, and `accelerate` together according to that machine's package index/backend, then use ordinary `uv run`. Because the PyTorch packages are optional and ordinary `uv run` does not remove extraneous packages by default, no repeated `--no-sync` flag is needed. Avoid `uv sync` without `--inexact` in that environment.
 
 Run checks:
 

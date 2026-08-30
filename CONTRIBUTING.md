@@ -65,7 +65,7 @@ cd TinyExp
 Then, install and activate the environment with:
 
 ```bash
-uv sync
+make install-pytorch
 ```
 
 4. Install pre-commit to run linters/formatters at commit time:

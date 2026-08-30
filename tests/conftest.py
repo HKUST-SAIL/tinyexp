@@ -11,7 +11,7 @@ def ray_session():
     if not ray.is_initialized():
         runtime_env = {
             "working_dir": ".",
-            "excludes": ["*.md", "data/", "tests/", ".git/", ".venv/", "output/", "outputs/", "site/"],
+            "excludes": ["data/", "tests/", ".git/", ".venv/", "output/", "outputs/", "site/"],
         }
         try:
             # Force a fresh local runtime instead of auto-connecting to a

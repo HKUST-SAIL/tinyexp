@@ -9,7 +9,6 @@ from datetime import timedelta
 from typing import Any, Optional
 
 import ray
-import torch.distributed as dist
 from omegaconf import DictConfig
 from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
@@ -85,6 +84,8 @@ def get_placement_group(
 
 class _RayRendezvousStoreActor:
     def __init__(self, world_size: int, timeout_s: float) -> None:
+        import torch.distributed as dist
+
         self._master_addr = ray.util.get_node_ip_address()
         self._store = dist.TCPStore(
             host_name=self._master_addr,

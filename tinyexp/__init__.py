@@ -34,6 +34,28 @@ __all__ = [
 ]
 
 
+def _patch_argparse_help_for_python314() -> None:
+    """Allow Hydra's lazy help object to work with Python 3.14 argparse."""
+    if sys.version_info < (3, 14):
+        return
+
+    import argparse
+
+    original_get_help_string = argparse.HelpFormatter._get_help_string
+    if getattr(original_get_help_string, "_tinyexp_python314_compat", False):
+        return
+
+    def get_help_string(self, action):
+        help_string = original_get_help_string(self, action)
+        return help_string if isinstance(help_string, str) else str(help_string)
+
+    get_help_string._tinyexp_python314_compat = True
+    argparse.HelpFormatter._get_help_string = get_help_string
+
+
+_patch_argparse_help_for_python314()
+
+
 @dataclass
 class _HydraConfig(HydraConf):
     """

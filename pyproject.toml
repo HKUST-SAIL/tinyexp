@@ -17,6 +17,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
@@ -26,14 +27,26 @@ dependencies = [
     "tabulate",
     "hydra-core",
     "omegaconf",
-    "ray",
+    # Ray 2.53+ does not publish a CPython 3.9 wheel. Keep the older
+    # interpreter resolution installable while using the current line for
+    # Python versions that have compatible wheels, including 3.14.
+    "ray<2.52; python_version < '3.10'",
+    "ray; python_version >= '3.10'",
     "tqdm",
-    "torch",
-    "torchvision",
     "redis",
     "wandb",
     "loguru",
+]
+
+[project.optional-dependencies]
+pytorch = [
     "accelerate",
+    # Python 3.14 requires releases that publish cp314 wheels. The CPU/CUDA/
+    # ROCm/vendor runtime is selected separately for each target machine.
+    "torch; python_version < '3.14'",
+    "torch>=2.13; python_version >= '3.14'",
+    "torchvision; python_version < '3.14'",
+    "torchvision>=0.28; python_version >= '3.14'",
 ]
 
 [project.urls]

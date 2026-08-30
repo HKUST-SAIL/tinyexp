@@ -40,10 +40,32 @@ make install
 Or install the published package with:
 
 ```bash
-pip install tinyexp
+pip install "tinyexp[pytorch]"
 ```
 
-TinyExp declares PyTorch, Ray, Accelerate, and their Python-level dependencies, but it does not choose a CUDA-specific PyTorch wheel or manage GPU drivers. Follow the PyTorch installation guidance for the target machine when a GPU build is required.
+TinyExp keeps Ray and its Python-level dependencies in the core installation. PyTorch, TorchVision, and Accelerate are provided by the optional `pytorch` extra. This avoids pretending that Python package metadata can choose a compatible CPU, CUDA, ROCm, or vendor-specific build for every machine. The universal `uv.lock` records Python- and operating-system-aware resolutions for the extra; accelerator runtime selection remains machine-specific.
+
+For the default PyPI PyTorch build, use:
+
+```bash
+make install-pytorch
+# or: pip install "tinyexp[pytorch]"
+```
+
+This convenience extra resolves the default PyPI builds recorded in `uv.lock`; it is not a universal CUDA/driver compatibility choice. For a machine that needs a machine-specific CUDA, ROCm, or vendor build, install the base project without the extra, then install all accelerator packages together using the target machine's instructions:
+
+```bash
+make install-without-pytorch
+# Install torch/torchvision from the machine-specific index/build, while
+# keeping PyPI available for accelerate and other regular packages.
+uv pip install --python .venv/bin/python torch torchvision accelerate \
+  --index <pytorch-index-url> --default-index https://pypi.org/simple
+# Or use uv's PyTorch backend selector where supported, e.g.:
+# uv pip install --python .venv/bin/python torch torchvision accelerate --torch-backend cu126
+uv run python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+
+Python 3.14 requires PyTorch/TorchVision builds that publish compatible `cp314` wheels; this is an ABI requirement, not a CUDA-version requirement. The PyTorch packages are optional, so ordinary `uv run` keeps a machine-selected accelerator build in place and does not require a repeated `--no-sync` flag. Use `make install` (which is intentionally non-exact) on such a machine, and avoid exact `uv sync` without `--inexact` afterward.
 
 Check the active environment before launching:
 
