@@ -22,7 +22,9 @@ classifiers = [
 ]
 dependencies = [
     "loguru>=0.7.3",
-    "numpy",
+    # NumPy releases before 2.3.2 do not publish CPython 3.14 wheels.
+    "numpy; python_version < '3.14'",
+    "numpy>=2.3.2; python_version >= '3.14'",
     "psutil",
     "tabulate",
     "hydra-core",
@@ -32,6 +34,8 @@ dependencies = [
     # Python versions that have compatible wheels, including 3.14.
     "ray<2.52; python_version < '3.10'",
     "ray; python_version >= '3.10'",
+    # Ray pulls rpds-py through jsonschema; use a release with CPython 3.14 wheels.
+    "rpds-py>=0.26; python_version >= '3.14'",
     "tqdm",
     "redis",
     "wandb",
@@ -47,6 +51,8 @@ pytorch = [
     "torch>=2.13; python_version >= '3.14'",
     "torchvision; python_version < '3.14'",
     "torchvision>=0.28; python_version >= '3.14'",
+    # TorchVision pulls Pillow; use a release with CPython 3.14 wheels.
+    "pillow>=11.3; python_version >= '3.14'",
 ]
 
 [project.urls]
