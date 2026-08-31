@@ -44,7 +44,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Run tests
-        run: uv run python -m pytest tests --cov --cov-config=pyproject.toml --cov-report=xml
+        run: uv run --frozen --extra pytorch python -m pytest tests --cov --cov-config=pyproject.toml --cov-report=xml
+        env:
+          # Ray 2.58+ otherwise creates worker environments from the bare
+          # `uv run` command and drops the optional PyTorch dependencies.
+          RAY_ENABLE_UV_RUN_RUNTIME_ENV: "0"
 
       # - name: Check typing
         # run: uv run mypy
