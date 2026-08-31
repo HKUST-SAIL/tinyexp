@@ -299,6 +299,12 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
 
     def run(self) -> None:
         accelerator = self.accelerator_cfg.build_accelerator()
+        try:
+            self._run(accelerator)
+        finally:
+            accelerator.destroy()
+
+    def _run(self, accelerator: AcceleratorProtocol) -> None:
         run_dir = self.get_run_dir()
         logger = self.logger_cfg.build_logger(save_dir=run_dir, distributed_rank=accelerator.rank)
         cfg_dict = self.print_cfg(logger)
@@ -320,8 +326,6 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
             )
         else:
             raise NotImplementedError(f"Mode {self.mode} is not implemented")
-
-        accelerator.destroy()
 
     def _evaluate(self, accelerator, logger, module_or_module_path, val_dataloader=None) -> None:
         if isinstance(module_or_module_path, str):

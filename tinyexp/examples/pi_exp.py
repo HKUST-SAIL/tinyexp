@@ -18,6 +18,7 @@ import torch
 
 from tinyexp import TinyExp, store_and_run_exp
 from tinyexp.exp_mixins import LoggerCfgMixin, RayCfgMixin
+from tinyexp.tiny_engine.accelerator import AcceleratorProtocol
 
 
 @dataclass(repr=False)
@@ -51,6 +52,12 @@ class Exp(TinyExp, RayCfgMixin, LoggerCfgMixin):
         from tinyexp.tiny_engine.accelerator import CPUAccelerator
 
         accelerator = CPUAccelerator()
+        try:
+            self._run(accelerator)
+        finally:
+            accelerator.destroy()
+
+    def _run(self, accelerator: AcceleratorProtocol) -> None:
         logger = self.logger_cfg.build_logger(save_dir=self.get_run_dir(), distributed_rank=accelerator.rank)
         self.print_cfg(logger)
 
@@ -60,8 +67,6 @@ class Exp(TinyExp, RayCfgMixin, LoggerCfgMixin):
                 f"pi ~= {pi:.6f} (error={abs(pi - torch.pi):.6f}, samples={self.pi_cfg.total_samples})",
                 flush=True,
             )
-
-        accelerator.destroy()
 
     def _estimate_pi(self, accelerator) -> float:
         generator = torch.Generator().manual_seed(self.pi_cfg.seed + accelerator.rank)

@@ -251,6 +251,29 @@ def test_resnet_run_val_mode_uses_checkpoint(tmp_path: Path, monkeypatch) -> Non
     assert called["val_dataloader"] is None
 
 
+def test_resnet_run_destroys_accelerator_when_workload_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exp = ResNetExp(output_root=str(tmp_path), exp_name="resnet_failure")
+    events: list[str] = []
+
+    class DummyAccelerator:
+        rank = 0
+
+        def destroy(self) -> None:
+            events.append("destroy")
+
+    accelerator = DummyAccelerator()
+    monkeypatch.setattr(exp.accelerator_cfg, "build_accelerator", lambda: accelerator)
+    monkeypatch.setattr(exp, "_run", lambda _accelerator: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    with pytest.raises(RuntimeError, match="boom"):
+        exp.run()
+
+    assert events == ["destroy"]
+
+
 def test_resnet_train_saves_last_and_best_checkpoints(tmp_path: Path, monkeypatch) -> None:
     exp = ResNetExp(output_root=str(tmp_path), exp_name="resnet_train")
 

@@ -68,6 +68,29 @@ def test_mnist_run_val_mode_uses_checkpoint(tmp_path: Path, monkeypatch) -> None
     assert destroy_calls == [True]
 
 
+def test_mnist_run_destroys_accelerator_when_workload_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exp = Exp(output_root=str(tmp_path), exp_name="mnist_failure")
+    events: list[str] = []
+
+    class DummyAccelerator:
+        rank = 0
+
+        def destroy(self) -> None:
+            events.append("destroy")
+
+    accelerator = DummyAccelerator()
+    monkeypatch.setattr(exp.accelerator_cfg, "build_accelerator", lambda: accelerator)
+    monkeypatch.setattr(exp, "_run", lambda _accelerator: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    with pytest.raises(RuntimeError, match="boom"):
+        exp.run()
+
+    assert events == ["destroy"]
+
+
 def test_mnist_val_dataloader_partitions_without_padding(tmp_path: Path, monkeypatch) -> None:
     dataset = torch.utils.data.TensorDataset(torch.arange(10), torch.arange(10))
     monkeypatch.setattr("tinyexp.examples.mnist_exp.datasets.MNIST", lambda *args, **kwargs: dataset)
