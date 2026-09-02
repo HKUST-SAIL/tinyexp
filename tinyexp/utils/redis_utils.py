@@ -5,6 +5,7 @@ import ipaddress
 import shutil
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import zlib
@@ -16,6 +17,8 @@ from typing import Any
 import ray
 import redis
 from ray.util.scheduling_strategies import NodeAffinitySchedulingStrategy
+
+_REDIS_CLUSTER_EXCEPTION = getattr(redis.exceptions, "RedisClusterException", redis.exceptions.RedisError)
 
 
 class RedisClusterConfigError(ValueError):
@@ -121,6 +124,55 @@ class RedisClientManager:
             with contextlib.suppress(Exception):
                 redis_client.close()
         self.redis_clients = []
+
+
+def wait_for_redis_cluster(startup_host: str, startup_ports: list[int], timeout_s: float = 30.0) -> bool:
+    """Wait for a Redis Cluster to accept requests within a bounded deadline."""
+    deadline = time.monotonic() + timeout_s
+    last_error: Exception | None = None
+    while time.monotonic() < deadline:
+        cluster: Any | None = None
+        ready = False
+        attempt_timeout = min(2.0, max(0.05, deadline - time.monotonic()))
+        try:
+            cluster = redis.RedisCluster(
+                startup_nodes=[redis.cluster.ClusterNode(startup_host, int(port)) for port in startup_ports],
+                decode_responses=False,
+                socket_connect_timeout=attempt_timeout,
+                socket_timeout=attempt_timeout,
+            )
+            cluster.ping()
+            ready = True
+            for index in range(16):
+                if time.monotonic() >= deadline:
+                    last_error = TimeoutError("Redis Cluster readiness deadline expired")
+                    ready = False
+                    break
+                key = f"tinyexp:redis-cluster-readiness:{index}"
+                cluster.set(key, "ok", ex=60)
+                if cluster.get(key) != b"ok":
+                    last_error = RuntimeError("readiness value mismatch")
+                    ready = False
+                    break
+        except Exception as exc:
+            if not isinstance(exc, (redis.exceptions.RedisError, _REDIS_CLUSTER_EXCEPTION)):
+                raise
+            last_error = exc
+        finally:
+            if cluster is not None:
+                with contextlib.suppress(Exception):
+                    cluster.close()
+
+        if ready:
+            return True
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(1.0, remaining))
+
+    print(f"Redis Cluster readiness check failed: {last_error}", file=sys.stderr)
+    return False
 
 
 class RedisClusterManager:
@@ -476,7 +528,7 @@ class RayRedisClusterManager:
         self.log_dir = Path(log_dir) if log_dir is not None else None
         self._actors: list[Any] = []
 
-    def start(self, *, cluster_enabled: bool | None = None) -> tuple[str, list[int], int]:
+    def start(self, *, cluster_enabled: bool | None = None) -> tuple[str, list[int], int]:  # noqa: C901
         if not ray.is_initialized():
             raise RedisClusterStartupError("Ray must be initialized before starting Ray-managed Redis.")  # noqa: TRY003
 
@@ -486,6 +538,10 @@ class RayRedisClusterManager:
 
         if cluster_enabled is None:
             cluster_enabled = len(alive_nodes) > 1
+
+        startup_timeout_s = float(getattr(self.redis_cfg, "redis_cluster_startup_timeout_s", 30.0))
+        if cluster_enabled and startup_timeout_s <= 0:
+            raise RedisClusterStartupError("redis_cluster_startup_timeout_s must be greater than 0")  # noqa: TRY003
 
         ports = [int(port) for port in self.redis_cfg.redis_cluster_ports]
         total_redis_shards = len(ports) * len(alive_nodes)
@@ -530,8 +586,8 @@ class RayRedisClusterManager:
             startup_ports = [int(port) for port in redis_nodes[0]["ports"]]
             if cluster_enabled:
                 self._validate_node_hosts(redis_nodes)
-                self._create_cluster(redis_cli_path, redis_nodes)
-                self._check_cluster(startup_host, startup_ports)
+                self._create_cluster(redis_cli_path, redis_nodes, timeout_s=startup_timeout_s)
+                self._check_cluster(startup_host, startup_ports, timeout_s=startup_timeout_s)
         except Exception:
             self.stop()
             raise
@@ -556,40 +612,44 @@ class RayRedisClusterManager:
             )
 
     @staticmethod
-    def _create_cluster(redis_cli_path: str, redis_nodes: list[dict[str, Any]]) -> None:
+    def _create_cluster(
+        redis_cli_path: str,
+        redis_nodes: list[dict[str, Any]],
+        *,
+        timeout_s: float = 30.0,
+    ) -> None:
         addresses = [f"{node['host']}:{port}" for node in redis_nodes for port in node["ports"]]
-        result = subprocess.run(
-            [
-                redis_cli_path,
-                "--cluster",
-                "create",
-                *addresses,
-                "--cluster-replicas",
-                "0",
-                "--cluster-yes",
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                [
+                    redis_cli_path,
+                    "--cluster",
+                    "create",
+                    *addresses,
+                    "--cluster-replicas",
+                    "0",
+                    "--cluster-yes",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout_s,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RedisClusterStartupError(  # noqa: TRY003
+                f"redis-cli cluster create timed out after {timeout_s}s"
+            ) from exc
         if result.returncode != 0:
             raise RedisClusterStartupError(  # noqa: TRY003
                 f"redis-cli cluster create failed with code {result.returncode}: {result.stderr or result.stdout}"
             )
 
     @staticmethod
-    def _check_cluster(startup_host: str, startup_ports: list[int]) -> None:
-        cluster = redis.RedisCluster(
-            startup_nodes=[redis.cluster.ClusterNode(startup_host, int(port)) for port in startup_ports],
-            decode_responses=False,
-            socket_connect_timeout=2,
-            socket_timeout=2,
-        )
-        try:
-            cluster.ping()
-        finally:
-            with contextlib.suppress(Exception):
-                cluster.close()
+    def _check_cluster(startup_host: str, startup_ports: list[int], *, timeout_s: float = 30.0) -> None:
+        if not wait_for_redis_cluster(startup_host, startup_ports, timeout_s=timeout_s):
+            raise RedisClusterStartupError(  # noqa: TRY003
+                f"Redis Cluster did not become ready at {startup_host}:{startup_ports}"
+            )
 
     def get_db_sizes(self) -> list[dict[str, Any]]:
         dbsize_refs = [actor.get_db_sizes.remote() for actor in self._actors]

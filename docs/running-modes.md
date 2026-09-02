@@ -291,6 +291,9 @@ Redis and W&B requirements are independent of the four launch styles.
 - Enabling Redis cache requires a reachable Redis service.
 - TinyExp-managed standalone Redis requires `redis-server` on the host that starts it.
 - TinyExp-managed Redis Cluster also requires `redis-cli` on the coordinating host.
+- Ray-managed Redis Cluster startup and readiness use `redis_cfg.redis_cluster_startup_timeout_s` (30 seconds by
+  default). The `tinyexp-run-with-redis` wrapper uses its `--wait-timeout` option for the multi-node registration,
+  cluster creation, and readiness deadline.
 - The ResNet example enables Redis cache by default. Set `redis_cfg.redis_cache_enabled=false` when Redis is not installed or desired.
 - Enabling W&B requires suitable credentials and network access, or an explicitly configured offline mode.
 

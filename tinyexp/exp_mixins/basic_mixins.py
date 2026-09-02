@@ -247,6 +247,7 @@ class RedisCfgMixin:
             default_factory=lambda: ListConfig([7000, 7001, 7002, 7003, 7004, 7005])
         )
         redis_cache_max_memory: int = 160  # Maximum memory is 160GB, according to the ImageNet dataset size
+        redis_cluster_startup_timeout_s: float = 30.0
 
         # 1: standalone Redis. In Ray launches, this starts one local Redis per alive Ray node.
         # -1: Ray-managed Redis Cluster using the alive Ray nodes.
