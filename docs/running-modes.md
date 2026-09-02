@@ -267,6 +267,7 @@ Multi-node requirements:
 
 - `ray` and Python executables must be available on every node. Use `--ray-bin` and `--python-bin` when they are not on `PATH`.
 - The helper owns the Ray runtime on each participating node: it runs `ray stop --force` before startup and during cleanup. Do not use it on a node whose existing Ray runtime must remain active.
+- In multi-node mode, `--node-rank` must be in `[0, --node-count)`, `--ray-port` must be a fixed port in `1..65535`, and `--wait-timeout` bounds Ray head/node readiness.
 - Each node must use compatible Python, TinyExp, PyTorch, Ray, and experiment dependency versions.
 - Custom experiment modules must be importable on every node. The helper does not distribute source code or create environments.
 - Dataset paths used by a scheduled worker must exist on that worker, either through a shared filesystem or equivalent per-node data layout.
