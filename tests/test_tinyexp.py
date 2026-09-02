@@ -20,6 +20,11 @@ class _CfgExp(TinyExp):
 
 
 @dataclass
+class _MappingCfgExp(TinyExp):
+    options: dict[str, object] = field(default_factory=lambda: {"base": 1})
+
+
+@dataclass
 class _StoreAndRunExpCfg(TinyExp):
     check_exp_class: str = f"{__name__}._StoreAndRunExpCfg"
 
@@ -102,6 +107,21 @@ def test_set_cfg_overrides_nested(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert exp.sub_cfg.a == 3
     assert exp.b == 4
+
+
+def test_set_cfg_overrides_mapping_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RANK", "1")
+    exp = _MappingCfgExp()
+
+    cfg = OmegaConf.create({"options": {"base": 3, "extra": {"enabled": True}}})
+    exp.set_cfg(cfg)
+
+    assert exp.options == {"base": 3, "extra": {"enabled": True}}
+    assert isinstance(exp.options, dict)
+    assert exp.overrided_cfg["options"] == {
+        "value": {"base": 3, "extra": {"enabled": True}},
+        "original": {"base": 1},
+    }
 
 
 def test_set_cfg_unknown_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:

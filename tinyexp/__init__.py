@@ -4,6 +4,7 @@ __license__ = "MIT"
 
 import os
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -137,10 +138,24 @@ class TinyExp:
             cfg_object = self
         for key, value in cfg_hydra.items():
             if hasattr(cfg_object, key):
-                if isinstance(value, (DictConfig, dict)):
-                    # If the value is a dictionary, recursively set attributes
-                    sub_object = getattr(cfg_object, key)
-                    self.set_cfg(value, sub_object)
+                sub_object = getattr(cfg_object, key)
+                if isinstance(value, (DictConfig, Mapping)):
+                    if isinstance(sub_object, Mapping):
+                        # Hydra has already merged and validated mapping values; store the resolved plain dict.
+                        new_value = (
+                            dict(OmegaConf.to_container(value, resolve=True))
+                            if isinstance(value, DictConfig)
+                            else dict(value)
+                        )
+                        if sub_object != new_value:
+                            self.overrided_cfg[key] = {
+                                "value": new_value,
+                                "original": sub_object,
+                            }
+                            setattr(cfg_object, key, new_value)
+                    else:
+                        # Nested config objects still receive recursive attribute updates.
+                        self.set_cfg(value, sub_object)
                 else:
                     # Otherwise, set the attribute directly
                     ori_value = getattr(cfg_object, key, None)
