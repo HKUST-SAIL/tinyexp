@@ -9,7 +9,6 @@ from typing import Any, Optional
 
 import numpy as np
 import ray
-import torch
 from loguru._logger import Logger
 from omegaconf import DictConfig
 from omegaconf.listconfig import ListConfig
@@ -26,6 +25,7 @@ from ..utils.ray_utils import (
     get_num_worker_options,
     get_placement_group,
     get_placement_group_node_ids,
+    start_ray_rendezvous_store,
 )
 
 
@@ -109,18 +109,22 @@ class RayCfgMixin:
 
             if ray_cfg.ray_num_worker < -1 or ray_cfg.ray_num_worker == 0:
                 raise InvalidWorkerCountError(ray_cfg.ray_num_worker)
-            ray.init()
+            owns_ray_runtime = not ray.is_initialized()
+            if owns_ray_runtime:
+                ray.init()
             pg = None
             redis_manager = None
+            rendezvous_actor = None
             worker_group = []
 
             try:
                 cluster_resources = ray.cluster_resources()
+                sizing_resources = ray.available_resources() if ray_cfg.ray_num_worker == -1 else cluster_resources
                 ray_num_worker = _resolve_ray_num_worker(
                     ray_cfg.ray_num_worker,
                     num_cpus_per_worker,
                     num_gpus_per_worker,
-                    cluster_resources,
+                    sizing_resources,
                 )
                 if ray_cfg.ray_num_worker == -1:
                     ray_cfg.ray_num_worker = ray_num_worker
@@ -152,8 +156,15 @@ class RayCfgMixin:
                     strategy=ray_cfg.ray_placement_strategy,
                     timeout_s=placement_timeout_s,
                 )
-                master_addr, master_port = get_network_config()
                 worker_node_ids = get_placement_group_node_ids(pg, ray_cfg.ray_num_worker)
+                if ray_cfg.ray_num_worker > 1:
+                    rendezvous_actor, master_addr, master_port = start_ray_rendezvous_store(
+                        pg,
+                        ray_cfg.ray_num_worker,
+                        placement_timeout_s,
+                    )
+                else:
+                    master_addr, master_port = get_network_config(worker_node_ids[0])
                 options_list = get_num_worker_options(
                     pg,
                     ray_cfg.ray_num_worker,
@@ -181,6 +192,10 @@ class RayCfgMixin:
                 ray.get([worker.set_cfg.remote(experiment_cfg) for worker in worker_group])
                 ray.get([worker.run.remote() for worker in worker_group])
             finally:
+                if rendezvous_actor is not None:
+                    with suppress(Exception):
+                        ray.kill(rendezvous_actor, no_restart=True)
+
                 if pg is not None:
                     with suppress(Exception):
                         ray.util.remove_placement_group(pg)
@@ -189,7 +204,7 @@ class RayCfgMixin:
                     with suppress(Exception):
                         redis_manager.stop()
 
-                if ray.is_initialized():
+                if owns_ray_runtime and ray.is_initialized():
                     with suppress(Exception):
                         # Drain Ray's asynchronous worker logs before tearing down the runtime.
                         ray.shutdown(_exiting_interpreter=True)
@@ -234,6 +249,7 @@ class RedisCfgMixin:
             default_factory=lambda: ListConfig([7000, 7001, 7002, 7003, 7004, 7005])
         )
         redis_cache_max_memory: int = 160  # Maximum memory is 160GB, according to the ImageNet dataset size
+        redis_cluster_startup_timeout_s: float = 30.0
 
         # 1: standalone Redis. In Ray launches, this starts one local Redis per alive Ray node.
         # -1: Ray-managed Redis Cluster using the alive Ray nodes.
@@ -266,6 +282,8 @@ class CheckpointCfgMixin:
             exp_class: str = "",
             extra_state: Optional[dict[str, Any]] = None,
         ) -> str:
+            import torch
+
             save_path = Path(run_dir) / name
             save_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -362,6 +380,8 @@ class CheckpointCfgMixin:
 
         @staticmethod
         def capture_rng_state() -> dict[str, Any]:
+            import torch
+
             state: dict[str, Any] = {
                 "python": random.getstate(),
                 "numpy": np.random.get_state(),
@@ -373,6 +393,8 @@ class CheckpointCfgMixin:
 
         @staticmethod
         def restore_rng_state(state: dict[str, Any]) -> None:
+            import torch
+
             random.setstate(state["python"])
             np.random.set_state(state["numpy"])
             torch.set_rng_state(state["torch"])
@@ -390,7 +412,12 @@ class CheckpointCfgMixin:
             strict: bool = True,
             map_location=None,
         ) -> dict[str, Any]:
-            checkpoint = self._validate_checkpoint_payload(path, torch.load(path, map_location=map_location))
+            import torch
+
+            checkpoint = self._validate_checkpoint_payload(
+                path,
+                torch.load(path, map_location=map_location, weights_only=False),
+            )
             self._load_required_state(
                 checkpoint,
                 model=model,

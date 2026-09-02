@@ -51,7 +51,7 @@ For a longer explanation, see [`docs/philosophy.md`](docs/philosophy.md).
 ### Option A: Install with pip and use import-based entrypoint
 
 ```bash
-pip install tinyexp
+pip install "tinyexp[pytorch]"
 ```
 
 ```python
@@ -71,7 +71,7 @@ python your_exp.py dataloader_cfg.train_batch_size_per_device=16
 ```bash
 git clone https://github.com/HKUST-SAIL/tinyexp.git
 cd tinyexp
-make install
+make install-pytorch
 uv run python tinyexp/examples/mnist_exp.py
 ```
 
@@ -149,6 +149,11 @@ tinyexp-run-with-redis -- python your_exp.py redis_cfg.redis_cache_enabled=true
 another Redis process, startup fails without shutting down or taking ownership of that server. Connect to externally
 managed Redis directly through `redis_cfg` instead of wrapping the command with `tinyexp-run-with-redis`.
 
+For multi-node training, the helper's Redis lifecycle follows the local command: each wrapper stops the Redis
+resources it owns as soon as its child exits. If one node fails, the whole distributed training job is expected to
+fail and restart; the helper does not keep Redis alive for a global finish barrier or implement heartbeat/lease-based
+failure coordination. The external launcher or supervisor owns whole-job restart and termination.
+
 ## Example Experiments
 
 - MNIST baseline: [`tinyexp/examples/mnist_exp.py`](tinyexp/examples/mnist_exp.py)
@@ -181,11 +186,13 @@ model preparation, reduction, synchronization, and cleanup methods.
 
 ## Development
 
-Install environment and hooks:
+Install the core environment and hooks:
 
 ```bash
 make install
 ```
+
+`make install` installs the core environment and hooks without selecting or removing optional accelerator packages. For the default PyPI stack, run `make install-pytorch` before `make test`. On a machine with a preselected CUDA, ROCm, or vendor PyTorch build, `make install` (or the more explicit `make install-without-pytorch`) preserves that environment; install `torch`, `torchvision`, and `accelerate` together according to that machine's package index/backend, then use ordinary `uv run`. Because the PyTorch packages are optional and ordinary `uv run` does not remove extraneous packages by default, no repeated `--no-sync` flag is needed. Avoid `uv sync` without `--inexact` in that environment.
 
 Run checks:
 

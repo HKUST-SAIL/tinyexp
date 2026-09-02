@@ -271,7 +271,7 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
                 "num_workers": self.train_data_worker_per_gpu,
                 "pin_memory": True,
                 "sampler": sampler,
-                "persistent_workers": True,  # Keep workers alive for multiple epochs
+                "persistent_workers": self.train_data_worker_per_gpu > 0,
             }
             train_dataloader = torch.utils.data.DataLoader(ds_train, **train_kwargs)
             # from tinyexp.dataset.fake_dataloader import HoldOnesampleDataLoader
@@ -290,7 +290,7 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
                 "batch_size": self.val_batch_size_per_device,
                 "num_workers": self.val_data_worker_per_gpu,
                 "pin_memory": True,
-                "persistent_workers": True,
+                "persistent_workers": self.val_data_worker_per_gpu > 0,
             }
             val_dataloader = torch.utils.data.DataLoader(ds_val, **val_kwargs)
             return val_dataloader
@@ -299,6 +299,12 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
 
     def run(self) -> None:
         accelerator = self.accelerator_cfg.build_accelerator()
+        try:
+            self._run(accelerator)
+        finally:
+            accelerator.destroy()
+
+    def _run(self, accelerator: AcceleratorProtocol) -> None:
         run_dir = self.get_run_dir()
         logger = self.logger_cfg.build_logger(save_dir=run_dir, distributed_rank=accelerator.rank)
         cfg_dict = self.print_cfg(logger)
@@ -320,8 +326,6 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
             )
         else:
             raise NotImplementedError(f"Mode {self.mode} is not implemented")
-
-        accelerator.destroy()
 
     def _evaluate(self, accelerator, logger, module_or_module_path, val_dataloader=None) -> None:
         if isinstance(module_or_module_path, str):
@@ -370,6 +374,8 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
         train_dataloader = self.dataloader_cfg.build_train_dataloader(accelerator, self.redis_cfg)
         val_dataloader = self.dataloader_cfg.build_val_dataloader(accelerator)
         ori_module = self.module_cfg.build_module()
+        # Keep the optimizer attached to the final device-side parameters.
+        ori_module.to(accelerator.device)
         ori_optimizer = self.optimizer_cfg.build_optimizer(ori_module, train_dataloader, accelerator)
         module, optimizer = accelerator.prepare(ori_module, ori_optimizer)
         lr_scheduler = self.lr_scheduler_cfg.build_lr_scheduler(optimizer)
@@ -406,8 +412,6 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
         train_iter = iter(train_dataloader)
 
         for global_epoch in range(start_epoch, self.max_train_epochs):
-            if global_epoch != start_epoch and train_sampler is not None and hasattr(train_sampler, "set_epoch"):
-                train_sampler.set_epoch(global_epoch)
             module.train()
 
             epoch_start_time = time.time()

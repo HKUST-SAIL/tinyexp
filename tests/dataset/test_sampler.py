@@ -3,6 +3,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from torch.utils.data import DataLoader, Dataset
 
 from tinyexp.dataset.fake_dataloader import HoldOnesampleDataLoader
 from tinyexp.dataset.sampler import InfiniteSampler
@@ -81,6 +82,64 @@ def test_infinite_sampler_no_shuffle_multi_worker_slices() -> None:
     it = iter(sampler)
     first_six = [next(it) for _ in range(6)]
     assert first_six == [1, 3, 1, 3, 1, 3]
+
+
+def test_infinite_sampler_reuses_one_dataloader_iterator_across_epochs() -> None:
+    class IndexDataset(Dataset[int]):
+        def __len__(self) -> int:
+            return 4
+
+        def __getitem__(self, index: int) -> int:
+            return index
+
+    class CountingInfiniteSampler(InfiniteSampler):
+        iterator_count = 0
+
+        def __iter__(self):
+            type(self).iterator_count += 1
+            return super().__iter__()
+
+    sampler = CountingInfiniteSampler(size=4, shuffle=False, seed=0)
+    dataloader = DataLoader(IndexDataset(), batch_size=2, sampler=sampler, num_workers=0)
+    iterator = iter(dataloader)
+
+    epochs = [[next(iterator).tolist() for _ in range(len(dataloader))] for _ in range(3)]
+
+    assert CountingInfiniteSampler.iterator_count == 1
+    assert epochs == [
+        [[0, 1], [2, 3]],
+        [[0, 1], [2, 3]],
+        [[0, 1], [2, 3]],
+    ]
+
+
+def test_infinite_sampler_resumes_at_epoch_before_iterator_creation() -> None:
+    class IndexDataset(Dataset[int]):
+        def __len__(self) -> int:
+            return 4
+
+        def __getitem__(self, index: int) -> int:
+            return index
+
+    sampler = InfiniteSampler(size=4, shuffle=True, seed=17)
+    dataloader = DataLoader(IndexDataset(), batch_size=2, sampler=sampler, num_workers=0)
+    iterator = iter(dataloader)
+    first_epoch = [next(iterator).tolist() for _ in range(len(dataloader))]
+    second_epoch = [next(iterator).tolist() for _ in range(len(dataloader))]
+
+    resumed_sampler = InfiniteSampler(size=4, shuffle=True, seed=17)
+    resumed_sampler.set_epoch(1)
+    resumed_dataloader = DataLoader(
+        IndexDataset(),
+        batch_size=2,
+        sampler=resumed_sampler,
+        num_workers=0,
+    )
+    resumed_iterator = iter(resumed_dataloader)
+    resumed_epoch = [next(resumed_iterator).tolist() for _ in range(len(resumed_dataloader))]
+
+    assert first_epoch != second_epoch
+    assert resumed_epoch == second_epoch
 
 
 def test_infinite_sampler_set_epoch_continues_fixed_stream() -> None:

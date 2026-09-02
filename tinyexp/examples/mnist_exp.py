@@ -159,6 +159,12 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
     # ------------------------------ bellowing is the execution part --------------------- #
     def run(self) -> None:
         accelerator = self.accelerator_cfg.build_accelerator()
+        try:
+            self._run(accelerator)
+        finally:
+            accelerator.destroy()
+
+    def _run(self, accelerator: AcceleratorProtocol) -> None:
         run_dir = self.get_run_dir()
         logger = self.logger_cfg.build_logger(save_dir=run_dir, distributed_rank=accelerator.rank)
         cfg_dict = self.print_cfg(logger)
@@ -180,8 +186,6 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
             )
         else:
             raise NotImplementedError(f"Mode {self.mode} is not implemented")
-
-        accelerator.destroy()
 
     def _evaluate(self, accelerator, logger, module_or_module_path, val_dataloader=None) -> float:
         if isinstance(module_or_module_path, str):
@@ -230,6 +234,8 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
         train_dataloader = self.dataloader_cfg.build_train_dataloader(accelerator)
         val_dataloader = self.dataloader_cfg.build_val_dataloader(accelerator)
         ori_module = self.module_cfg.build_module()
+        # Keep the optimizer attached to the final device-side parameters.
+        ori_module.to(accelerator.device)
         ori_optimizer = self.optimizer_cfg.build_optimizer(ori_module, train_dataloader, accelerator)
         lr_scheduler = self.lr_scheduler_cfg.build_lr_scheduler(ori_optimizer)
 

@@ -4,6 +4,7 @@ __license__ = "MIT"
 
 import os
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -32,6 +33,28 @@ __all__ = [
     "simple_launch_exp",
     "store_and_run_exp",
 ]
+
+
+def _patch_argparse_help_for_python314() -> None:
+    """Allow Hydra's lazy help object to work with Python 3.14 argparse."""
+    if sys.version_info < (3, 14):
+        return
+
+    import argparse
+
+    original_get_help_string = argparse.HelpFormatter._get_help_string
+    if getattr(original_get_help_string, "_tinyexp_python314_compat", False):
+        return
+
+    def get_help_string(self, action):
+        help_string = original_get_help_string(self, action)
+        return help_string if isinstance(help_string, str) else str(help_string)
+
+    get_help_string._tinyexp_python314_compat = True
+    argparse.HelpFormatter._get_help_string = get_help_string
+
+
+_patch_argparse_help_for_python314()
 
 
 @dataclass
@@ -115,10 +138,24 @@ class TinyExp:
             cfg_object = self
         for key, value in cfg_hydra.items():
             if hasattr(cfg_object, key):
-                if isinstance(value, (DictConfig, dict)):
-                    # If the value is a dictionary, recursively set attributes
-                    sub_object = getattr(cfg_object, key)
-                    self.set_cfg(value, sub_object)
+                sub_object = getattr(cfg_object, key)
+                if isinstance(value, (DictConfig, Mapping)):
+                    if isinstance(sub_object, Mapping):
+                        # Hydra has already merged and validated mapping values; store the resolved plain dict.
+                        new_value = (
+                            dict(OmegaConf.to_container(value, resolve=True))
+                            if isinstance(value, DictConfig)
+                            else dict(value)
+                        )
+                        if sub_object != new_value:
+                            self.overrided_cfg[key] = {
+                                "value": new_value,
+                                "original": sub_object,
+                            }
+                            setattr(cfg_object, key, new_value)
+                    else:
+                        # Nested config objects still receive recursive attribute updates.
+                        self.set_cfg(value, sub_object)
                 else:
                     # Otherwise, set the attribute directly
                     ori_value = getattr(cfg_object, key, None)

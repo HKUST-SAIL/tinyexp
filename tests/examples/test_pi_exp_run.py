@@ -40,3 +40,29 @@ def test_pi_run_prints_result_on_stdout(
 
     assert events == ["destroy"]
     assert "pi ~= 3.140000 (error=0.000000, samples=10000000)" in capsys.readouterr().out
+
+
+def test_pi_run_destroys_accelerator_when_workload_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class DummyAccelerator:
+        rank = 0
+        world_size = 1
+        is_main_process = True
+
+        def destroy(self) -> None:
+            events.append("destroy")
+
+    accelerator = DummyAccelerator()
+    exp = pi_exp.Exp(output_root=str(tmp_path), exp_name="pi_failure")
+
+    monkeypatch.setattr("tinyexp.tiny_engine.accelerator.CPUAccelerator", lambda: accelerator)
+    monkeypatch.setattr(exp, "_run", lambda _accelerator: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    with pytest.raises(RuntimeError, match="boom"):
+        exp.run()
+
+    assert events == ["destroy"]

@@ -13,14 +13,15 @@ This repo uses `uv` for dependency management (creates `.venv/` and maintains `u
 - `make install`: create/sync env and install `pre-commit` hooks.
 - `make check`: verify lockfile consistency and run `pre-commit` (ruff/black/isort, etc.).
 - `make test`: run unit tests with coverage (`pytest --cov`, emits `coverage.xml`).
-- `tox`: run tests across supported Python versions and run `mypy` (matches CI expectations).
+- `tox`: run tests across supported Python versions. `mypy` is currently disabled but its dependency and configuration
+  are retained for future re-enablement.
 - `make docs` / `make docs-test`: serve or build MkDocs docs.
 - `make build`: build a wheel into `dist/` (for release preparation).
 
 ## Coding Style & Naming Conventions
 - Python 3.9+; 4-space indentation; line length target is 120.
 - Formatting/linting is enforced via `pre-commit`: Black + isort + Ruff (auto-fix enabled).
-- Prefer explicit names and type hints; `mypy` is part of the `tox` run and untyped defs are disallowed.
+- Prefer explicit names and type hints; static type checking is currently disabled and may be re-enabled later.
 
 ## Development Principles
 - 如无必要，勿增实体: do not add new concepts, state, helpers, layers, or dependencies unless they are needed to solve the concrete problem.

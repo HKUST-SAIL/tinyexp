@@ -143,6 +143,32 @@ def test_checkpoint_cfg_rng_state_restores_continuation() -> None:
     assert torch.equal(resumed[2], expected[2])
 
 
+def test_checkpoint_cfg_loads_checkpoint_with_rng_state_on_torch_26_plus(tmp_path: Path) -> None:
+    checkpoint_cfg = CheckpointCfgMixin.CheckpointCfg()
+    random.seed(7)
+    np.random.seed(7)
+    torch.manual_seed(7)
+    rng_state = checkpoint_cfg.capture_rng_state()
+    checkpoint_path = checkpoint_cfg.save_checkpoint(
+        run_dir=str(tmp_path),
+        name=checkpoint_cfg.last_ckpt_name,
+        extra_state={"rng_state": rng_state},
+    )
+
+    expected = (random.random(), np.random.random(), torch.rand(3))  # noqa: S311
+    random.random()  # noqa: S311
+    np.random.random()
+    torch.rand(3)
+
+    checkpoint = checkpoint_cfg.load_checkpoint(checkpoint_path)
+    checkpoint_cfg.restore_rng_state(checkpoint["extra_state"]["rng_state"])
+    resumed = (random.random(), np.random.random(), torch.rand(3))  # noqa: S311
+
+    assert resumed[0] == expected[0]
+    assert resumed[1] == expected[1]
+    assert torch.equal(resumed[2], expected[2])
+
+
 def test_checkpoint_cfg_atomic_save_preserves_previous_checkpoint_on_failure(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

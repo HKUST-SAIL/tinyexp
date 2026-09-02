@@ -11,10 +11,12 @@ def ray_session():
     if not ray.is_initialized():
         runtime_env = {
             "working_dir": ".",
-            "excludes": ["*.md", "data/", "tests/", ".git/", ".venv/", "output/", "outputs/", "site/"],
+            "excludes": ["data/", "tests/", ".git/", ".venv/", "output/", "outputs/", "site/"],
         }
         try:
-            ray.init(runtime_env=runtime_env)
+            # Force a fresh local runtime instead of auto-connecting to a
+            # stale cluster address left by an interrupted Ray test run.
+            ray.init(address="local", runtime_env=runtime_env)
         except Exception as exc:
             pytest.skip(f"Ray is not available in this environment: {exc}")
 

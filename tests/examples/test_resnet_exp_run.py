@@ -165,6 +165,47 @@ def test_resnet_dataloader_passes_complete_redis_cfg_to_cached_folder(
     assert captured["root"] == "/imagenet/train"
 
 
+@pytest.mark.parametrize("num_workers", [0, 2])
+def test_resnet_dataloaders_match_persistent_workers_to_num_workers(
+    monkeypatch,
+    num_workers: int,
+) -> None:
+    class FakeDataset:
+        def __len__(self) -> int:
+            return 2
+
+        def __getitem__(self, index: int) -> tuple[int, int]:
+            return index, index
+
+    monkeypatch.setattr(
+        "tinyexp.examples.resnet_exp.datasets.ImageFolder",
+        lambda root, transform=None: FakeDataset(),
+    )
+    monkeypatch.setattr(
+        "tinyexp.examples.resnet_exp.LocalCachedImageFolder",
+        lambda root, transform=None: FakeDataset(),
+    )
+    monkeypatch.setattr(
+        "tinyexp.examples.resnet_exp.transform_template_imagenet",
+        lambda **kwargs: None,
+    )
+
+    dataloader_cfg = ResNetExp.DataloaderCfg(
+        data_root="/imagenet",
+        train_data_worker_per_gpu=num_workers,
+        val_data_worker_per_gpu=num_workers,
+    )
+    accelerator = SimpleNamespace(rank=0, world_size=1)
+    redis_cfg = SimpleNamespace(redis_cache_enabled=False)
+
+    train_dataloader = dataloader_cfg.build_train_dataloader(accelerator, redis_cfg)
+    val_dataloader = dataloader_cfg.build_val_dataloader(accelerator)
+
+    expected = num_workers > 0
+    assert train_dataloader.persistent_workers is expected
+    assert val_dataloader.persistent_workers is expected
+
+
 def test_resnet_run_val_mode_requires_resume_from(tmp_path: Path, monkeypatch) -> None:
     exp = ResNetExp(output_root=str(tmp_path), exp_name="resnet_val", mode="val", resume_from="")
     dummy_accelerator = SimpleNamespace(
@@ -249,6 +290,29 @@ def test_resnet_run_val_mode_uses_checkpoint(tmp_path: Path, monkeypatch) -> Non
     assert called["module_or_module_path"] == checkpoint_path
     assert destroy_calls == [True]
     assert called["val_dataloader"] is None
+
+
+def test_resnet_run_destroys_accelerator_when_workload_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exp = ResNetExp(output_root=str(tmp_path), exp_name="resnet_failure")
+    events: list[str] = []
+
+    class DummyAccelerator:
+        rank = 0
+
+        def destroy(self) -> None:
+            events.append("destroy")
+
+    accelerator = DummyAccelerator()
+    monkeypatch.setattr(exp.accelerator_cfg, "build_accelerator", lambda: accelerator)
+    monkeypatch.setattr(exp, "_run", lambda _accelerator: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    with pytest.raises(RuntimeError, match="boom"):
+        exp.run()
+
+    assert events == ["destroy"]
 
 
 def test_resnet_train_saves_last_and_best_checkpoints(tmp_path: Path, monkeypatch) -> None:
@@ -359,6 +423,70 @@ def test_resnet_train_stops_at_max_train_epochs(tmp_path: Path, monkeypatch) -> 
 
     assert [item["epoch"] for item in saved] == [0, 0, 1]
     assert [item["global_step"] for item in saved] == [1, 1, 2]
+
+
+def test_resnet_train_positions_sampler_once_before_creating_iterator(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exp = ResNetExp(output_root=str(tmp_path), exp_name="resnet_train", max_train_epochs=2)
+    events: list[object] = []
+
+    class DummySampler:
+        def set_epoch(self, epoch: int) -> None:
+            events.append(("set_epoch", epoch))
+
+    class DummyDataLoader:
+        batch_size = 2
+        sampler = DummySampler()
+
+        def __len__(self) -> int:
+            return 1
+
+        def __iter__(self):
+            events.append("iter")
+            while True:
+                yield torch.randn(2, 2), torch.tensor([0, 1])
+
+    class DummyAccelerator:
+        rank = 0
+        device = "cpu"
+        is_main_process = True
+        world_size = 1
+
+        def prepare(self, module, optimizer):
+            return module, optimizer
+
+        def unwrap_model(self, module):
+            return module
+
+        def backward(self, loss):
+            loss.backward()
+
+    train_dataloader = DummyDataLoader()
+    monkeypatch.setattr(
+        exp.dataloader_cfg,
+        "build_train_dataloader",
+        lambda accelerator, redis_cfg: train_dataloader,
+    )
+    monkeypatch.setattr(exp.dataloader_cfg, "build_val_dataloader", lambda accelerator: [])
+    monkeypatch.setattr(exp.module_cfg, "build_module", lambda: nn.Linear(2, 2))
+    monkeypatch.setattr(
+        exp.optimizer_cfg,
+        "build_optimizer",
+        lambda module, dataloader, accelerator: torch.optim.SGD(module.parameters(), lr=0.1),
+    )
+    monkeypatch.setattr(exp, "_evaluate", lambda **kwargs: 0.5)
+    monkeypatch.setattr(exp.checkpoint_cfg, "save_checkpoint", lambda **kwargs: None)
+
+    exp._train(
+        accelerator=DummyAccelerator(),
+        logger=SimpleNamespace(info=lambda *args, **kwargs: None),
+        cfg_dict={},
+        run_dir=str(tmp_path / "resnet_train"),
+    )
+
+    assert events == [("set_epoch", 0), "iter"]
 
 
 def test_resnet_train_stops_at_max_train_steps(tmp_path: Path, monkeypatch) -> None:

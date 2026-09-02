@@ -5,6 +5,7 @@ import socket
 from collections import Counter
 from collections.abc import Sequence
 from contextlib import suppress
+from datetime import timedelta
 from typing import Any, Optional
 
 import ray
@@ -13,11 +14,6 @@ from ray.util.placement_group import placement_group
 from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 
 from .redis_utils import RayRedisClusterManager
-
-_RAY_HEAD_NODE_RESOURCE = "node:__internal_head__"
-# Ray node resources are capacity-1 logical labels. A tiny fractional request pins
-# bundle 0 to the head node without meaningfully consuming CPU/GPU resources.
-_RAY_NODE_RESOURCE_PIN = 0.001
 
 
 def _maybe_start_ray_redis_cache(
@@ -54,27 +50,85 @@ def get_placement_group(
 ):
     """Create and return a placement group for worker allocation."""
     bundles = [{"CPU": num_cpus_per_worker, "GPU": num_gpus_per_worker} for _ in range(num_worker)]
-    cluster_resources = ray.cluster_resources() if ray.is_initialized() else {}
-    if num_worker > 1 and _RAY_HEAD_NODE_RESOURCE in cluster_resources:
-        # PyTorch env:// starts TCPStore on rank 0 at MASTER_ADDR. get_network_config()
-        # uses the Ray head address, so rank 0's bundle must be scheduled on the head.
-        bundles[0][_RAY_HEAD_NODE_RESOURCE] = _RAY_NODE_RESOURCE_PIN
     pg = placement_group(bundles=bundles, strategy=strategy)
     try:
         ray.get(pg.ready(), timeout=timeout_s)
     except ray.exceptions.GetTimeoutError as exc:
+        try:
+            total_resources = ray.cluster_resources()
+        except Exception:
+            total_resources = {}
+        try:
+            available_resources = ray.available_resources()
+        except Exception:
+            available_resources = {}
         with suppress(Exception):
             ray.util.remove_placement_group(pg)
         raise TimeoutError(  # noqa: TRY003
             f"Ray placement group timed out after {timeout_s}s: "
             f"workers={num_worker}, CPU/worker={num_cpus_per_worker}, "
-            f"GPU/worker={num_gpus_per_worker}, strategy={strategy}"
+            f"GPU/worker={num_gpus_per_worker}, strategy={strategy}; "
+            f"requested CPU={num_worker * num_cpus_per_worker}, "
+            f"requested GPU={num_worker * num_gpus_per_worker}; "
+            f"total CPU={total_resources.get('CPU', 'unknown')}, "
+            f"total GPU={total_resources.get('GPU', 'unknown')}; "
+            f"available CPU={available_resources.get('CPU', 'unknown')}, "
+            f"available GPU={available_resources.get('GPU', 'unknown')}"
         ) from exc
     except Exception:
         with suppress(Exception):
             ray.util.remove_placement_group(pg)
         raise
     return pg
+
+
+class _RayRendezvousStoreActor:
+    def __init__(self, world_size: int, timeout_s: float) -> None:
+        import torch.distributed as dist
+
+        self._master_addr = ray.util.get_node_ip_address()
+        self._store = dist.TCPStore(
+            host_name=self._master_addr,
+            port=0,
+            world_size=world_size,
+            is_master=True,
+            timeout=timedelta(seconds=timeout_s),
+            wait_for_workers=False,
+        )
+
+    def get_endpoint(self) -> tuple[str, int]:
+        return self._master_addr, int(self._store.port)
+
+
+def start_ray_rendezvous_store(
+    pg: Any,
+    world_size: int,
+    timeout_s: float,
+) -> tuple[Any, str, int]:
+    """Start a TCPStore server in placement-group bundle 0 and return its endpoint."""
+    if world_size <= 1:
+        raise ValueError("Ray rendezvous store requires world_size greater than 1")  # noqa: TRY003
+
+    remote_actor_cls = ray.remote(num_cpus=0)(_RayRendezvousStoreActor)
+    actor = remote_actor_cls.options(
+        scheduling_strategy=PlacementGroupSchedulingStrategy(
+            placement_group=pg,
+            placement_group_bundle_index=0,
+        )
+    ).remote(world_size, timeout_s)
+    try:
+        master_addr, master_port = ray.get(actor.get_endpoint.remote(), timeout=timeout_s)
+    except ray.exceptions.GetTimeoutError as exc:
+        with suppress(Exception):
+            ray.kill(actor, no_restart=True)
+        raise TimeoutError(  # noqa: TRY003
+            f"Ray rendezvous store timed out after {timeout_s}s while starting on placement-group bundle 0"
+        ) from exc
+    except Exception:
+        with suppress(Exception):
+            ray.kill(actor, no_restart=True)
+        raise
+    return actor, str(master_addr), int(master_port)
 
 
 def get_worker_options(
@@ -113,6 +167,8 @@ def _build_worker_env_vars(
     }
     if os.getenv("GLOO_SOCKET_IFNAME"):
         env_vars["GLOO_SOCKET_IFNAME"] = os.environ["GLOO_SOCKET_IFNAME"]
+    if num_worker > 1:
+        env_vars["TORCHELASTIC_USE_AGENT_STORE"] = "True"
     return env_vars
 
 
@@ -181,9 +237,21 @@ def build_ray_worker_env_vars(
     return env_vars
 
 
-def get_network_config():
-    """Get network configuration for distributed setup."""
-    master_addr = ray.util.get_node_ip_address()
+def get_network_config(master_node_id: str | None = None) -> tuple[str, int]:
+    """Get the distributed master address and an available port."""
+    if master_node_id is None:
+        master_addr = ray.util.get_node_ip_address()
+    else:
+        master_node = next(
+            (node for node in ray.nodes() if node.get("Alive", True) and str(node.get("NodeID")) == master_node_id),
+            None,
+        )
+        if master_node is None:
+            raise RuntimeError(f"Ray master node {master_node_id} is not alive or is missing")  # noqa: TRY003
+        master_addr = master_node.get("NodeManagerAddress")
+        if not isinstance(master_addr, str) or not master_addr:
+            raise RuntimeError(f"Ray master node {master_node_id} is missing NodeManagerAddress")  # noqa: TRY003
+
     with socket.socket() as sock:
         sock.bind(("", 0))
         master_port = sock.getsockname()[1]
@@ -205,8 +273,12 @@ def get_num_worker_options(
     if num_cpus_per_worker is None:
         num_cpus_per_worker = pg.bundle_specs[0].get("CPU", 0)
 
+    if num_worker > 1 and (master_addr is None or master_port is None):
+        raise ValueError(  # noqa: TRY003
+            "multi-worker Ray runs require master_addr/master_port from start_ray_rendezvous_store()"
+        )
     if master_addr is None or master_port is None:
-        master_addr, master_port = get_network_config()
+        master_addr, master_port = get_network_config(node_ids[0])
     runtime_envs = build_ray_worker_env_vars(
         num_worker=num_worker,
         node_ids=node_ids,

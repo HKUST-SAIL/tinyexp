@@ -1,8 +1,16 @@
 .PHONY: install
-install: ## Install the virtual environment and install the pre-commit hooks
+install: ## Install core dependencies while preserving machine-selected optional packages
 	@echo "🚀 Creating virtual environment using uv"
-	@uv sync
+	@uv sync --locked --inexact
 	@uv run pre-commit install
+
+.PHONY: install-pytorch
+install-pytorch: ## Install the default PyPI PyTorch, TorchVision, and Accelerate builds
+	@uv sync --locked --extra pytorch
+
+.PHONY: install-without-pytorch
+install-without-pytorch: ## Install core dependencies while preserving machine-selected accelerator packages
+	@uv sync --locked --no-extra pytorch --inexact
 
 .PHONY: check
 check: ## Run code quality tools.
@@ -16,7 +24,7 @@ check: ## Run code quality tools.
 .PHONY: test
 test: ## Test the code with pytest
 	@echo "🚀 Testing code: Running pytest"
-	@uv run python -m pytest --cov --cov-config=pyproject.toml --cov-report=xml
+	@RAY_ENABLE_UV_RUN_RUNTIME_ENV=0 uv run python -m pytest --cov --cov-config=pyproject.toml --cov-report=xml
 
 .PHONY: build
 build: clean-build ## Build wheel file

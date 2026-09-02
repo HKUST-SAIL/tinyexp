@@ -40,10 +40,32 @@ make install
 Or install the published package with:
 
 ```bash
-pip install tinyexp
+pip install "tinyexp[pytorch]"
 ```
 
-TinyExp declares PyTorch, Ray, Accelerate, and their Python-level dependencies, but it does not choose a CUDA-specific PyTorch wheel or manage GPU drivers. Follow the PyTorch installation guidance for the target machine when a GPU build is required.
+TinyExp keeps Ray and its Python-level dependencies in the core installation. PyTorch, TorchVision, and Accelerate are provided by the optional `pytorch` extra. This avoids pretending that Python package metadata can choose a compatible CPU, CUDA, ROCm, or vendor-specific build for every machine. The universal `uv.lock` records Python- and operating-system-aware resolutions for the extra; accelerator runtime selection remains machine-specific.
+
+For the default PyPI PyTorch build, use:
+
+```bash
+make install-pytorch
+# or: pip install "tinyexp[pytorch]"
+```
+
+This convenience extra resolves the default PyPI builds recorded in `uv.lock`; it is not a universal CUDA/driver compatibility choice. For a machine that needs a machine-specific CUDA, ROCm, or vendor build, install the base project without the extra, then install all accelerator packages together using the target machine's instructions:
+
+```bash
+make install-without-pytorch
+# Install torch/torchvision from the machine-specific index/build, while
+# keeping PyPI available for accelerate and other regular packages.
+uv pip install --python .venv/bin/python torch torchvision accelerate \
+  --index <pytorch-index-url> --default-index https://pypi.org/simple
+# Or use uv's PyTorch backend selector where supported, e.g.:
+# uv pip install --python .venv/bin/python torch torchvision accelerate --torch-backend cu126
+uv run python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+```
+
+Python 3.14 requires PyTorch/TorchVision builds that publish compatible `cp314` wheels; this is an ABI requirement, not a CUDA-version requirement. The PyTorch packages are optional, so ordinary `uv run` keeps a machine-selected accelerator build in place and does not require a repeated `--no-sync` flag. Use `make install` (which is intentionally non-exact) on such a machine, and avoid exact `uv sync` without `--inexact` afterward.
 
 Check the active environment before launching:
 
@@ -93,13 +115,17 @@ Requirements:
 
 - The `ray` Python package must import successfully.
 - The machine must have enough resources for every worker bundle.
-- `ray_cfg.ray_num_worker` must be `-1` or a positive integer. `-1` fills the available CPU or GPU capacity.
+- `ray_cfg.ray_num_worker` must be `-1` or a positive integer. `-1` sizes workers from the CPU/GPU resources
+  available when the run starts.
 - `ray_cfg.ray_num_cpus_per_worker` must be positive.
 - `ray_cfg.ray_num_gpus_per_worker` must be non-negative.
 - `ray_cfg.ray_placement_timeout_s` controls how long TinyExp waits for the placement group; the default is 120 seconds.
-- Requests that exceed the cluster's total CPU or GPU capacity fail before placement starts. If the total capacity is sufficient but currently busy, placement waits up to the configured timeout.
+- Requests that exceed the cluster's total CPU or GPU capacity fail before placement starts. If the total capacity is
+  sufficient but currently busy, placement waits up to the configured timeout; a timeout reports total and currently
+  available CPU/GPU resources.
 - GPU workers require a CUDA-enabled PyTorch installation and visible GPUs.
 - TinyExp reads the placement-group bundle-to-node topology before creating Ray worker actors, then derives `RANK` and `LOCAL_RANK` from that topology. Ray workers must be homogeneous: every participating node must host the same number of workers, so every node has the same local-rank range. When bundles are interleaved across nodes, global ranks are reassigned so ranks remain contiguous within each node (for example, node-local workers receive `0..N-1`, then the next node receives the following range).
+- For multi-worker runs, TinyExp starts a zero-CPU TCPStore actor in placement-group bundle 0. The actor binds and holds a dynamic port before worker creation, and all ranks connect to it as clients. The Ray head therefore does not need to host rank 0 or provide a GPU.
 
 If `RAY_ADDRESS` already points to a reachable Ray cluster, `ray.init()` can attach to that cluster. Otherwise, Ray starts a local runtime.
 
@@ -241,12 +267,14 @@ Multi-node requirements:
 
 - `ray` and Python executables must be available on every node. Use `--ray-bin` and `--python-bin` when they are not on `PATH`.
 - The helper owns the Ray runtime on each participating node: it runs `ray stop --force` before startup and during cleanup. Do not use it on a node whose existing Ray runtime must remain active.
+- In multi-node mode, `--node-rank` must be in `[0, --node-count)`, `--ray-port` must be a fixed port in `1..65535`, and `--wait-timeout` bounds Ray head/node readiness.
 - Each node must use compatible Python, TinyExp, PyTorch, Ray, and experiment dependency versions.
 - Custom experiment modules must be importable on every node. The helper does not distribute source code or create environments.
 - Dataset paths used by a scheduled worker must exist on that worker, either through a shared filesystem or equivalent per-node data layout.
 - The head address must be reachable from every worker and must not resolve to loopback for a multi-node job.
 - Firewalls and security groups must allow Ray's head port and Ray's node-to-node runtime traffic. The head port defaults to `6379`; choose an unused `--ray-port` when that port is occupied. The selected head port must also be outside Ray's configured worker port range. Dashboard, metrics, client, and other Ray runtime ports may also need explicit network policy.
 - Aggregate Ray cluster resources must satisfy the requested placement group. A job waits if resources exist in theory but cannot be placed with the requested bundle shape or placement strategy.
+- The Ray head may be CPU-only. GPU worker bundles and the distributed TCPStore are placed on eligible worker nodes according to the resolved placement group.
 
 When `--node-count=1`, the helper executes the command unchanged and does not start a static Ray cluster. A command with `launcher=ray` may still start a local Ray runtime itself.
 
@@ -264,8 +292,24 @@ Redis and W&B requirements are independent of the four launch styles.
 - Enabling Redis cache requires a reachable Redis service.
 - TinyExp-managed standalone Redis requires `redis-server` on the host that starts it.
 - TinyExp-managed Redis Cluster also requires `redis-cli` on the coordinating host.
+- Ray-managed Redis Cluster startup and readiness use `redis_cfg.redis_cluster_startup_timeout_s` (30 seconds by
+  default). The `tinyexp-run-with-redis` wrapper uses its `--wait-timeout` option for the multi-node registration,
+  cluster creation, and readiness deadline.
 - The ResNet example enables Redis cache by default. Set `redis_cfg.redis_cache_enabled=false` when Redis is not installed or desired.
 - Enabling W&B requires suitable credentials and network access, or an explicitly configured offline mode.
+
+### Redis helper lifecycle in multi-node jobs
+
+`tinyexp-run-with-redis` is a per-process wrapper, not a long-lived Redis service manager. It starts Redis resources
+for the command it launches and stops the resources owned by that wrapper as soon as the child command exits, whether
+the child succeeds or fails. In multi-node mode, the HTTP rendezvous is used only to register nodes and create the
+Redis Cluster during startup; it is not a finish barrier.
+
+When a multi-node training process fails, the distributed training job is considered failed and must be restarted as
+a whole by the external process supervisor or launcher. The supervisor must terminate the remaining wrappers; their
+signal handlers stop their child processes and destroy the Redis resources they own. TinyExp deliberately does not add
+heartbeat, lease, or a global terminal-state protocol here: Redis exists only for the lifetime of the command on each
+node, and a failed multi-node job is expected to be torn down rather than kept alive for coordination.
 
 Check Redis system commands when cache management is enabled:
 

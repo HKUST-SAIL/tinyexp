@@ -5,6 +5,8 @@ The wrapper reads ``redis_cfg`` overrides from the target command, starts
 standalone Redis for single-node jobs or a Redis Cluster for multi-node jobs,
 injects the final Redis connection settings back into the child command as Hydra
 overrides, waits for the child command, and then stops Redis processes it owns.
+In multi-node mode, the HTTP rendezvous is used only during startup; each
+wrapper cleans up its locally owned Redis as soon as its child command exits.
 
 For multi-node jobs, pass ``--node-count``, ``--node-rank``, and ``--head-addr``
 or provide matching StepFun env/Hydra values through ``NODE_RANK`` and
@@ -35,11 +37,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, cast
 
-import redis
 from omegaconf import OmegaConf
 
 from tinyexp.exp_mixins import RedisCfgMixin
-from tinyexp.utils.redis_utils import RedisClusterManager
+from tinyexp.utils.redis_utils import RedisClusterManager, wait_for_redis_cluster
 
 REDIS_RENDEZVOUS_PORT = 26379
 REDIS_RENDEZVOUS_TIMEOUT_S = 600
@@ -276,13 +277,6 @@ def main(argv: list[str]) -> int:
             start_new_session=True,
         )
         exit_code = CHILD_PROCESS.wait()
-        if startup_node is not None and world_size > 1:
-            wait_for_rendezvous_finish(
-                head_addr=head_addr,
-                rendezvous_port=args.rendezvous_port,
-                node_id=redis_node_id(lifecycle.started_nodes),
-                timeout_s=args.wait_timeout,
-            )
         return exit_code
     finally:
         CHILD_PROCESS = None
@@ -377,7 +371,17 @@ def start_rendezvous_redis_cluster(
     ):
         return None
 
-    server = start_rendezvous_server(head_addr, rendezvous_port, world_size, redis_cli_path) if node_rank == 0 else None
+    server = (
+        start_rendezvous_server(
+            head_addr,
+            rendezvous_port,
+            world_size,
+            redis_cli_path,
+            timeout_s=timeout_s,
+        )
+        if node_rank == 0
+        else None
+    )
     if node_rank == 0:
         if server is None:
             return None
@@ -412,20 +416,36 @@ def resolve_node_host(head_addr: str, rendezvous_port: int) -> str:
 
 
 def start_rendezvous_server(  # noqa: C901
-    head_addr: str, rendezvous_port: int, world_size: int, redis_cli_path: str | None
+    head_addr: str,
+    rendezvous_port: int,
+    world_size: int,
+    redis_cli_path: str | None,
+    timeout_s: float = REDIS_RENDEZVOUS_TIMEOUT_S,
 ) -> ThreadingHTTPServer | None:
+    if timeout_s <= 0:
+        raise ValueError("rendezvous timeout must be greater than 0")  # noqa: TRY003
+
     nodes: dict[str, tuple[str, list[int]]] = {}
-    finished_nodes: set[str] = set()
     lock = threading.Lock()
     ready: dict[str, Any] = {}
     error = ""
+    creation_in_progress = False
+    startup_deadline = time.monotonic() + timeout_s
+
+    def response_locked() -> dict[str, Any]:
+        if error:
+            return {"status": "error", "message": error}
+        if ready:
+            return {"status": "ready", **ready}
+        return {
+            "status": "waiting",
+            "registered": len(nodes),
+            "world_size": world_size,
+        }
 
     class Handler(BaseHTTPRequestHandler):
-        def do_POST(self) -> None:
-            nonlocal error
-            if self.path == "/finish":
-                self.handle_finish()
-                return
+        def do_POST(self) -> None:  # noqa: C901
+            nonlocal creation_in_progress, error
             if self.path != "/register":
                 self.send_error(404)
                 return
@@ -441,78 +461,83 @@ def start_rendezvous_server(  # noqa: C901
                 self.send_error(400, f"invalid registration payload: {exc}")
                 return
 
+            node_key = f"{host}:{','.join(str(port) for port in worker_ports)}"
+            creation_request: tuple[list[str], str, list[int], float] | None = None
+            response: dict[str, Any] | None = None
+
             with lock:
-                nodes[f"{host}:{','.join(str(port) for port in worker_ports)}"] = (
-                    host,
-                    worker_ports,
-                )
-                if not ready and not error and len(nodes) >= world_size:
-                    addresses = [
-                        f"{node_host}:{port}" for node_host, node_ports in nodes.values() for port in node_ports
-                    ]
-                    create_cmd = [
-                        redis_cli_path or "redis-cli",
-                        "--cluster",
-                        "create",
-                        *addresses,
-                        "--cluster-replicas",
-                        "0",
-                        "--cluster-yes",
-                    ]
-                    result = subprocess.run(create_cmd, check=False, capture_output=True, text=True)  # noqa: S603
-                    if result.returncode != 0:
-                        error = f"redis-cli cluster create failed: {result.stderr or result.stdout}"
+                nodes[node_key] = (host, worker_ports)
+                if error or ready or creation_in_progress or len(nodes) < world_size:
+                    response = response_locked()
+                else:
+                    remaining = startup_deadline - time.monotonic()
+                    if remaining <= 0:
+                        error = f"Redis Cluster startup timed out after {timeout_s}s"
+                        response = response_locked()
                     else:
+                        creation_in_progress = True
                         startup_host, startup_ports = next(iter(nodes.values()))
-                        if wait_for_redis_cluster(startup_host, startup_ports):
-                            ready.update(
-                                {
-                                    "startup_host": startup_host,
-                                    "startup_ports": startup_ports,
-                                }
-                            )
+                        addresses = [
+                            f"{node_host}:{port}" for node_host, node_ports in nodes.values() for port in node_ports
+                        ]
+                        creation_request = (addresses, startup_host, startup_ports, remaining)
+
+            if creation_request is not None:
+                addresses, startup_host, startup_ports, command_timeout = creation_request
+                creation_error: str | None = None
+                creation_result: tuple[str, list[int]] | None = None
+                create_cmd = [
+                    redis_cli_path or "redis-cli",
+                    "--cluster",
+                    "create",
+                    *addresses,
+                    "--cluster-replicas",
+                    "0",
+                    "--cluster-yes",
+                ]
+                try:
+                    result = subprocess.run(  # noqa: S603
+                        create_cmd,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                        timeout=command_timeout,
+                    )
+                    if result.returncode != 0:
+                        creation_error = f"redis-cli cluster create failed: {result.stderr or result.stdout}"
+                    else:
+                        readiness_timeout = startup_deadline - time.monotonic()
+                        if readiness_timeout <= 0:
+                            creation_error = f"Redis Cluster startup timed out after {timeout_s}s"
+                        elif wait_for_redis_cluster(
+                            startup_host,
+                            startup_ports,
+                            timeout_s=readiness_timeout,
+                        ):
+                            creation_result = (startup_host, startup_ports)
                         else:
-                            error = f"Redis Cluster did not become ready at {startup_host}:{startup_ports}"
+                            creation_error = f"Redis Cluster did not become ready at {startup_host}:{startup_ports}"
+                except subprocess.TimeoutExpired as exc:
+                    creation_error = f"redis-cli cluster create timed out after {command_timeout:.3f}s"
+                    print(f"{creation_error}: {exc}", file=sys.stderr)
+                except Exception as exc:
+                    creation_error = f"Redis Cluster startup failed: {exc}"
 
-                if error:
-                    response: dict[str, Any] = {"status": "error", "message": error}
-                elif ready:
-                    response = {"status": "ready", **ready}
-                else:
-                    response = {
-                        "status": "waiting",
-                        "registered": len(nodes),
-                        "world_size": world_size,
-                    }
+                with lock:
+                    creation_in_progress = False
+                    if creation_result is not None and creation_error is None:
+                        ready.update(
+                            {
+                                "startup_host": creation_result[0],
+                                "startup_ports": creation_result[1],
+                            }
+                        )
+                    else:
+                        error = creation_error or "Redis Cluster startup failed"
+                    response = response_locked()
 
-            self.write_json(response)
-
-        def handle_finish(self) -> None:
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-                payload = json.loads(self.rfile.read(length))
-                node_id = str(payload["node_id"])
-                if not node_id:
-                    self.send_error(400, "invalid finish payload")
-                    return
-            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-                self.send_error(400, f"invalid finish payload: {exc}")
-                return
-
-            with lock:
-                finished_nodes.add(node_id)
-                if len(finished_nodes) >= world_size:
-                    response = {
-                        "status": "done",
-                        "finished": len(finished_nodes),
-                        "world_size": world_size,
-                    }
-                else:
-                    response = {
-                        "status": "waiting",
-                        "finished": len(finished_nodes),
-                        "world_size": world_size,
-                    }
+            if response is None:
+                response = {"status": "error", "message": "Redis Cluster startup did not produce a response"}
             self.write_json(response)
 
         def write_json(self, response: dict[str, Any]) -> None:
@@ -556,6 +581,9 @@ def register_redis_node(
     payload = json.dumps({"host": node_host, "ports": ports}).encode()
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
         try:
             request = urllib.request.Request(  # noqa: S310
                 url,
@@ -563,10 +591,10 @@ def register_redis_node(
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310
+            with urllib.request.urlopen(request, timeout=min(5.0, remaining)) as response:  # noqa: S310
                 result = json.loads(response.read())
         except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-            time.sleep(1)
+            time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
             continue
 
         if result["status"] == "ready":
@@ -583,79 +611,10 @@ def register_redis_node(
             f"Redis rendezvous waiting: {result['registered']}/{result['world_size']} workers registered",
             flush=True,
         )
-        time.sleep(1)
+        time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
 
     print(f"Redis rendezvous timed out after {timeout_s}s", file=sys.stderr)
     return None
-
-
-def redis_node_id(started_nodes: list[tuple[str, int]]) -> str:
-    return ";".join(f"{host}:{port}" for host, port in sorted(started_nodes))
-
-
-def wait_for_rendezvous_finish(*, head_addr: str, rendezvous_port: int, node_id: str, timeout_s: int) -> bool:
-    if not node_id:
-        return True
-    url = f"http://{head_addr}:{rendezvous_port}/finish"
-    payload = json.dumps({"node_id": node_id}).encode()
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        try:
-            request = urllib.request.Request(  # noqa: S310
-                url,
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310
-                result = json.loads(response.read())
-        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-            time.sleep(1)
-            continue
-        if result["status"] == "done":
-            print("Redis rendezvous finish barrier complete", flush=True)
-            return True
-        print(
-            f"Redis rendezvous finish waiting: {result['finished']}/{result['world_size']} workers finished",
-            flush=True,
-        )
-        time.sleep(1)
-    print(f"Redis rendezvous finish barrier timed out after {timeout_s}s", file=sys.stderr)
-    return False
-
-
-def wait_for_redis_cluster(startup_host: str, startup_ports: list[int], timeout_s: int = 30) -> bool:
-    deadline = time.monotonic() + timeout_s
-    last_error: Exception | None = None
-    while time.monotonic() < deadline:
-        cluster = redis.RedisCluster(
-            startup_nodes=[redis.cluster.ClusterNode(startup_host, int(port)) for port in startup_ports],
-            decode_responses=False,
-            socket_connect_timeout=2,
-            socket_timeout=2,
-        )
-        try:
-            cluster.ping()
-            ready = True
-            for index in range(16):
-                key = f"tinyexp:redis-cluster-readiness:{index}"
-                cluster.set(key, "ok", ex=60)
-                if cluster.get(key) != b"ok":
-                    ready = False
-                    break
-        except redis.exceptions.RedisError as exc:
-            last_error = exc
-            time.sleep(1)
-        else:
-            if ready:
-                return True
-            last_error = RuntimeError("readiness value mismatch")
-            time.sleep(1)
-        finally:
-            with suppress(Exception):
-                cluster.close()
-    print(f"Redis Cluster readiness check failed: {last_error}", file=sys.stderr)
-    return False
 
 
 def signal_process_group(process: subprocess.Popen[Any], signum: int) -> None:

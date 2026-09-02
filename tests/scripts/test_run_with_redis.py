@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import json
 import signal
+import socket
 import subprocess
 import sys
+import threading
 from pathlib import Path
+from types import SimpleNamespace
+from urllib.request import ProxyHandler, Request, build_opener
 
 import pytest
 
@@ -11,6 +16,24 @@ from tinyexp.cli import run_with_redis
 from tinyexp.cli.run_with_redis import build_redis_cfg, main, stop_child_process
 
 ROOT = Path(__file__).resolve().parents[2]
+
+
+def _free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def _post_register(port: int, host: str, timeout_s: float = 3.0) -> dict[str, object]:
+    request = Request(
+        f"http://127.0.0.1:{port}/register",
+        data=json.dumps({"host": host, "ports": [7000, 7001]}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    opener = build_opener(ProxyHandler({}))
+    with opener.open(request, timeout=timeout_s) as response:
+        return json.loads(response.read())
 
 
 def _write_demo_exp(tmp_path: Path) -> Path:
@@ -306,6 +329,147 @@ def test_rendezvous_mode_uses_exp_ports(tmp_path: Path, monkeypatch) -> None:
     assert "redis_cfg.redis_cluster_host=old" not in captured["argv"]
     assert "redis_cfg.redis_rendezvous_world_size=99" not in captured["argv"]
     assert captured["popen_kwargs"]["start_new_session"] is True
+
+
+def test_rendezvous_server_reports_cluster_create_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    port = _free_port()
+    command_calls: list[dict[str, object]] = []
+
+    def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
+        command_calls.append(kwargs)
+        raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+
+    monkeypatch.setattr(run_with_redis.subprocess, "run", fake_run)
+    server = run_with_redis.start_rendezvous_server(
+        "127.0.0.1",
+        port,
+        world_size=2,
+        redis_cli_path="/fake/redis-cli",
+        timeout_s=1.0,
+    )
+    assert server is not None
+
+    try:
+        assert _post_register(port, "node-a")["status"] == "waiting"
+        response = _post_register(port, "node-b")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    assert response["status"] == "error"
+    assert "timed out" in str(response["message"])
+    assert len(command_calls) == 1
+    assert 0 < float(command_calls[0]["timeout"]) <= 1.0
+
+
+def test_rendezvous_server_does_not_hold_lock_during_cluster_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    port = _free_port()
+    command_started = threading.Event()
+    release_command = threading.Event()
+    second_response: dict[str, object] = {}
+
+    def slow_run(command, **kwargs):  # type: ignore[no-untyped-def]
+        command_started.set()
+        assert release_command.wait(timeout=3)
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(run_with_redis.subprocess, "run", slow_run)
+    monkeypatch.setattr(run_with_redis, "wait_for_redis_cluster", lambda *args, **kwargs: True)
+    server = run_with_redis.start_rendezvous_server(
+        "127.0.0.1",
+        port,
+        world_size=2,
+        redis_cli_path="/fake/redis-cli",
+        timeout_s=5.0,
+    )
+    assert server is not None
+
+    try:
+        assert _post_register(port, "node-a")["status"] == "waiting"
+        second_thread = threading.Thread(
+            target=lambda: second_response.update(_post_register(port, "node-b", timeout_s=5.0)),
+            daemon=True,
+        )
+        second_thread.start()
+        assert command_started.wait(timeout=2)
+
+        third_response = _post_register(port, "node-c", timeout_s=1.0)
+        assert third_response["status"] == "waiting"
+
+        release_command.set()
+        second_thread.join(timeout=3)
+        assert not second_thread.is_alive()
+        assert second_response["status"] == "ready"
+    finally:
+        release_command.set()
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.parametrize("child_exit_code", [0, 7])
+def test_multi_node_wrapper_cleans_up_immediately_after_child_exit(
+    tmp_path: Path,
+    monkeypatch,
+    child_exit_code: int,
+) -> None:
+    exp_file = _write_demo_exp(tmp_path)
+    events: list[str] = []
+
+    class FakeLifecycle:
+        def __init__(self) -> None:
+            self._started_nodes = [("10.0.0.1", 7010)]
+
+        @property
+        def started_nodes(self) -> list[tuple[str, int]]:
+            return self._started_nodes
+
+        def close(self) -> None:
+            events.append("close")
+
+    class FakeProcess:
+        pid = 12345
+
+        def wait(self) -> int:
+            events.append("child-exit")
+            return child_exit_code
+
+    def fake_start_rendezvous_redis_cluster(*args, **kwargs):
+        events.append("redis-start")
+        return "10.0.0.1", [7010]
+
+    def fake_popen(*args, **kwargs):
+        events.append("child-start")
+        return FakeProcess()
+
+    def unexpected_finish_barrier(*args, **kwargs):
+        pytest.fail("multi-node wrapper must not wait for a finish barrier after child exit")
+
+    monkeypatch.setattr(run_with_redis, "_RedisLifecycle", FakeLifecycle)
+    monkeypatch.setattr(run_with_redis, "start_rendezvous_redis_cluster", fake_start_rendezvous_redis_cluster)
+    monkeypatch.setattr(run_with_redis.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(run_with_redis, "wait_for_rendezvous_finish", unexpected_finish_barrier, raising=False)
+
+    exit_code = main(
+        [
+            "--node-count",
+            "2",
+            "--node-rank",
+            "0",
+            "--head-addr",
+            "10.0.0.1",
+            "--",
+            "python",
+            str(exp_file),
+            "redis_cfg.redis_cluster_ports=[7010]",
+        ]
+    )
+
+    assert exit_code == child_exit_code
+    assert events == ["redis-start", "child-start", "child-exit", "close"]
 
 
 def test_main_restores_signal_handlers_after_child_exit(tmp_path: Path, monkeypatch) -> None:

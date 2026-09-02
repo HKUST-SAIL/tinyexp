@@ -48,6 +48,13 @@ def positive_int(value: str) -> int:
     return parsed
 
 
+def port(value: str) -> int:
+    parsed = uint(value)
+    if parsed < 1 or parsed > 65535:
+        raise argparse.ArgumentTypeError(f"must be in 1..65535: {value}")  # noqa: TRY003
+    return parsed
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="tinyexp-run-with-ray-cluster",
@@ -66,7 +73,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default="",
         help="Node IP passed to ray start --head. Default: head addr.",
     )
-    parser.add_argument("--ray-port", type=uint, default=6379, help="Ray head port. Default: 6379.")
+    parser.add_argument("--ray-port", type=port, default=6379, help="Ray head port. Default: 6379.")
     parser.add_argument(
         "--ray-bin",
         default="",
@@ -79,7 +86,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--wait-timeout",
-        type=uint,
+        type=positive_int,
         default=600,
         help="Startup wait timeout. Default: 600.",
     )
@@ -118,6 +125,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         args.command = args.command[1:]
     if not args.command:
         parser.error("missing command.")
+    if args.node_rank >= args.node_count:
+        parser.error(f"--node-rank must be < --node-count, got {args.node_rank} >= {args.node_count}")
     if args.node_count > 1 and not args.head_addr:
         parser.error("--head-addr is required for multi-node Ray jobs.")
     return args
@@ -142,7 +151,7 @@ def prepend_no_proxy(env: dict[str, str], head_addr: str) -> None:
     env["no_proxy"] = f"{prefix},{env.get('no_proxy', '')}"
 
 
-def run_quiet(args: list[str], env: dict[str, str] | None = None) -> int:
+def run_quiet(args: list[str], env: dict[str, str] | None = None, *, timeout_s: float = 5.0) -> int:
     try:
         return subprocess.run(  # noqa: S603
             args,
@@ -150,7 +159,7 @@ def run_quiet(args: list[str], env: dict[str, str] | None = None) -> int:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
-            timeout=5,
+            timeout=timeout_s,
         ).returncode
     except subprocess.TimeoutExpired:
         return 1
@@ -170,16 +179,26 @@ def handle_sigterm(signum: int, _frame: object) -> None:
     raise SystemExit(128 + signum)
 
 
-def ray_alive_count(python_bin: str, ray_address: str, env: dict[str, str]) -> int | None:
+def ray_alive_count(
+    python_bin: str,
+    ray_address: str,
+    env: dict[str, str],
+    *,
+    timeout_s: float = 5.0,
+) -> int | None:
     check_env = {**env, "RAY_ADDRESS": ray_address}
-    result = subprocess.run(  # noqa: S603
-        [python_bin, "-c", ALIVE_NODE_COUNT_CODE],
-        env=check_env,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
+    try:
+        result = subprocess.run(  # noqa: S603
+            [python_bin, "-c", ALIVE_NODE_COUNT_CODE],
+            env=check_env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        return None
     for line in reversed(result.stdout.splitlines()):
         stripped = line.strip()
         if stripped.isdigit():
@@ -189,13 +208,24 @@ def ray_alive_count(python_bin: str, ray_address: str, env: dict[str, str]) -> i
 
 def wait_for_head(ray_bin: str, ray_address: str, wait_timeout: int) -> bool:
     deadline = time.monotonic() + wait_timeout
-    while time.monotonic() < deadline:
-        if run_quiet([ray_bin, "status", f"--address={ray_address}"]) == 0:
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        if (
+            run_quiet(
+                [ray_bin, "status", f"--address={ray_address}"],
+                timeout_s=remaining,
+            )
+            == 0
+        ):
             log(f"Ray head is reachable at {ray_address}")
             return True
         log(f"waiting for Ray head at {ray_address}")
-        time.sleep(2)
-    return False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(2, remaining))
 
 
 def run_head(
@@ -226,14 +256,25 @@ def run_head(
 
     deadline = time.monotonic() + args.wait_timeout
     alive_count: int | None = 0
-    while time.monotonic() < deadline:
-        alive_count = ray_alive_count(python_bin, ray_address, env)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        alive_count = ray_alive_count(
+            python_bin,
+            ray_address,
+            env,
+            timeout_s=remaining,
+        )
         if alive_count is not None and alive_count >= args.node_count:
             log(f"Ray cluster has {alive_count}/{args.node_count} alive nodes")
             log(f"running command with RAY_ADDRESS={ray_address}: {' '.join(args.command)}")
             return subprocess.run(args.command, env=env, check=False).returncode  # noqa: S603
         log(f"waiting for Ray nodes: {alive_count or 0}/{args.node_count} alive")
-        time.sleep(2)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        time.sleep(min(2, remaining))
 
     print(
         f"Error: timed out waiting for {args.node_count} Ray nodes at {ray_address}; "

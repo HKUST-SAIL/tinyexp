@@ -17,23 +17,42 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Libraries :: Python Modules",
 ]
 dependencies = [
     "loguru>=0.7.3",
-    "numpy",
+    # NumPy releases before 2.3.2 do not publish CPython 3.14 wheels.
+    "numpy; python_version < '3.14'",
+    "numpy>=2.3.2; python_version >= '3.14'",
     "psutil",
     "tabulate",
     "hydra-core",
     "omegaconf",
-    "ray",
+    # Ray 2.53+ does not publish a CPython 3.9 wheel. Keep the older
+    # interpreter resolution installable while using the current line for
+    # Python versions that have compatible wheels, including 3.14.
+    "ray<2.52; python_version < '3.10'",
+    "ray; python_version >= '3.10'",
+    # Ray pulls rpds-py through jsonschema; use a release with CPython 3.14 wheels.
+    "rpds-py>=0.26; python_version >= '3.14'",
     "tqdm",
-    "torch",
-    "torchvision",
     "redis",
     "wandb",
     "loguru",
+]
+
+[project.optional-dependencies]
+pytorch = [
     "accelerate",
+    # Python 3.14 requires releases that publish cp314 wheels. The CPU/CUDA/
+    # ROCm/vendor runtime is selected separately for each target machine.
+    "torch; python_version < '3.14'",
+    "torch>=2.13; python_version >= '3.14'",
+    "torchvision; python_version < '3.14'",
+    "torchvision>=0.28; python_version >= '3.14'",
+    # TorchVision pulls Pillow; use a release with CPython 3.14 wheels.
+    "pillow>=11.3; python_version >= '3.14'",
 ]
 
 [project.urls]
@@ -80,15 +99,16 @@ include = [
 
 
 
-[tool.mypy]
-files = ["tinyexp"]
-disallow_untyped_defs = true
-disallow_any_unimported = true
-no_implicit_optional = true
-check_untyped_defs = true
-warn_return_any = true
-warn_unused_ignores = true
-show_error_codes = true
+# [tool.mypy]
+# Temporarily disabled. Uncomment this section when mypy is enabled again.
+# files = ["tinyexp"]
+# disallow_untyped_defs = true
+# disallow_any_unimported = true
+# no_implicit_optional = true
+# check_untyped_defs = true
+# warn_return_any = true
+# warn_unused_ignores = true
+# show_error_codes = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

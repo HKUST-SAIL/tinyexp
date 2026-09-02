@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import subprocess
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import Mock
 
 import pytest
+import redis
 
 from tinyexp.utils.redis_utils import (
     RayRedisClusterManager,
     RedisClientManager,
     RedisClusterManager,
     RedisClusterStartupError,
+    wait_for_redis_cluster,
 )
 
 
@@ -141,6 +144,105 @@ def test_redis_client_manager_accepts_non_integer_keys(
     assert manager._redis_client_for_key("train:sample:0") is manager._redis_client_for_key("train:sample:0")
 
 
+def test_redis_client_manager_safe_operations_ignore_cluster_exceptions() -> None:
+    cluster_exception = getattr(redis.exceptions, "RedisClusterException", redis.exceptions.RedisError)
+
+    class BrokenClusterClient:
+        def get(self, key: Any) -> None:
+            raise cluster_exception()  # type: ignore[misc]
+
+        def set(self, key: Any, value: Any) -> None:
+            raise cluster_exception()  # type: ignore[misc]
+
+    manager = RedisClientManager.__new__(RedisClientManager)
+    manager.redis_clients = [BrokenClusterClient()]
+
+    assert manager.safe_get("key") is None
+    assert manager.safe_set("key", b"value") is False
+
+
+def test_wait_for_redis_cluster_retries_constructor_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+
+    def failing_constructor(**_kwargs: Any) -> None:
+        calls.append(True)
+        raise redis.exceptions.RedisClusterException("cluster is not reachable")  # noqa: TRY003
+
+    monkeypatch.setattr("tinyexp.utils.redis_utils.redis.RedisCluster", failing_constructor)
+
+    assert wait_for_redis_cluster("10.0.0.1", [7000, 7001, 7002], timeout_s=1.05) is False
+    assert len(calls) >= 2
+
+
+def test_wait_for_redis_cluster_recovers_from_cluster_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+    closed = []
+
+    class FakeRedisCluster:
+        def __init__(self, **_kwargs: Any) -> None:
+            calls.append(True)
+
+        def ping(self) -> None:
+            if len(calls) == 1:
+                raise redis.exceptions.RedisClusterException("slots are not covered")  # noqa: TRY003
+
+        def set(self, key: str, value: str, ex: int) -> None:
+            pass
+
+        def get(self, key: str) -> bytes:
+            return b"ok"
+
+        def close(self) -> None:
+            closed.append(True)
+
+    monkeypatch.setattr("tinyexp.utils.redis_utils.redis.RedisCluster", FakeRedisCluster)
+
+    assert wait_for_redis_cluster("10.0.0.1", [7000, 7001, 7002], timeout_s=2) is True
+    assert len(calls) == 2
+    assert len(closed) == 2
+
+
+def test_ray_redis_cluster_manager_create_cluster_uses_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_run(command, **kwargs):  # type: ignore[no-untyped-def]
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr("tinyexp.utils.redis_utils.subprocess.run", fake_run)
+
+    RayRedisClusterManager._create_cluster(
+        "/usr/bin/redis-cli",
+        [{"host": "10.0.0.1", "ports": [7000, 7001, 7002]}],
+        timeout_s=4.5,
+    )
+
+    assert captured["kwargs"]["timeout"] == 4.5
+
+
+def test_ray_redis_cluster_manager_create_cluster_timeout_is_reported(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_run(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise subprocess.TimeoutExpired(cmd=args[0], timeout=1.5)
+
+    monkeypatch.setattr("tinyexp.utils.redis_utils.subprocess.run", fake_run)
+
+    with pytest.raises(RedisClusterStartupError, match="cluster create timed out after 1.5s"):
+        RayRedisClusterManager._create_cluster(
+            "/usr/bin/redis-cli",
+            [{"host": "10.0.0.1", "ports": [7000, 7001, 7002]}],
+            timeout_s=1.5,
+        )
+
+
 def test_redis_cluster_manager_validates_inputs() -> None:
     with pytest.raises(ValueError, match="ports must not be empty"):
         RedisClusterManager(ports=[], max_memory_per_port=1.0)
@@ -153,6 +255,21 @@ def test_redis_cluster_manager_validates_inputs() -> None:
 
     with pytest.raises(ValueError, match="max_memory_per_port must be > 0 GB"):
         RedisClusterManager(ports=[7000], max_memory_per_port=0.0)
+
+
+def test_redis_cluster_manager_validates_cluster_bus_port_range() -> None:
+    with pytest.raises(ValueError, match="Invalid Redis Cluster bus port 65536.*data port 55536"):
+        RedisClusterManager(ports=[55536], max_memory_per_port=1.0, cluster_enabled=True)
+
+    RedisClusterManager(ports=[55535], max_memory_per_port=1.0, cluster_enabled=True)
+
+
+def test_redis_cluster_manager_rejects_data_bus_port_conflicts() -> None:
+    with pytest.raises(
+        ValueError,
+        match="Redis Cluster data/bus port conflict: data port 7000 derives bus port 17000",
+    ):
+        RedisClusterManager(ports=[7000, 17000], max_memory_per_port=1.0, cluster_enabled=True)
 
 
 def test_redis_cluster_manager_converts_gb_to_bytes() -> None:
@@ -348,11 +465,18 @@ def test_ray_redis_cluster_manager_starts_pinned_actors_and_creates_cluster(
         def ping(self) -> None:
             pass
 
+        def set(self, key: str, value: str, ex: int) -> None:
+            captured.setdefault("readiness_values", {})[key] = value
+
+        def get(self, key: str) -> bytes:
+            return b"ok"
+
         def close(self) -> None:
             pass
 
-    def fake_run(command, check, capture_output, text):  # type: ignore[no-untyped-def]
+    def fake_run(command, check, capture_output, text, **kwargs):  # type: ignore[no-untyped-def]
         captured["commands"].append(command)
+        captured["command_kwargs"] = kwargs
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
     monkeypatch.setattr("tinyexp.utils.redis_utils.shutil.which", lambda _cmd: "/usr/bin/redis-cli")
@@ -389,6 +513,7 @@ def test_ray_redis_cluster_manager_starts_pinned_actors_and_creates_cluster(
             "--cluster-yes",
         ]
     ]
+    assert captured["command_kwargs"] == {"timeout": 30.0}
     assert startup_host == "10.0.0.1"
     assert startup_ports == [7000, 7001, 7002]
     assert world_size == 2

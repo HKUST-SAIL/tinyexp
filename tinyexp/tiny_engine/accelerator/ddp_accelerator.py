@@ -13,8 +13,19 @@ class DDPAccelerator(BaseAccelerator):
         super().__init__()
         if not torch.cuda.is_available():
             raise CudaNotAvailableError()
-        self._init_process_group()
-        self._process_group_initialized = True  # Mark that the process group has been initialized
+
+        # Select the concrete local CUDA device before initializing NCCL.
+        # Ray workers may expose only one GPU, in which case the visible
+        # device is local index 0 even when LOCAL_RANK is non-zero.
+        if self.device.index is None:
+            self.device = torch.device("cuda", torch.cuda.current_device())
+        torch.cuda.set_device(self.device)
+
+        # Match Accelerate's normal single-process behavior: no process group
+        # and no DDP wrapper when there is only one worker.
+        if self.world_size > 1 and not dist.is_initialized():
+            self._init_process_group()
+            self._process_group_initialized = True
         self.sync_gradients = True  # currently not support accumulate gradient
 
     def _init_process_group(self):
@@ -48,13 +59,17 @@ class DDPAccelerator(BaseAccelerator):
 
     def prepare_model(self, module):
         module.to(self.device)
-        wrapped_module = nn.parallel.DistributedDataParallel(
+        if self.world_size < 2:
+            return module
+
+        device_index = self.device.index
+        if device_index is None:
+            device_index = torch.cuda.current_device()
+        return nn.parallel.DistributedDataParallel(
             module,
-            # device_ids=[self.local_rank],
-            # find_unused_parameters=self.find_unused_parameters,
-            # broadcast_buffers=self.broadcast_buffers,
+            device_ids=[device_index],
+            output_device=device_index,
         )
-        return wrapped_module
 
     def prepare_optimizer(self, optimizer):
         # refer to: https://github.com/pytorch/pytorch/issues/8741
