@@ -257,6 +257,21 @@ def test_redis_cluster_manager_validates_inputs() -> None:
         RedisClusterManager(ports=[7000], max_memory_per_port=0.0)
 
 
+def test_redis_cluster_manager_validates_cluster_bus_port_range() -> None:
+    with pytest.raises(ValueError, match="Invalid Redis Cluster bus port 65536.*data port 55536"):
+        RedisClusterManager(ports=[55536], max_memory_per_port=1.0, cluster_enabled=True)
+
+    RedisClusterManager(ports=[55535], max_memory_per_port=1.0, cluster_enabled=True)
+
+
+def test_redis_cluster_manager_rejects_data_bus_port_conflicts() -> None:
+    with pytest.raises(
+        ValueError,
+        match="Redis Cluster data/bus port conflict: data port 7000 derives bus port 17000",
+    ):
+        RedisClusterManager(ports=[7000, 17000], max_memory_per_port=1.0, cluster_enabled=True)
+
+
 def test_redis_cluster_manager_converts_gb_to_bytes() -> None:
     mgr = RedisClusterManager(ports=[7000], max_memory_per_port=0.5)
     assert mgr.max_memory_per_port_gb == 0.5

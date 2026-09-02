@@ -212,6 +212,27 @@ class RedisClusterManager:
             if port <= 0 or port > 65535:
                 raise RedisClusterConfigError(f"Invalid port {port!r}, expected 1..65535")  # noqa: TRY003
 
+        cluster_enabled = bool(cluster_enabled)
+        if cluster_enabled:
+            data_ports = set(normalized_ports)
+            bus_ports = [port + 10000 for port in normalized_ports]
+            for data_port, bus_port in zip(normalized_ports, bus_ports):
+                if bus_port <= 0 or bus_port > 65535:
+                    raise RedisClusterConfigError(  # noqa: TRY003
+                        f"Invalid Redis Cluster bus port {bus_port!r} derived from data port {data_port!r}, "
+                        "expected 1..65535"
+                    )
+            conflicts = [
+                (data_port, bus_port)
+                for data_port, bus_port in zip(normalized_ports, bus_ports)
+                if bus_port in data_ports
+            ]
+            if conflicts:
+                conflict_text = ", ".join(
+                    f"data port {data_port} derives bus port {bus_port}" for data_port, bus_port in conflicts
+                )
+                raise RedisClusterConfigError(f"Redis Cluster data/bus port conflict: {conflict_text}")  # noqa: TRY003
+
         if max_memory_per_port <= 0:
             raise RedisClusterConfigError(  # noqa: TRY003
                 f"max_memory_per_port must be > 0 GB, got {max_memory_per_port!r}"
