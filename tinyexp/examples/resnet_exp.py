@@ -271,7 +271,7 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
                 "num_workers": self.train_data_worker_per_gpu,
                 "pin_memory": True,
                 "sampler": sampler,
-                "persistent_workers": True,  # Keep workers alive for multiple epochs
+                "persistent_workers": self.train_data_worker_per_gpu > 0,
             }
             train_dataloader = torch.utils.data.DataLoader(ds_train, **train_kwargs)
             # from tinyexp.dataset.fake_dataloader import HoldOnesampleDataLoader
@@ -290,7 +290,7 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
                 "batch_size": self.val_batch_size_per_device,
                 "num_workers": self.val_data_worker_per_gpu,
                 "pin_memory": True,
-                "persistent_workers": True,
+                "persistent_workers": self.val_data_worker_per_gpu > 0,
             }
             val_dataloader = torch.utils.data.DataLoader(ds_val, **val_kwargs)
             return val_dataloader

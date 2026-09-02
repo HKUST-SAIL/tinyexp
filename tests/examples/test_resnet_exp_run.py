@@ -165,6 +165,47 @@ def test_resnet_dataloader_passes_complete_redis_cfg_to_cached_folder(
     assert captured["root"] == "/imagenet/train"
 
 
+@pytest.mark.parametrize("num_workers", [0, 2])
+def test_resnet_dataloaders_match_persistent_workers_to_num_workers(
+    monkeypatch,
+    num_workers: int,
+) -> None:
+    class FakeDataset:
+        def __len__(self) -> int:
+            return 2
+
+        def __getitem__(self, index: int) -> tuple[int, int]:
+            return index, index
+
+    monkeypatch.setattr(
+        "tinyexp.examples.resnet_exp.datasets.ImageFolder",
+        lambda root, transform=None: FakeDataset(),
+    )
+    monkeypatch.setattr(
+        "tinyexp.examples.resnet_exp.LocalCachedImageFolder",
+        lambda root, transform=None: FakeDataset(),
+    )
+    monkeypatch.setattr(
+        "tinyexp.examples.resnet_exp.transform_template_imagenet",
+        lambda **kwargs: None,
+    )
+
+    dataloader_cfg = ResNetExp.DataloaderCfg(
+        data_root="/imagenet",
+        train_data_worker_per_gpu=num_workers,
+        val_data_worker_per_gpu=num_workers,
+    )
+    accelerator = SimpleNamespace(rank=0, world_size=1)
+    redis_cfg = SimpleNamespace(redis_cache_enabled=False)
+
+    train_dataloader = dataloader_cfg.build_train_dataloader(accelerator, redis_cfg)
+    val_dataloader = dataloader_cfg.build_val_dataloader(accelerator)
+
+    expected = num_workers > 0
+    assert train_dataloader.persistent_workers is expected
+    assert val_dataloader.persistent_workers is expected
+
+
 def test_resnet_run_val_mode_requires_resume_from(tmp_path: Path, monkeypatch) -> None:
     exp = ResNetExp(output_root=str(tmp_path), exp_name="resnet_val", mode="val", resume_from="")
     dummy_accelerator = SimpleNamespace(
