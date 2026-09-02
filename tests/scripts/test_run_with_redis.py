@@ -308,6 +308,68 @@ def test_rendezvous_mode_uses_exp_ports(tmp_path: Path, monkeypatch) -> None:
     assert captured["popen_kwargs"]["start_new_session"] is True
 
 
+@pytest.mark.parametrize("child_exit_code", [0, 7])
+def test_multi_node_wrapper_cleans_up_immediately_after_child_exit(
+    tmp_path: Path,
+    monkeypatch,
+    child_exit_code: int,
+) -> None:
+    exp_file = _write_demo_exp(tmp_path)
+    events: list[str] = []
+
+    class FakeLifecycle:
+        def __init__(self) -> None:
+            self._started_nodes = [("10.0.0.1", 7010)]
+
+        @property
+        def started_nodes(self) -> list[tuple[str, int]]:
+            return self._started_nodes
+
+        def close(self) -> None:
+            events.append("close")
+
+    class FakeProcess:
+        pid = 12345
+
+        def wait(self) -> int:
+            events.append("child-exit")
+            return child_exit_code
+
+    def fake_start_rendezvous_redis_cluster(*args, **kwargs):
+        events.append("redis-start")
+        return "10.0.0.1", [7010]
+
+    def fake_popen(*args, **kwargs):
+        events.append("child-start")
+        return FakeProcess()
+
+    def unexpected_finish_barrier(*args, **kwargs):
+        pytest.fail("multi-node wrapper must not wait for a finish barrier after child exit")
+
+    monkeypatch.setattr(run_with_redis, "_RedisLifecycle", FakeLifecycle)
+    monkeypatch.setattr(run_with_redis, "start_rendezvous_redis_cluster", fake_start_rendezvous_redis_cluster)
+    monkeypatch.setattr(run_with_redis.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(run_with_redis, "wait_for_rendezvous_finish", unexpected_finish_barrier, raising=False)
+
+    exit_code = main(
+        [
+            "--node-count",
+            "2",
+            "--node-rank",
+            "0",
+            "--head-addr",
+            "10.0.0.1",
+            "--",
+            "python",
+            str(exp_file),
+            "redis_cfg.redis_cluster_ports=[7010]",
+        ]
+    )
+
+    assert exit_code == child_exit_code
+    assert events == ["redis-start", "child-start", "child-exit", "close"]
+
+
 def test_main_restores_signal_handlers_after_child_exit(tmp_path: Path, monkeypatch) -> None:
     exp_file = _write_demo_exp(tmp_path)
     previous_handlers = {

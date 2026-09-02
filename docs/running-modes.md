@@ -294,6 +294,19 @@ Redis and W&B requirements are independent of the four launch styles.
 - The ResNet example enables Redis cache by default. Set `redis_cfg.redis_cache_enabled=false` when Redis is not installed or desired.
 - Enabling W&B requires suitable credentials and network access, or an explicitly configured offline mode.
 
+### Redis helper lifecycle in multi-node jobs
+
+`tinyexp-run-with-redis` is a per-process wrapper, not a long-lived Redis service manager. It starts Redis resources
+for the command it launches and stops the resources owned by that wrapper as soon as the child command exits, whether
+the child succeeds or fails. In multi-node mode, the HTTP rendezvous is used only to register nodes and create the
+Redis Cluster during startup; it is not a finish barrier.
+
+When a multi-node training process fails, the distributed training job is considered failed and must be restarted as
+a whole by the external process supervisor or launcher. The supervisor must terminate the remaining wrappers; their
+signal handlers stop their child processes and destroy the Redis resources they own. TinyExp deliberately does not add
+heartbeat, lease, or a global terminal-state protocol here: Redis exists only for the lifetime of the command on each
+node, and a failed multi-node job is expected to be torn down rather than kept alive for coordination.
+
 Check Redis system commands when cache management is enabled:
 
 ```bash

@@ -149,6 +149,11 @@ tinyexp-run-with-redis -- python your_exp.py redis_cfg.redis_cache_enabled=true
 another Redis process, startup fails without shutting down or taking ownership of that server. Connect to externally
 managed Redis directly through `redis_cfg` instead of wrapping the command with `tinyexp-run-with-redis`.
 
+For multi-node training, the helper's Redis lifecycle follows the local command: each wrapper stops the Redis
+resources it owns as soon as its child exits. If one node fails, the whole distributed training job is expected to
+fail and restart; the helper does not keep Redis alive for a global finish barrier or implement heartbeat/lease-based
+failure coordination. The external launcher or supervisor owns whole-job restart and termination.
+
 ## Example Experiments
 
 - MNIST baseline: [`tinyexp/examples/mnist_exp.py`](tinyexp/examples/mnist_exp.py)

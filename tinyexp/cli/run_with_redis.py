@@ -5,6 +5,8 @@ The wrapper reads ``redis_cfg`` overrides from the target command, starts
 standalone Redis for single-node jobs or a Redis Cluster for multi-node jobs,
 injects the final Redis connection settings back into the child command as Hydra
 overrides, waits for the child command, and then stops Redis processes it owns.
+In multi-node mode, the HTTP rendezvous is used only during startup; each
+wrapper cleans up its locally owned Redis as soon as its child command exits.
 
 For multi-node jobs, pass ``--node-count``, ``--node-rank``, and ``--head-addr``
 or provide matching StepFun env/Hydra values through ``NODE_RANK`` and
@@ -276,13 +278,6 @@ def main(argv: list[str]) -> int:
             start_new_session=True,
         )
         exit_code = CHILD_PROCESS.wait()
-        if startup_node is not None and world_size > 1:
-            wait_for_rendezvous_finish(
-                head_addr=head_addr,
-                rendezvous_port=args.rendezvous_port,
-                node_id=redis_node_id(lifecycle.started_nodes),
-                timeout_s=args.wait_timeout,
-            )
         return exit_code
     finally:
         CHILD_PROCESS = None
@@ -415,7 +410,6 @@ def start_rendezvous_server(  # noqa: C901
     head_addr: str, rendezvous_port: int, world_size: int, redis_cli_path: str | None
 ) -> ThreadingHTTPServer | None:
     nodes: dict[str, tuple[str, list[int]]] = {}
-    finished_nodes: set[str] = set()
     lock = threading.Lock()
     ready: dict[str, Any] = {}
     error = ""
@@ -423,9 +417,6 @@ def start_rendezvous_server(  # noqa: C901
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
             nonlocal error
-            if self.path == "/finish":
-                self.handle_finish()
-                return
             if self.path != "/register":
                 self.send_error(404)
                 return
@@ -485,34 +476,6 @@ def start_rendezvous_server(  # noqa: C901
                         "world_size": world_size,
                     }
 
-            self.write_json(response)
-
-        def handle_finish(self) -> None:
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-                payload = json.loads(self.rfile.read(length))
-                node_id = str(payload["node_id"])
-                if not node_id:
-                    self.send_error(400, "invalid finish payload")
-                    return
-            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-                self.send_error(400, f"invalid finish payload: {exc}")
-                return
-
-            with lock:
-                finished_nodes.add(node_id)
-                if len(finished_nodes) >= world_size:
-                    response = {
-                        "status": "done",
-                        "finished": len(finished_nodes),
-                        "world_size": world_size,
-                    }
-                else:
-                    response = {
-                        "status": "waiting",
-                        "finished": len(finished_nodes),
-                        "world_size": world_size,
-                    }
             self.write_json(response)
 
         def write_json(self, response: dict[str, Any]) -> None:
@@ -587,41 +550,6 @@ def register_redis_node(
 
     print(f"Redis rendezvous timed out after {timeout_s}s", file=sys.stderr)
     return None
-
-
-def redis_node_id(started_nodes: list[tuple[str, int]]) -> str:
-    return ";".join(f"{host}:{port}" for host, port in sorted(started_nodes))
-
-
-def wait_for_rendezvous_finish(*, head_addr: str, rendezvous_port: int, node_id: str, timeout_s: int) -> bool:
-    if not node_id:
-        return True
-    url = f"http://{head_addr}:{rendezvous_port}/finish"
-    payload = json.dumps({"node_id": node_id}).encode()
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        try:
-            request = urllib.request.Request(  # noqa: S310
-                url,
-                data=payload,
-                headers={"Content-Type": "application/json"},
-                method="POST",
-            )
-            with urllib.request.urlopen(request, timeout=5) as response:  # noqa: S310
-                result = json.loads(response.read())
-        except (OSError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-            time.sleep(1)
-            continue
-        if result["status"] == "done":
-            print("Redis rendezvous finish barrier complete", flush=True)
-            return True
-        print(
-            f"Redis rendezvous finish waiting: {result['finished']}/{result['world_size']} workers finished",
-            flush=True,
-        )
-        time.sleep(1)
-    print(f"Redis rendezvous finish barrier timed out after {timeout_s}s", file=sys.stderr)
-    return False
 
 
 def wait_for_redis_cluster(startup_host: str, startup_ports: list[int], timeout_s: int = 30) -> bool:
