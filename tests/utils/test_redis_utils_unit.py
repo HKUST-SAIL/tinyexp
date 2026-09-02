@@ -144,6 +144,23 @@ def test_redis_client_manager_accepts_non_integer_keys(
     assert manager._redis_client_for_key("train:sample:0") is manager._redis_client_for_key("train:sample:0")
 
 
+def test_redis_client_manager_safe_operations_ignore_cluster_exceptions() -> None:
+    cluster_exception = getattr(redis.exceptions, "RedisClusterException", redis.exceptions.RedisError)
+
+    class BrokenClusterClient:
+        def get(self, key: Any) -> None:
+            raise cluster_exception()  # type: ignore[misc]
+
+        def set(self, key: Any, value: Any) -> None:
+            raise cluster_exception()  # type: ignore[misc]
+
+    manager = RedisClientManager.__new__(RedisClientManager)
+    manager.redis_clients = [BrokenClusterClient()]
+
+    assert manager.safe_get("key") is None
+    assert manager.safe_set("key", b"value") is False
+
+
 def test_wait_for_redis_cluster_retries_constructor_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

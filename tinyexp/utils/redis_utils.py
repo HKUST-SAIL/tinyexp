@@ -107,7 +107,7 @@ class RedisClientManager:
             return None
         try:
             return redis_client.get(key)
-        except redis.exceptions.RedisError:
+        except (redis.exceptions.RedisError, _REDIS_CLUSTER_EXCEPTION):
             return None
 
     def safe_set(self, key: Any, value: Any) -> bool:
@@ -116,7 +116,7 @@ class RedisClientManager:
             return False
         try:
             return bool(redis_client.set(key, value))
-        except redis.exceptions.RedisError:
+        except (redis.exceptions.RedisError, _REDIS_CLUSTER_EXCEPTION):
             return False
 
     def __del__(self) -> None:
