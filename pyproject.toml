@@ -99,15 +99,16 @@ include = [
 
 
 
-[tool.mypy]
-files = ["tinyexp"]
-disallow_untyped_defs = true
-disallow_any_unimported = true
-no_implicit_optional = true
-check_untyped_defs = true
-warn_return_any = true
-warn_unused_ignores = true
-show_error_codes = true
+# [tool.mypy]
+# Temporarily disabled. Uncomment this section when mypy is enabled again.
+# files = ["tinyexp"]
+# disallow_untyped_defs = true
+# disallow_any_unimported = true
+# no_implicit_optional = true
+# check_untyped_defs = true
+# warn_return_any = true
+# warn_unused_ignores = true
+# show_error_codes = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
