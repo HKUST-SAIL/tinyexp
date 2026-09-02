@@ -109,7 +109,9 @@ class RayCfgMixin:
 
             if ray_cfg.ray_num_worker < -1 or ray_cfg.ray_num_worker == 0:
                 raise InvalidWorkerCountError(ray_cfg.ray_num_worker)
-            ray.init()
+            owns_ray_runtime = not ray.is_initialized()
+            if owns_ray_runtime:
+                ray.init()
             pg = None
             redis_manager = None
             rendezvous_actor = None
@@ -202,7 +204,7 @@ class RayCfgMixin:
                     with suppress(Exception):
                         redis_manager.stop()
 
-                if ray.is_initialized():
+                if owns_ray_runtime and ray.is_initialized():
                     with suppress(Exception):
                         # Drain Ray's asynchronous worker logs before tearing down the runtime.
                         ray.shutdown(_exiting_interpreter=True)

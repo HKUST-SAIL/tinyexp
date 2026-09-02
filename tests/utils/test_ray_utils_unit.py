@@ -35,9 +35,19 @@ def test_ray_cfg_run_uses_explicit_resources_without_dataloader_cfg(
         }
     )
     captured: dict[str, object] = {}
+    init_calls: list[None] = []
+    ray_state = {"initialized": False}
     shutdown_kwargs: list[dict[str, object]] = []
 
-    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.init", lambda: None)
+    def fake_init() -> None:
+        init_calls.append(None)
+        ray_state["initialized"] = True
+
+    def fake_shutdown(**kwargs: object) -> None:
+        shutdown_kwargs.append(kwargs)
+        ray_state["initialized"] = False
+
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.init", fake_init)
     monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.remote", lambda exp_class: object())
     monkeypatch.setattr(
         "tinyexp.exp_mixins.basic_mixins.ray.cluster_resources",
@@ -47,10 +57,13 @@ def test_ray_cfg_run_uses_explicit_resources_without_dataloader_cfg(
         "tinyexp.exp_mixins.basic_mixins.ray.available_resources",
         lambda: pytest.fail("explicit worker sizing should not query available resources"),
     )
-    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.is_initialized", lambda: True)
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.ray.is_initialized",
+        lambda: ray_state["initialized"],
+    )
     monkeypatch.setattr(
         "tinyexp.exp_mixins.basic_mixins.ray.shutdown",
-        lambda **kwargs: shutdown_kwargs.append(kwargs),
+        fake_shutdown,
     )
 
     def stop_after_resource_resolution(**kwargs):  # type: ignore[no-untyped-def]
@@ -69,7 +82,56 @@ def test_ray_cfg_run_uses_explicit_resources_without_dataloader_cfg(
     assert captured["num_cpus_per_worker"] == 3
     assert captured["num_gpus_per_worker"] == 0
     assert captured["timeout_s"] == 7.0
+    assert init_calls == [None]
     assert shutdown_kwargs == [{"_exiting_interpreter": True}]
+    assert ray_state["initialized"] is False
+
+
+def test_ray_cfg_run_reuses_external_ray_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = OmegaConf.create(
+        {
+            "ray_cfg": {
+                "ray_num_worker": 1,
+                "ray_num_cpus_per_worker": 1,
+                "ray_num_gpus_per_worker": 0,
+                "ray_placement_strategy": "PACK",
+            }
+        }
+    )
+    shutdown_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.ray.init",
+        lambda: pytest.fail("ray.init should not be called for an external runtime"),
+    )
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.ray.is_initialized",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.ray.shutdown",
+        lambda **kwargs: shutdown_calls.append(kwargs),
+    )
+    monkeypatch.setattr("tinyexp.exp_mixins.basic_mixins.ray.remote", lambda exp_class: object())
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.ray.cluster_resources",
+        lambda: {"CPU": 1.0, "GPU": 0.0},
+    )
+
+    def fail_placement_group(**kwargs: object) -> None:
+        raise RuntimeError("run failed")  # noqa: TRY003
+
+    monkeypatch.setattr(
+        "tinyexp.exp_mixins.basic_mixins.get_placement_group",
+        fail_placement_group,
+    )
+
+    with pytest.raises(RuntimeError, match="run failed"):
+        RayCfgMixin.RayCfg.run(object, cfg)
+
+    assert shutdown_calls == []
 
 
 def test_ray_cfg_run_rejects_invalid_ray_worker_count_without_starting_ray(
