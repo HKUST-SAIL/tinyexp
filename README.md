@@ -72,27 +72,31 @@ python your_exp.py dataloader_cfg.train_batch_size_per_device=16
 git clone https://github.com/HKUST-SAIL/tinyexp.git
 cd tinyexp
 make install-pytorch
-uv run python tinyexp/examples/mnist_exp.py
+source .venv/bin/activate
+python tinyexp/examples/mnist_exp.py
 ```
 
 ## Common Commands
 
+The commands below assume that the environment containing TinyExp is active. For a source checkout, run
+`source .venv/bin/activate` first.
+
 Run MNIST with config override:
 
 ```bash
-uv run python tinyexp/examples/mnist_exp.py dataloader_cfg.train_batch_size_per_device=16
+python tinyexp/examples/mnist_exp.py dataloader_cfg.train_batch_size_per_device=16
 ```
 
 Print all available configs:
 
 ```bash
-uv run python tinyexp/examples/mnist_exp.py mode=help
+python tinyexp/examples/mnist_exp.py mode=help
 ```
 
 Print all configs plus your overrides:
 
 ```bash
-uv run python tinyexp/examples/mnist_exp.py mode=help dataloader_cfg.train_batch_size_per_device=16
+python tinyexp/examples/mnist_exp.py mode=help dataloader_cfg.train_batch_size_per_device=16
 ```
 
 Worker processes are selected by both the command and TinyExp's `launcher` config. The base `TinyExp` class defaults to
@@ -106,17 +110,30 @@ Worker processes are selected by both the command and TinyExp's `launcher` confi
 | Accelerate launch | `accelerate launch` | `launcher=mp` |
 | Static Ray cluster | `tinyexp-run-with-ray-cluster` | `launcher=ray` |
 
+For `launcher=ray`, using the active environment's `python` is intentional. Ray detects a driver launched through
+`uv run` and, by default, creates a `uv` runtime environment for its workers instead of reusing the already installed
+environment. TinyExp's examples and static cluster helper assume that every participating node already has the
+required environment. If a surrounding tool requires `uv run`, disable Ray's automatic `uv` runtime environment for
+that command:
+
+```bash
+RAY_ENABLE_UV_RUN_RUNTIME_ENV=0 uv run python tinyexp/examples/mnist_exp.py
+```
+
+This behavior is determined by the launch command, not by whether TinyExp was installed with `pip` or `uv`.
+`pip install "tinyexp[pytorch]"` followed by `python your_exp.py` does not need this environment variable.
+
 `torchrun` and `accelerate launch` create processes externally, so bundled examples must override `launcher=mp`:
 
 ```bash
-uv run torchrun \
+torchrun \
   --nnodes 1 \
   --node-rank 0 \
   --nproc-per-node 2 \
   --master-addr 127.0.0.1 \
   --master-port 29500 \
   tinyexp/examples/mnist_exp.py launcher=mp
-uv run accelerate launch --cpu --num-processes 1 -m tinyexp.examples.pi_exp launcher=mp
+accelerate launch --cpu --num-processes 1 -m tinyexp.examples.pi_exp launcher=mp
 ```
 
 A static Ray cluster must be started on every node with the same node count and head address, and a unique node rank.
@@ -164,13 +181,13 @@ For ImageNet example:
 
 ```bash
 export IMAGENET_HOME=/path/to/imagenet
-uv run python tinyexp/examples/resnet_exp.py
+python tinyexp/examples/resnet_exp.py
 ```
 
 For the pi example (Ray workers all-reduce their sample counts, no dataloader involved):
 
 ```bash
-uv run python -m tinyexp.examples.pi_exp pi_cfg.total_samples=100000000 ray_cfg.ray_num_worker=4
+python -m tinyexp.examples.pi_exp pi_cfg.total_samples=100000000 ray_cfg.ray_num_worker=4
 ```
 
 ## How It Works
@@ -192,7 +209,7 @@ Install the core environment and hooks:
 make install
 ```
 
-`make install` installs the core environment and hooks without selecting or removing optional accelerator packages. For the default PyPI stack, run `make install-pytorch` before `make test`. On a machine with a preselected CUDA, ROCm, or vendor PyTorch build, `make install` (or the more explicit `make install-without-pytorch`) preserves that environment; install `torch`, `torchvision`, and `accelerate` together according to that machine's package index/backend, then use ordinary `uv run`. Because the PyTorch packages are optional and ordinary `uv run` does not remove extraneous packages by default, no repeated `--no-sync` flag is needed. Avoid `uv sync` without `--inexact` in that environment.
+`make install` installs the core environment and hooks without selecting or removing optional accelerator packages. For the default PyPI stack, run `make install-pytorch` before `make test`. On a machine with a preselected CUDA, ROCm, or vendor PyTorch build, `make install` (or the more explicit `make install-without-pytorch`) preserves that environment; install `torch`, `torchvision`, and `accelerate` together according to that machine's package index/backend. Because the PyTorch packages are optional, `uv run` does not remove extraneous packages by default and no repeated `--no-sync` flag is needed. Avoid `uv sync` without `--inexact` in that environment. For `launcher=ray`, activate the environment and use its `python` as described above instead of relying on Ray's automatic `uv` runtime environment.
 
 Run checks:
 

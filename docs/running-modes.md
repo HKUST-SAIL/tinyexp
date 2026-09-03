@@ -62,10 +62,19 @@ uv pip install --python .venv/bin/python torch torchvision accelerate \
   --index <pytorch-index-url> --default-index https://pypi.org/simple
 # Or use uv's PyTorch backend selector where supported, e.g.:
 # uv pip install --python .venv/bin/python torch torchvision accelerate --torch-backend cu126
-uv run python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
+.venv/bin/python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
 ```
 
-Python 3.14 requires PyTorch/TorchVision builds that publish compatible `cp314` wheels; this is an ABI requirement, not a CUDA-version requirement. The PyTorch packages are optional, so ordinary `uv run` keeps a machine-selected accelerator build in place and does not require a repeated `--no-sync` flag. Use `make install` (which is intentionally non-exact) on such a machine, and avoid exact `uv sync` without `--inexact` afterward.
+Python 3.14 requires PyTorch/TorchVision builds that publish compatible `cp314` wheels; this is an ABI requirement, not a CUDA-version requirement. The PyTorch packages are optional, so ordinary `uv run` keeps a machine-selected accelerator build in place and does not require a repeated `--no-sync` flag. Use `make install` (which is intentionally non-exact) on such a machine, and avoid exact `uv sync` without `--inexact` afterward. The Ray-specific interaction with `uv run` is described below.
+
+After a source installation, either activate the environment once:
+
+```bash
+source .venv/bin/activate
+```
+
+or replace `python` in the examples with `.venv/bin/python`. A published-package installation should use the Python
+environment in which `pip install "tinyexp[pytorch]"` was run.
 
 Check the active environment before launching:
 
@@ -103,13 +112,37 @@ This is the smallest environment for debugging. The experiment's accelerator sti
 With `launcher=ray`, the Python process becomes a Ray driver. TinyExp calls `ray.init()`, creates a placement group, and launches Ray actors:
 
 ```bash
-uv run python -m tinyexp.examples.pi_exp \
+python -m tinyexp.examples.pi_exp \
   launcher=ray \
   ray_cfg.ray_num_worker=2 \
   ray_cfg.ray_num_cpus_per_worker=1 \
   ray_cfg.ray_num_gpus_per_worker=0 \
   pi_cfg.total_samples=100000
 ```
+
+Use the prepared environment's `python` for this mode. When Ray finds `uv run` in the driver process ancestry, its
+automatic `uv` integration adds a job-level `working_dir` and a `uv run` worker executable. Ray then packages the
+project working directory and starts workers through `uv` instead of directly using the normal Python executable on
+each worker node. That behavior is useful when Ray should distribute source and dependencies dynamically, but it is
+not the execution model used by TinyExp's examples or static cluster helper, which expect the environment to be
+installed on each node already.
+
+If a surrounding command must use `uv run`, disable Ray's automatic `uv` runtime environment before Ray is imported:
+
+```bash
+RAY_ENABLE_UV_RUN_RUNTIME_ENV=0 uv run python -m tinyexp.examples.pi_exp \
+  launcher=ray \
+  ray_cfg.ray_num_worker=2 \
+  ray_cfg.ray_num_cpus_per_worker=1 \
+  ray_cfg.ray_num_gpus_per_worker=0 \
+  pi_cfg.total_samples=100000
+```
+
+The installation tool does not determine whether this hook runs:
+
+- `pip install "tinyexp[pytorch]"` followed by `python your_exp.py` does not trigger the `uv` integration.
+- `uv sync` followed by an activated `.venv` and `python your_exp.py` does not trigger it either.
+- A driver started through `uv run` can trigger it even when TinyExp itself was installed with `pip`.
 
 Requirements:
 
@@ -134,7 +167,7 @@ The MNIST example uses `seed=42` by default for repeatable model initialization 
 For configuration inspection without starting workers:
 
 ```bash
-uv run python tinyexp/examples/mnist_exp.py \
+python tinyexp/examples/mnist_exp.py \
   mode=help \
   ray_cfg.ray_num_worker=1 \
   ray_cfg.ray_num_gpus_per_worker=0
@@ -231,6 +264,10 @@ For multi-machine Accelerate launches, all machines need matching code and envir
 ## Static Ray Cluster
 
 `tinyexp-run-with-ray-cluster` starts a Ray head on node rank 0, joins Ray workers from the remaining nodes, and runs the command only on the head after the requested nodes are alive. The command should use `launcher=ray` so the TinyExp driver attaches to the cluster through the injected `RAY_ADDRESS`.
+
+The plain `tinyexp-run-with-ray-cluster` and `python` commands below are intentional. Starting this command tree
+through `uv run` would also make `uv run` an ancestor of the Ray driver and can enable Ray's automatic `uv` runtime
+environment. Activate the prepared environment on every node before invoking the helper.
 
 On every node, provide the same node count and head address, with a unique node rank. For example, on the head:
 

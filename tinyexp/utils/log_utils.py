@@ -1,4 +1,5 @@
 import os
+import sys
 from sys import stderr
 
 from loguru import logger
@@ -32,7 +33,10 @@ def tiny_logger_setup(save_dir: str, distributed_rank: int = 0, filename: str = 
         format=file_format,
         filter="",
         level="INFO" if distributed_rank == 0 else "WARNING",
-        enqueue=True,
+        # Ray workers already isolate their loggers; avoid Loguru's
+        # multiprocessing queue, whose Python 3.14 resource tracker can race
+        # during Ray actor shutdown.
+        enqueue=sys.version_info < (3, 14),
         colorize=False,
     )
 
