@@ -162,6 +162,10 @@ Requirements:
 
 If `RAY_ADDRESS` already points to a reachable Ray cluster, `ray.init()` can attach to that cluster. Otherwise, Ray starts a local runtime.
 
+Ray forwards worker stdout asynchronously. `RayCfgMixin.get_ray_run_result()` therefore provides a synchronous channel for
+one short rank-zero result that must be printed reliably after all workers finish; it returns `None` by default. It is
+not intended for streaming logs or large outputs.
+
 The MNIST example uses `seed=42` by default for repeatable model initialization and dropout behavior. Override it explicitly when comparing runs across launchers or cluster topologies.
 
 For configuration inspection without starting workers:

@@ -411,6 +411,10 @@ def test_custom_ray_cfg_run_receives_class_and_global_cfg() -> None:
     assert calls == [(CustomRayCfg, object, cfg)]
 
 
+def test_ray_cfg_mixin_has_no_run_result_by_default() -> None:
+    assert RayCfgMixin().get_ray_run_result() is None
+
+
 def test_build_worker_env_vars_prefers_user_defined_ifname(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -594,6 +598,7 @@ def test_get_num_worker_options_requires_managed_endpoint_for_multiple_workers()
 
 def test_ray_cfg_run_resolves_topology_before_constructing_worker_actors(
     monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     cfg = OmegaConf.create(
         {
@@ -615,6 +620,9 @@ def test_ray_cfg_run_resolves_topology_before_constructing_worker_actors(
             )
             self.run = SimpleNamespace(
                 remote=lambda: events.append(("run", env_vars["RANK"])),
+            )
+            self.get_ray_run_result = SimpleNamespace(
+                remote=lambda: events.append(("result", env_vars["RANK"])) or f"result-{env_vars['RANK']}",
             )
 
     class FakeConfiguredActor:
@@ -685,7 +693,9 @@ def test_ray_cfg_run_resolves_topology_before_constructing_worker_actors(
     ]
     assert {event[1]["MASTER_ADDR"] for event in actor_events} == {"10.0.0.1"}
     assert {event[1]["TORCHELASTIC_USE_AGENT_STORE"] for event in actor_events} == {"True"}
+    assert [event for event in events if event[0] == "result"] == [("result", "0")]
     assert ("kill", rendezvous_actor, True) in events
+    assert capsys.readouterr().out.endswith("result-0\n")
 
 
 def test_get_network_config_uses_public_ray_ip_api(

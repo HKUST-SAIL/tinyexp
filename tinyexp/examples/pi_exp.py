@@ -13,7 +13,9 @@ Usage::
 """
 
 from dataclasses import dataclass, field
+from typing import Optional
 
+import ray
 import torch
 
 from tinyexp import TinyExp, store_and_run_exp
@@ -49,6 +51,7 @@ class Exp(TinyExp, RayCfgMixin, LoggerCfgMixin):
         if self.mode != "run":
             raise NotImplementedError(f"Mode {self.mode} is not implemented")
 
+        self._run_result: Optional[str] = None
         from tinyexp.tiny_engine.accelerator import CPUAccelerator
 
         accelerator = CPUAccelerator()
@@ -63,10 +66,14 @@ class Exp(TinyExp, RayCfgMixin, LoggerCfgMixin):
 
         pi = self._estimate_pi(accelerator)
         if accelerator.is_main_process:
-            print(
-                f"pi ~= {pi:.6f} (error={abs(pi - torch.pi):.6f}, samples={self.pi_cfg.total_samples})",
-                flush=True,
-            )
+            result = f"pi ~= {pi:.6f} (error={abs(pi - torch.pi):.6f}, samples={self.pi_cfg.total_samples})"
+            if ray.is_initialized() and ray.get_runtime_context().get_actor_id() is not None:
+                self._run_result = result
+            else:
+                print(result, flush=True)
+
+    def get_ray_run_result(self) -> Optional[str]:
+        return self._run_result
 
     def _estimate_pi(self, accelerator) -> float:
         generator = torch.Generator().manual_seed(self.pi_cfg.seed + accelerator.rank)

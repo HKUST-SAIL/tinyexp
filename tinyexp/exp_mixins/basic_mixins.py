@@ -77,6 +77,10 @@ def _resolve_ray_num_worker(
 
 @dataclass
 class RayCfgMixin:
+    def get_ray_run_result(self) -> Optional[str]:
+        """Return a short result for the Ray driver to print after the run."""
+        return None
+
     @dataclass
     class RayCfg:
         # ---------------- luancher configuration ---------------- #
@@ -191,6 +195,12 @@ class RayCfgMixin:
                 worker_group = [remote_exp.options(**options).remote() for options in options_list]
                 ray.get([worker.set_cfg.remote(experiment_cfg) for worker in worker_group])
                 ray.get([worker.run.remote() for worker in worker_group])
+                main_worker_index = next(
+                    index for index, env_vars in enumerate(runtime_envs) if env_vars["RANK"] == "0"
+                )
+                result = ray.get(worker_group[main_worker_index].get_ray_run_result.remote())
+                if result is not None:
+                    print(result, flush=True)
             finally:
                 if rendezvous_actor is not None:
                     with suppress(Exception):
