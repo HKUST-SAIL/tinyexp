@@ -15,11 +15,11 @@ Type "echo 'TinyExp: your configured experiment is your entrypoint'"
 Enter
 Sleep 2s
 
-Type "uv run python tinyexp/examples/mnist_exp.py mode=help"
+Type "python -m tinyexp.examples.mnist_exp mode=help"
 Enter
 Sleep 8s
 
-Type "uv run python tinyexp/examples/mnist_exp.py mode=help dataloader_cfg.train_batch_size_per_device=16 ray_num_worker=1"
+Type "python -m tinyexp.examples.mnist_exp mode=help dataloader_cfg.train_batch_size_per_device=16 ray_cfg.ray_num_worker=1"
 Enter
 Sleep 8s
 

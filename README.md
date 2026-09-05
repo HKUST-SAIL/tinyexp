@@ -48,22 +48,17 @@ For a longer explanation, see [`docs/philosophy.md`](docs/philosophy.md).
 
 ## Quick Start (1 Minute)
 
-### Option A: Install with pip and use import-based entrypoint
+### Option A: Install with pip and run the bundled example
 
 ```bash
 pip install "tinyexp[pytorch]"
 ```
 
-```python
-from tinyexp import store_and_run_exp
-from tinyexp.examples.mnist_exp import Exp
-
-store_and_run_exp(Exp)
-```
-
 ```bash
-python your_exp.py
-python your_exp.py dataloader_cfg.train_batch_size_per_device=16
+python -m tinyexp.examples.mnist_exp
+
+# or run with override config
+python -m tinyexp.examples.mnist_exp dataloader_cfg.train_batch_size_per_device=16
 ```
 
 ### Option B: Run the bundled example from source (for development)
@@ -73,7 +68,7 @@ git clone https://github.com/HKUST-SAIL/tinyexp.git
 cd tinyexp
 make install-pytorch
 source .venv/bin/activate
-python tinyexp/examples/mnist_exp.py
+python -m tinyexp.examples.mnist_exp
 ```
 
 ## Common Commands
