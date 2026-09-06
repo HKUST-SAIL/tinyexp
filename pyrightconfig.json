@@ -9,7 +9,7 @@
   ],
   "executionEnvironments": [
     {
-      "pythonVersion": "3.10",
+      "pythonVersion": "3.14",
       "root": "."
     }
   ],
@@ -17,7 +17,7 @@
     "tinyexp",
     "tests"
   ],
-  "pythonVersion": "3.10",
+  "pythonVersion": "3.14",
   "typeCheckingMode": "standard",
   "useLibraryCodeForTypes": true,
   "venv": ".venv",
