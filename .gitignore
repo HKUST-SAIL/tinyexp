@@ -1,5 +1,9 @@
 docs/source
 
+# macOS metadata
+.DS_Store
+**/.DS_Store
+
 # From https://raw.githubusercontent.com/github/gitignore/main/Python.gitignore
 
 # Byte-compiled / optimized / DLL files
@@ -152,3 +156,6 @@ wandb/
 
 # Local/private launch adapters and machine-specific scripts.
 local/
+
+# Generated from the local virtual environment.
+pyrightconfig.json

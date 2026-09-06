@@ -12,6 +12,10 @@ install-pytorch: ## Install the default PyPI PyTorch, TorchVision, and Accelerat
 install-without-pytorch: ## Install core dependencies while preserving machine-selected accelerator packages
 	@uv sync --locked --no-extra pytorch --inexact
 
+.PHONY: generate-pyrightconfig
+generate-pyrightconfig: ## Generate pyrightconfig.json from .venv Python
+	@uv run python scripts/generate_pyrightconfig.py
+
 .PHONY: check
 check: ## Run code quality tools.
 	@echo "🚀 Checking lock file consistency with 'pyproject.toml'"
