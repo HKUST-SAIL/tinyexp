@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.1.4] - 2026-09-05
+
+
+### Added
+
+- harden distributed execution and add Python 3.14 support (#29)
+
+
+### Changed
+
+- ✏️ update usage docs and demo assets
+
+
+### Fixed
+
+- 🐛 avoid Python 3.14 Ray shutdown tracker errors
+
+- 🐛 preserve final Ray run output
+
+
 ## [0.1.3] - 2026-08-25
 
 
