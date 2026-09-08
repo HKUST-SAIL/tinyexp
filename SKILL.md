@@ -57,4 +57,16 @@ For GPU jobs, verify CUDA visibility and use `DDPAccelerator` with NCCL. For `la
 - `tinyexp/examples/mnist_exp.py`: CPU or DDP image training, checkpoints, logging, and CLI overrides.
 - `tinyexp/examples/resnet_exp.py`: ImageNet training; set `IMAGENET_HOME` or override `dataloader_cfg.data_root`; defaults to DDP and Ray.
 
-Install with `make install-pytorch` for the default PyTorch stack, or preserve a machine-specific CUDA/ROCm/vendor build with `make install` and install compatible `torch`, `torchvision`, and `accelerate` together. Run `make check` and focused `pytest` tests after changing library behavior.
+The examples are included in the published package. The bundled examples use PyTorch, so a bare `pip install tinyexp`
+does not install all of their dependencies. For a normal install, use the PyTorch extra and run them as modules:
+
+```bash
+python -m pip install "tinyexp[pytorch]"
+python -m tinyexp.examples.pi_exp pi_cfg.total_samples=100000
+```
+
+If the machine needs a CUDA/ROCm/vendor-specific PyTorch build, install `tinyexp` without the extra and install a compatible `torch`, `torchvision`, and `accelerate` set using that backend's instructions.
+
+## Development checks
+
+For repository changes from a source checkout, use `make install-pytorch`, then run `make check` and focused `pytest` tests after changing library behavior.
