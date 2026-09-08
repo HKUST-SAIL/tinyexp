@@ -71,6 +71,19 @@ source .venv/bin/activate
 python -m tinyexp.examples.mnist_exp
 ```
 
+## Codex Skill
+
+To let Codex discover TinyExp's experiment workflow by default, install the repository skill in your local skills
+directory:
+
+```bash
+mkdir -p ~/.agents/skills/tinyexp
+cp SKILL.md ~/.agents/skills/tinyexp/SKILL.md
+```
+
+Start a new Codex session after copying the file. Codex can then load the `tinyexp-experiments` skill automatically for
+experiment tasks, or you can invoke it explicitly with `$tinyexp-experiments`.
+
 ## Common Commands
 
 The commands below assume that the environment containing TinyExp is active. For a source checkout, run
