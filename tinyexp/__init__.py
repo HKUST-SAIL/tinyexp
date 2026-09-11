@@ -217,6 +217,35 @@ def simple_launch_exp(cfg: DictConfig) -> None:
         raise UnknownLauncherError(cfg.launcher)
 
 
+def _resolve_canonical_exp_class(exp_class: type[TinyExp]) -> Optional[type[TinyExp]]:
+    """Return the importable twin of a ``__main__``-defined experiment class, if any.
+
+    ``python -m pkg.mod`` executes the module as ``__main__``; the executed class
+    object would make ray/cloudpickle serialize the whole class graph *by value*
+    (via the actor export and the structured-config metadata shipped with
+    ``set_cfg``), which is fragile: any builtin the class graph touches (e.g. a
+    platform-agent-patched ``builtins.print``) can break the by-reference
+    identity check ("it's not the same object as builtins.print"). When the same
+    class is importable under the running module's spec name (``pkg.mod.Exp``),
+    prefer that twin so everything ships by reference.
+    """
+    if exp_class.__module__ != "__main__":
+        return None
+    main_spec = getattr(sys.modules.get("__main__"), "__spec__", None)
+    spec_name = getattr(main_spec, "name", None)
+    if not spec_name or spec_name == "__main__":
+        return None
+    import importlib
+
+    try:
+        canonical = getattr(importlib.import_module(spec_name), exp_class.__qualname__)
+    except (ImportError, AttributeError):
+        return None
+    if isinstance(canonical, type) and issubclass(canonical, TinyExp):
+        return canonical
+    return None
+
+
 def store_and_run_exp(exp_class: type[TinyExp]) -> None:
     """
     Extract the config from the exp_class and store it in the ConfigStore(hydra config store).
@@ -229,9 +258,12 @@ def store_and_run_exp(exp_class: type[TinyExp]) -> None:
         None: This function does not return anything.
     """
 
-    # this is the hack for hydra to find the experiment class
-    exp_class_path = f"{exp_class.__module__}.{exp_class.__qualname__}"
-    exp_cfg = exp_class()
+    # this is the hack for hydra to find the experiment class; prefer the
+    # canonical importable twin of a __main__ class so ray workers ship it by
+    # reference (see _resolve_canonical_exp_class)
+    canonical_class = _resolve_canonical_exp_class(exp_class) or exp_class
+    exp_class_path = f"{canonical_class.__module__}.{canonical_class.__qualname__}"
+    exp_cfg = canonical_class()
     exp_cfg.exp_class = exp_class_path
 
     # store the experiment configuration in the ConfigStore and launch the experiment

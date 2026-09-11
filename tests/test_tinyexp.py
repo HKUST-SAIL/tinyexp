@@ -187,3 +187,44 @@ def test_store_and_run_exp_overrides_exp_class_field(monkeypatch: pytest.MonkeyP
     assert recorded["name"] == "cfg"
     assert isinstance(recorded["node"], _BadExpClass)
     assert recorded["node"].exp_class == expected_path
+
+
+def test_canonical_exp_class_prefers_importable_spec_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``python -m pkg.mod`` runs the module as __main__; the recorded exp must use
+    the canonical importable class so ray ships it by reference (regression:
+    by-value export crashed with "Can't pickle <built-in function print>" when a
+    platform agent patched builtins.print)."""
+    import types
+
+    from tinyexp import _resolve_canonical_exp_class
+
+    # A class from a normally imported module has no canonical twin to swap in.
+    assert _resolve_canonical_exp_class(_CfgExp) is None
+
+    # A __main__ class whose running module has a spec name resolves canonically.
+    from tinyexp.examples import vit_tp_exp
+
+    original_module = vit_tp_exp.VitTpExp.__module__
+    dummy_main = types.ModuleType("__main__")
+    dummy_main.__spec__ = types.SimpleNamespace(name="tinyexp.examples.vit_tp_exp")  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "__main__", dummy_main)
+    try:
+        vit_tp_exp.VitTpExp.__module__ = "__main__"
+        resolved = _resolve_canonical_exp_class(vit_tp_exp.VitTpExp)
+        # In this single-import simulation the spec-name lookup returns the very
+        # class object we aliased to __main__; under ``python -m`` it is a
+        # distinct twin of the same file. Either way it must be a TinyExp subclass
+        # with the right qualname.
+        assert resolved is not None
+        assert issubclass(resolved, TinyExp)
+        assert resolved.__qualname__ == "VitTpExp"
+    finally:
+        vit_tp_exp.VitTpExp.__module__ = original_module
+
+    # A plain script (no spec) has no canonical twin.
+    dummy_main.__spec__ = None  # type: ignore[attr-defined]
+    try:
+        vit_tp_exp.VitTpExp.__module__ = "__main__"
+        assert _resolve_canonical_exp_class(vit_tp_exp.VitTpExp) is None
+    finally:
+        vit_tp_exp.VitTpExp.__module__ = original_module

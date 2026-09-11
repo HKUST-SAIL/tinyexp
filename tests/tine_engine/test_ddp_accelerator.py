@@ -36,6 +36,18 @@ class DDPAcceleratorProxy:
         expected_result = torch.tensor([expected_val], device=device, dtype=torch.float32)
 
         assert torch.equal(res, expected_result)
+
+        # nccl cannot reduce cpu tensors directly; reduce_sum must transparently
+        # stage them on the device and return the result on the input device
+        # (regression: metric sync after an epoch crashed with "No backend type
+        # associated with device type cpu" under DDP+nccl).
+        cpu_tensor = torch.tensor([float(self.accelerator.rank)], dtype=torch.float64)
+        cpu_res = self.accelerator.reduce_sum(cpu_tensor)
+        expected_cpu = torch.tensor([expected_val], dtype=torch.float64)
+        assert cpu_res.device.type == "cpu"
+        assert torch.equal(cpu_res, expected_cpu)
+        # The caller's tensor is never mutated in place.
+        assert torch.equal(cpu_tensor, torch.tensor([float(self.accelerator.rank)], dtype=torch.float64))
         return True
 
 
