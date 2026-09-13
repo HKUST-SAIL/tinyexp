@@ -92,9 +92,6 @@ python -m tinyexp.examples.vit_tp_exp accelerator_cfg.accelerator=ddp \
     ray_cfg.ray_num_worker=8 redis_cfg.redis_cache_enabled=true redis_cfg.redis_cache_max_memory=300
 ```
 
-`scripts/vit_tp_train_l3.sh` wraps exactly this for the internal rjob GPU platform
-(JuiceFS ImageNet mount included); it is the exact command behind the L3 numbers below.
-
 Recipe note (global batch / lr): the official linear rule `lr × global_batch / 512`
 is applied verbatim — the default 2×256=512 gives lr 5e-4 (the same scaling point as
 the official 1024 @ 1e-3), and the 8×256=2048 H200 run below used lr 2e-3.

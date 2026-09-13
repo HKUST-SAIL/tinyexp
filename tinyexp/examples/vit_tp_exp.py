@@ -34,11 +34,22 @@ top-1 at tp=1/tp=2 (official 79.8); the full 300-epoch recipe trained from scrat
 
 Usage (full recipe, 2 GPUs, TP=2)::
 
+    # ImageNet must use the standard ImageFolder layout with train/ and val/
+    # class directories.  The same variable is used by the ResNet example.
+    export IMAGENET_HOME=/path/to/imagenet
+
     python -m tinyexp.examples.vit_tp_exp
 
 Eval-only against the official checkpoint (accuracy cross-check)::
 
+    export IMAGENET_HOME=/path/to/imagenet
     python -m tinyexp.examples.vit_tp_exp mode=eval module_cfg.pretrained_from=<ckpt-or-url>
+
+Full 300-epoch training on 8 GPUs with DDP and the optional Redis byte cache::
+
+    export IMAGENET_HOME=/path/to/imagenet
+    python -m tinyexp.examples.vit_tp_exp accelerator_cfg.accelerator=ddp \\
+        ray_cfg.ray_num_worker=8 redis_cfg.redis_cache_enabled=true redis_cfg.redis_cache_max_memory=300
 
 Throughput / memory benchmark, e.g. TP vs DDP::
 
