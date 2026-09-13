@@ -115,8 +115,12 @@ class TPAccelerator(BaseAccelerator):
     def reduce_sum(self, tensor: torch.Tensor) -> torch.Tensor:
         if self.world_size < 2:
             return tensor
-        # nccl only reduces device-resident tensors; move over and back.
+        # NCCL only reduces device-resident tensors; move over and back. ``to``
+        # is a no-op when the input is already on this device, while all_reduce
+        # is in-place, so copy only in that aliasing case to preserve the input.
         device_tensor = tensor.to(self.device)
+        if device_tensor is tensor:
+            device_tensor = tensor.clone()
         dist.all_reduce(device_tensor, op=dist.ReduceOp.SUM)
         return device_tensor.to(tensor.device)
 

@@ -135,8 +135,8 @@ class DDPAccelerator(BaseAccelerator):
         world_size = self.world_size
         if world_size < 2:
             return tensor
-        # nccl only reduces device-resident tensors; move over and back (mirrors
-        # TPAccelerator.reduce_sum) so cpu-side metric tensors also reduce fine.
+        # NCCL only reduces device-resident tensors; move over and back so
+        # cpu-side metric tensors also reduce correctly.
         device_tensor = tensor.to(self.device)
         if device_tensor is tensor:
             device_tensor = tensor.clone()
