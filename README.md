@@ -76,6 +76,13 @@ python -m tinyexp.examples.mnist_exp
 The commands below assume that the environment containing TinyExp is active. For a source checkout, run
 `source .venv/bin/activate` first.
 
+A larger bundled example trains DeiT-S with tensor parallelism, ported line-by-line
+against the official DeiT implementation (see `docs/vit_tp.md`):
+
+```bash
+python -m tinyexp.examples.vit_tp_exp mode=bench   # throughput/memory check on 2 GPUs
+```
+
 Run MNIST with config override:
 
 ```bash

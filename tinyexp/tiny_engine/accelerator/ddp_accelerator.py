@@ -135,9 +135,13 @@ class DDPAccelerator(BaseAccelerator):
         world_size = self.world_size
         if world_size < 2:
             return tensor
-        tensor = tensor.clone()
-        dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
-        return tensor
+        # NCCL only reduces device-resident tensors; move over and back so
+        # cpu-side metric tensors also reduce correctly.
+        device_tensor = tensor.to(self.device)
+        if device_tensor is tensor:
+            device_tensor = tensor.clone()
+        dist.all_reduce(device_tensor, op=dist.ReduceOp.SUM)
+        return device_tensor.to(tensor.device)
 
     def reduce_mean(self, tensor: torch.Tensor) -> torch.Tensor:
         return self.reduce_sum(tensor) / self.world_size

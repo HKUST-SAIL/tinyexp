@@ -54,6 +54,16 @@ pytorch = [
     # TorchVision pulls Pillow; use a release with CPython 3.14 wheels.
     "pillow>=11.3; python_version >= '3.14'",
 ]
+vit = [
+    # vit_tp_exp example: data pipeline (Mixup/RandAugment), losses, scheduler, and
+    # DropPath/trunc_normal_ used by the ported DeiT model. The model itself is
+    # ported verbatim from timm 0.3.2 into tinyexp/examples/vit_tp_exp.py.
+    # timm does not pull torch, and the example imports torch/torchvision directly,
+    # so pull the pytorch extra via a self-referential extra instead of duplicating
+    # its per-interpreter version pins.
+    "TinyExp[pytorch]",
+    "timm>=1.0",
+]
 
 [project.urls]
 Homepage = "https://zengarden.github.io/TinyExp/"
@@ -161,6 +171,12 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101"]
 "tinyexp/utils/redis_utils.py" = ["S603"]
+# Ported verbatim from facebookresearch/deit and timm 0.3.2 (VIT_TOD.md §3.1): keep the
+# upstream asserts/exception messages/int() wrappers instead of restyling official code.
+"tinyexp/dataset/ra_sampler.py" = ["S101", "TRY003", "RUF046"]
+"tinyexp/examples/vit_tp_exp.py" = ["S101", "TRY003"]
+# The RASampler test oracle recomputes the official index math verbatim.
+"tests/dataset/test_ra_sampler.py" = ["RUF046"]
 
 [tool.ruff.format]
 preview = true
