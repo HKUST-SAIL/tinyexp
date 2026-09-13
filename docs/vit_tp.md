@@ -19,7 +19,7 @@ reaches **79.8% top-1** on ImageNet val, which is the accuracy cross-check targe
 
 | Component | Source |
 | --- | --- |
-| Model (`VisionTransformer`/`Block`/`Attention`/`Mlp`/`PatchEmbed`) | timm 0.3.2 `timm/models/vision_transformer.py` — the exact implementation behind the official DeiT checkpoints |
+| Model (`VisionTransformer`/`Block`/`Attention`/`Mlp`/`PatchEmbed`) | timm `vision_transformer` implementation configured for timm 0.3.2 DeiT behavior; `Attention` is adapted locally to split QKV for TP |
 | Factory hyper-parameters, checkpoint URL | facebookresearch/deit `models.py` @ `7e160fe4` |
 | Train/eval loops, recipe defaults, transforms, `RASampler`, `MetricLogger` | deit `engine.py`/`main.py`/`datasets.py`/`samplers.py`/`utils.py` (same commit) |
 | Data/loss/optimizer helpers (`Mixup`, `create_transform`, `NativeScaler`, `create_scheduler`, …) | timm >= 1.0 (same algorithms) |
@@ -27,7 +27,8 @@ reaches **79.8% top-1** on ImageNet val, which is the accuracy cross-check targe
 TP itself is `torch.distributed.tensor.parallel` (`ColwiseParallel`/`RowwiseParallel`)
 wrapped by `TPAccelerator`, following the classic Megatron block layout: colwise on
 `attn.q/k/v` + `mlp.fc1`, rowwise on `attn.proj` + `mlp.fc2`, one all-reduce per block
-pass. Attention runs per-head locally with no communication inside.
+pass. Attention runs per-head locally with no communication inside, using PyTorch's
+`scaled_dot_product_attention` (FlashAttention backend on supported CUDA devices).
 
 ## Sanctioned deviations (each covered by a test)
 

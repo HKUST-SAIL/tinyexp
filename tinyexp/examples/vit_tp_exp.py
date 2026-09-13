@@ -3,9 +3,10 @@
 This module is written by strict cross-checking (对拍) against upstream sources; only
 formatting-level changes are allowed (see ``docs/vit_tp.md``). The ported sources are:
 
-- Model classes (``Mlp``/``Attention``/``Block``/``PatchEmbed``/``VisionTransformer``):
-  timm 0.3.2 ``timm/models/vision_transformer.py``, which is the exact implementation
-  the official DeiT checkpoints were trained with.
+- Model classes (``Mlp``/``Block``/``PatchEmbed``/``VisionTransformer``): timm's
+  ``vision_transformer`` implementation, configured to retain the timm 0.3.2 DeiT
+  behavior. ``Attention`` is the only model layer adapted locally for TP: its fused
+  projection is split into ``q``/``k``/``v``.
 - ``deit_small_patch16_224`` factory hyper-parameters and checkpoint URL:
   facebookresearch/deit ``models.py`` at commit ``7e160fe43f0252d17191b71cbb5826254114ea5b``.
 - Train/eval loops, recipe defaults, transforms and RASampler wiring: deit ``engine.py``,
@@ -76,6 +77,7 @@ import math
 import os
 import sys
 import time
+import weakref
 from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from functools import partial
@@ -87,8 +89,11 @@ import torch
 import torch.nn as nn
 from PIL import Image
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, Mixup, create_transform
-from timm.layers import DropPath, to_2tuple, trunc_normal_
+from timm.layers import trunc_normal_
 from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
+from timm.models.vision_transformer import Attention as TimmAttention
+from timm.models.vision_transformer import Block as TimmBlock
+from timm.models.vision_transformer import VisionTransformer as TimmVisionTransformer
 from timm.scheduler import create_scheduler
 from timm.utils import ModelEma, NativeScaler, accuracy, get_state_dict
 from torch.distributed.tensor.parallel import ColwiseParallel, ParallelStyle, RowwiseParallel
@@ -104,42 +109,25 @@ from tinyexp.tiny_engine.accelerator import AcceleratorProtocol, TPAccelerator
 DEIT_SMALL_PATCH16_224_CKPT_URL = "https://dl.fbaipublicfiles.com/deit/deit_small_patch16_224-cd65a155.pth"
 
 
-class Mlp(nn.Module):
-    def __init__(
-        self,
-        in_features: int,
-        hidden_features: int | None = None,
-        out_features: int | None = None,
-        act_layer: type[nn.Module] = nn.GELU,
-        drop: float = 0.0,
-    ) -> None:
+class _SplitQkv(nn.Module):
+    """Compose split projections into the fused tensor expected by timm Attention."""
+
+    def __init__(self, attention: Attention) -> None:
         super().__init__()
-        out_features = out_features or in_features
-        hidden_features = hidden_features or in_features
-        self.fc1 = nn.Linear(in_features, hidden_features)
-        self.act = act_layer()
-        self.fc2 = nn.Linear(hidden_features, out_features)
-        self.drop = nn.Dropout(drop)
+        self._attention = weakref.ref(attention)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.fc1(x)
-        x = self.act(x)
-        x = self.drop(x)
-        x = self.fc2(x)
-        x = self.drop(x)
-        return x
+        attention = self._attention()
+        q, k, v = attention.q(x), attention.k(x), attention.v(x)
+        # ColwiseParallel returns local plain tensors. timm's inherited forward
+        # then reshapes this local QKV tensor using the local head count.
+        attention.attn_dim = q.shape[-1]
+        attention.num_heads = attention.attn_dim // attention.head_dim
+        return torch.cat((q, k, v), dim=-1)
 
 
-class Attention(nn.Module):
-    """timm 0.3.2 ``Attention`` with the docs/vit_tp.md D1 qkv split.
-
-    The official module holds one fused ``self.qkv`` Linear (``dim -> 3 * dim``). Here it
-    is split into three Linears so tensor-parallel sharding happens on head boundaries:
-    ``q``/``k``/``v`` outputs of shape ``(B, N, C)`` are reshaped to
-    ``(B, N, num_heads, C // num_heads)`` exactly like the fused original, so the
-    per-head attention math is unchanged (verified by unit test against the fused
-    original). Colwise sharding of the last dim therefore shards whole heads.
-    """
+class Attention(TimmAttention):
+    """timm Attention with split projections for tensor parallelism."""
 
     def __init__(
         self,
@@ -149,103 +137,50 @@ class Attention(nn.Module):
         qk_scale: float | None = None,
         attn_drop: float = 0.0,
         proj_drop: float = 0.0,
+        proj_bias: bool = True,
+        **kwargs: Any,
     ) -> None:
-        super().__init__()
-        self.num_heads = num_heads
-        head_dim = dim // num_heads
-        # NOTE scale factor was wrong in my original version, can set manually to be compat with prev weights
-        self.scale = qk_scale or head_dim**-0.5
-
-        self.q = nn.Linear(dim, dim, bias=qkv_bias)
-        self.k = nn.Linear(dim, dim, bias=qkv_bias)
-        self.v = nn.Linear(dim, dim, bias=qkv_bias)
-        self.attn_drop = nn.Dropout(attn_drop)
-        self.proj = nn.Linear(dim, dim)
-        self.proj_drop = nn.Dropout(proj_drop)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, N, C = x.shape
-        # docs/vit_tp.md D2: reshape with -1 instead of explicit num_heads/C so the math
-        # stays correct when q/k/v outputs are locally sharded on head boundaries by
-        # ColwiseParallel. head_dim (C // num_heads) is never sharded. At tp=1 the -1
-        # resolves to exactly the official shapes (unit-tested against the fused oracle).
-        head_dim = C // self.num_heads
-        q = self.q(x).reshape(B, N, -1, head_dim).permute(0, 2, 1, 3)
-        k = self.k(x).reshape(B, N, -1, head_dim).permute(0, 2, 1, 3)
-        v = self.v(x).reshape(B, N, -1, head_dim).permute(0, 2, 1, 3)
-
-        attn = (q @ k.transpose(-2, -1)) * self.scale
-        attn = attn.softmax(dim=-1)
-        attn = self.attn_drop(attn)
-
-        x = (attn @ v).transpose(1, 2).reshape(B, N, -1)
-        x = self.proj(x)
-        x = self.proj_drop(x)
-        return x
-
-
-class Block(nn.Module):
-    def __init__(
-        self,
-        dim: int,
-        num_heads: int,
-        mlp_ratio: float = 4.0,
-        qkv_bias: bool = False,
-        qk_scale: float | None = None,
-        drop: float = 0.0,
-        attn_drop: float = 0.0,
-        drop_path: float = 0.0,
-        act_layer: type[nn.Module] = nn.GELU,
-        norm_layer: type[nn.Module] = nn.LayerNorm,
-    ) -> None:
-        super().__init__()
-        self.norm1 = norm_layer(dim)
-        self.attn = Attention(
-            dim,
+        kwargs.pop("qk_norm", None)
+        kwargs.pop("scale_norm", None)
+        super().__init__(
+            dim=dim,
             num_heads=num_heads,
             qkv_bias=qkv_bias,
-            qk_scale=qk_scale,
+            qk_norm=False,
+            scale_norm=False,
+            proj_bias=proj_bias,
             attn_drop=attn_drop,
-            proj_drop=drop,
+            proj_drop=proj_drop,
+            **kwargs,
         )
-        # NOTE: drop path for stochastic depth, we shall see if this is better than dropout here
-        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
-        self.norm2 = norm_layer(dim)
-        mlp_hidden_dim = int(dim * mlp_ratio)
-        self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
+        del self.qkv
+        self.q = nn.Linear(dim, self.attn_dim, bias=qkv_bias)
+        self.k = nn.Linear(dim, self.attn_dim, bias=qkv_bias)
+        self.v = nn.Linear(dim, self.attn_dim, bias=qkv_bias)
+        self.qkv = _SplitQkv(self)
+        if qk_scale is not None:
+            self.scale = qk_scale
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x + self.drop_path(self.attn(self.norm1(x)))
-        x = x + self.drop_path(self.mlp(self.norm2(x)))
+
+class Block(TimmBlock):
+    """timm block that keeps the old Attention call signature when unmasked."""
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        attn_mask: torch.Tensor | None = None,
+        is_causal: bool = False,
+    ) -> torch.Tensor:
+        if attn_mask is None and not is_causal:
+            x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x))))
+        else:
+            x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x), attn_mask=attn_mask, is_causal=is_causal)))
+        x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
         return x
 
 
-class PatchEmbed(nn.Module):
-    """Image to Patch Embedding"""
-
-    def __init__(self, img_size: int = 224, patch_size: int = 16, in_chans: int = 3, embed_dim: int = 768) -> None:
-        super().__init__()
-        img_size = to_2tuple(img_size)
-        patch_size = to_2tuple(patch_size)
-        num_patches = (img_size[1] // patch_size[1]) * (img_size[0] // patch_size[0])
-        self.img_size = img_size
-        self.patch_size = patch_size
-        self.num_patches = num_patches
-
-        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        B, C, H, W = x.shape
-        # FIXME look at relaxing size constraints
-        assert (
-            self.img_size[0] == H and self.img_size[1] == W
-        ), f"Input image size ({H}*{W}) doesn't match model ({self.img_size[0]}*{self.img_size[1]})."
-        x = self.proj(x).flatten(2).transpose(1, 2)
-        return x
-
-
-class VisionTransformer(nn.Module):
-    """Vision Transformer with support for patch input stage"""
+class VisionTransformer(TimmVisionTransformer):
+    """DeiT-compatible timm ViT with the TP attention adapter above."""
 
     def __init__(
         self,
@@ -263,87 +198,55 @@ class VisionTransformer(nn.Module):
         attn_drop_rate: float = 0.0,
         drop_path_rate: float = 0.0,
         norm_layer: type[nn.Module] = nn.LayerNorm,
+        **kwargs: Any,
     ) -> None:
-        super().__init__()
-        self.num_classes = num_classes
-        self.num_features = self.embed_dim = embed_dim  # num_features for consistency with other models
-
-        self.patch_embed = PatchEmbed(img_size=img_size, patch_size=patch_size, in_chans=in_chans, embed_dim=embed_dim)
-        num_patches = self.patch_embed.num_patches
-
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
-        self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))
-        self.pos_drop = nn.Dropout(p=drop_rate)
-
-        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
-        self.blocks = nn.ModuleList(
-            [
-                Block(
-                    dim=embed_dim,
-                    num_heads=num_heads,
-                    mlp_ratio=mlp_ratio,
-                    qkv_bias=qkv_bias,
-                    qk_scale=qk_scale,
-                    drop=drop_rate,
-                    attn_drop=attn_drop_rate,
-                    drop_path=dpr[i],
-                    norm_layer=norm_layer,
-                )
-                for i in range(depth)
-            ]
+        super().__init__(
+            img_size=img_size,
+            patch_size=patch_size,
+            in_chans=in_chans,
+            num_classes=num_classes,
+            global_pool="token",
+            embed_dim=embed_dim,
+            depth=depth,
+            num_heads=num_heads,
+            mlp_ratio=mlp_ratio,
+            qkv_bias=qkv_bias,
+            drop_path_rate=drop_path_rate,
+            pos_drop_rate=drop_rate,
+            proj_drop_rate=drop_rate,
+            attn_drop_rate=attn_drop_rate,
+            norm_layer=norm_layer,
+            block_fn=Block,
+            attn_layer=Attention,
+            weight_init="skip",
+            fc_norm=False,
+            **kwargs,
         )
-        self.norm = norm_layer(embed_dim)
+        if qk_scale is not None:
+            for block in self.blocks:
+                block.attn.scale = qk_scale
+        self._init_old_weights()
 
-        # NOTE as per official impl, we could have a pre-logits representation dense layer + tanh here
-        # self.repr = nn.Linear(embed_dim, representation_size)
-        # self.repr_act = nn.Tanh()
-
-        # Classifier head
-        self.head = nn.Linear(embed_dim, num_classes) if num_classes > 0 else nn.Identity()
-
-        trunc_normal_(self.pos_embed, std=0.02)
-        trunc_normal_(self.cls_token, std=0.02)
+    def _init_old_weights(self) -> None:
+        if self.pos_embed is not None:
+            trunc_normal_(self.pos_embed, std=0.02)
+        if self.cls_token is not None:
+            trunc_normal_(self.cls_token, std=0.02)
         self.apply(self._init_weights)
 
-    def _init_weights(self, m: nn.Module) -> None:
-        if isinstance(m, nn.Linear):
-            trunc_normal_(m.weight, std=0.02)
-            if isinstance(m, nn.Linear) and m.bias is not None:
-                nn.init.constant_(m.bias, 0)
-        elif isinstance(m, nn.LayerNorm):
-            nn.init.constant_(m.bias, 0)
-            nn.init.constant_(m.weight, 1.0)
+    @staticmethod
+    def _init_weights(module: nn.Module) -> None:
+        if isinstance(module, nn.Linear):
+            trunc_normal_(module.weight, std=0.02)
+            if module.bias is not None:
+                nn.init.constant_(module.bias, 0)
+        elif isinstance(module, nn.LayerNorm):
+            nn.init.constant_(module.bias, 0)
+            nn.init.constant_(module.weight, 1.0)
 
     @torch.jit.ignore
     def no_weight_decay(self) -> set[str]:
         return {"pos_embed", "cls_token"}
-
-    def get_classifier(self) -> nn.Module:
-        return self.head
-
-    def reset_classifier(self, num_classes: int, global_pool: str = "") -> None:
-        self.num_classes = num_classes
-        self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
-
-    def forward_features(self, x: torch.Tensor) -> torch.Tensor:
-        B = x.shape[0]
-        x = self.patch_embed(x)
-
-        cls_tokens = self.cls_token.expand(B, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
-        x = torch.cat((cls_tokens, x), dim=1)
-        x = x + self.pos_embed
-        x = self.pos_drop(x)
-
-        for blk in self.blocks:
-            x = blk(x)
-
-        x = self.norm(x)
-        return x[:, 0]
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.forward_features(x)
-        x = self.head(x)
-        return x
 
 
 def deit_small_patch16_224(pretrained: bool = False, **kwargs: Any) -> VisionTransformer:
@@ -437,17 +340,6 @@ def convert_split_qkv_to_fused(state_dict: dict[str, torch.Tensor]) -> dict[str,
     return converted
 
 
-def _drop_mismatched_head_keys(module: nn.Module, state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
-    """Drop classifier-head keys that do not match ``module`` (official finetune branch)."""
-    model_state = module.state_dict()
-    converted = dict(state_dict)
-    for key in ("head.weight", "head.bias"):
-        if key in converted and key in model_state and converted[key].shape != model_state[key].shape:
-            print(f"Removing key {key} from pretrained checkpoint")
-            del converted[key]
-    return converted
-
-
 class _FusedQkvModelProxy:
     """Adapter that reads/writes the model in the official fused-qkv checkpoint layout.
 
@@ -469,9 +361,15 @@ class _FusedQkvModelProxy:
         return convert_split_qkv_to_fused(state)
 
     def load_state_dict(self, state_dict: dict[str, torch.Tensor], strict: bool = True) -> Any:
-        return self.module.load_state_dict(
-            convert_fused_qkv_to_split(_drop_mismatched_head_keys(self.module, state_dict)), strict=strict
-        )
+        # Match the official finetune behavior: ignore classifier weights when
+        # the checkpoint and configured class count differ.
+        state_dict = dict(state_dict)
+        model_state = self.module.state_dict()
+        for key in ("head.weight", "head.bias"):
+            if key in state_dict and key in model_state and state_dict[key].shape != model_state[key].shape:
+                print(f"Removing key {key} from pretrained checkpoint")
+                del state_dict[key]
+        return self.module.load_state_dict(convert_fused_qkv_to_split(state_dict), strict=strict)
 
 
 def _tensors_to_plain(state: Any) -> Any:
@@ -1082,7 +980,7 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
         else:
             raise NotImplementedError(f"Mode {self.mode} is not implemented")
 
-    def _prepare_for_train_or_eval(self, accelerator, logger):
+    def _prepare_for_train_or_eval(self, accelerator):
         """Components shared by train and eval, in official main.py order."""
         replicate_data = self.accelerator_cfg.accelerator == "tp"  # TP ranks eat identical batches (D5/D6)
         dataloader_val = self.dataloader_cfg.build_val_dataloader(accelerator, replicate_data)
@@ -1094,7 +992,13 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
 
         model = self.module_cfg.build_module()
         if self.module_cfg.pretrained_from:
-            _load_pretrained_into_model(self.module_cfg.pretrained_from, model)
+            path_or_url = self.module_cfg.pretrained_from
+            if path_or_url.startswith("https"):
+                checkpoint = torch.hub.load_state_dict_from_url(path_or_url, map_location="cpu", check_hash=True)
+            else:
+                checkpoint = torch.load(path_or_url, map_location="cpu", weights_only=False)
+            checkpoint_model = checkpoint["model"] if "model" in checkpoint else checkpoint.get("model_state_dict")
+            _FusedQkvModelProxy(model).load_state_dict(checkpoint_model, strict=False)
         model.to(accelerator.device)
 
         return replicate_data, dataloader_val, mixup_fn, criterion, model
@@ -1106,9 +1010,7 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
         return accelerator.prepare(model, optimizer)
 
     def _train(self, accelerator, logger, cfg_dict, run_dir: str) -> None:  # noqa: C901
-        replicate_data, data_loader_val, mixup_fn, criterion, model = self._prepare_for_train_or_eval(
-            accelerator, logger
-        )
+        replicate_data, data_loader_val, mixup_fn, criterion, model = self._prepare_for_train_or_eval(accelerator)
         data_loader_train = self.dataloader_cfg.build_train_dataloader(accelerator, replicate_data, self.redis_cfg)
 
         model_ema = None
@@ -1369,7 +1271,7 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
         source = self.resume_from or self.module_cfg.pretrained_from
         if not source:
             raise ValueError("mode=eval requires resume_from (tinyexp ckpt) or module_cfg.pretrained_from")
-        replicate_data, data_loader_val, _, _, model = self._prepare_for_train_or_eval(accelerator, logger)
+        _, data_loader_val, _, _, model = self._prepare_for_train_or_eval(accelerator)
         if self.resume_from and not self.module_cfg.pretrained_from:
             proxy = _FusedQkvModelProxy(model, accelerator)
             self.checkpoint_cfg.load_checkpoint(self.resume_from, model=proxy, map_location=accelerator.device)
@@ -1440,16 +1342,6 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
 
     def get_ray_run_result(self) -> str | None:
         return getattr(self, "_run_result", None)
-
-
-def _load_pretrained_into_model(path_or_url: str, model: VisionTransformer) -> None:
-    """Official --finetune branch: load official-layout weights, drop mismatched heads."""
-    if path_or_url.startswith("https"):
-        checkpoint = torch.hub.load_state_dict_from_url(path_or_url, map_location="cpu", check_hash=True)
-    else:
-        checkpoint = torch.load(path_or_url, map_location="cpu", weights_only=False)
-    checkpoint_model = checkpoint["model"] if "model" in checkpoint else checkpoint.get("model_state_dict")
-    _FusedQkvModelProxy(model).load_state_dict(checkpoint_model, strict=False)
 
 
 if __name__ == "__main__":
