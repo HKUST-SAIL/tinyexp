@@ -117,6 +117,14 @@ testpaths = ["tests"]
 target-version = "py39"
 line-length = 120
 fix = true
+extend-exclude = [
+    # Imported SAIL-Recon operators intentionally retain upstream arithmetic.
+    "tinyexp/sail_recon/dependency",
+    "tinyexp/sail_recon/heads",
+    "tinyexp/sail_recon/layers",
+    "tinyexp/sail_recon/models/aggregator.py",
+    "tinyexp/sail_recon/utils",
+]
 
 [tool.ruff.lint]
 select = [
