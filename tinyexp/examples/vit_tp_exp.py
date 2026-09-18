@@ -788,6 +788,8 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
             num_replicas = 1 if replicate_data else accelerator.world_size
             rank = 0 if replicate_data else accelerator.rank
             if num_replicas > 1 and self.repeated_aug:
+                if self.num_repeats < 1:
+                    raise ValueError("num_repeats should be greater than 0")
                 sampler: torch.utils.data.Sampler = RASampler(
                     dataset, num_replicas=num_replicas, rank=rank, shuffle=True, num_repeats=self.num_repeats
                 )
