@@ -89,6 +89,7 @@ import torch
 import torch.nn as nn
 from PIL import Image
 from timm.data import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD, Mixup, create_transform
+from timm.data.distributed_sampler import RepeatAugSampler as RASampler
 from timm.layers import trunc_normal_
 from timm.loss import LabelSmoothingCrossEntropy, SoftTargetCrossEntropy
 from timm.models.vision_transformer import Attention as TimmAttention
@@ -100,7 +101,6 @@ from torch.distributed.tensor.parallel import ColwiseParallel, ParallelStyle, Ro
 from torchvision import datasets, transforms
 
 from tinyexp import TinyExp, store_and_run_exp
-from tinyexp.dataset.ra_sampler import RASampler
 from tinyexp.exceptions import UnknownAcceleratorTypeError
 from tinyexp.exp_mixins import CheckpointCfgMixin, LoggerCfgMixin, RayCfgMixin, RedisCfgMixin, WandbCfgMixin
 from tinyexp.tiny_engine.accelerator import AcceleratorProtocol, TPAccelerator
@@ -712,7 +712,8 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
         # (docs/vit_tp.md), the same scaling point as the official 1024 @ lr 1e-3.
         train_batch_size_per_device: int = 256
         val_batch_size_per_device: int = 384  # int(1.5 * batch), official main.py
-        num_workers: int = 10
+        train_num_workers: int = 10
+        val_num_workers: int = 1
         color_jitter: float = 0.3
         auto_augment: str = "rand-m9-mstd0.5-inc1"
         train_interpolation: str = "bicubic"
@@ -800,9 +801,10 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
                 dataset,
                 sampler=sampler,
                 batch_size=self.train_batch_size_per_device,
-                num_workers=self.num_workers,
+                num_workers=self.train_num_workers,
                 pin_memory=self.pin_mem,
                 drop_last=True,
+                persistent_workers=self.train_num_workers > 0,
             )
 
         def build_val_dataloader(
@@ -820,9 +822,10 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
                 dataset,
                 sampler=sampler,
                 batch_size=self.val_batch_size_per_device,
-                num_workers=self.num_workers,
+                num_workers=self.val_num_workers,
                 pin_memory=self.pin_mem,
                 drop_last=False,
+                persistent_workers=self.val_num_workers > 0,
             )
 
     dataloader_cfg: DataloaderCfg = field(default_factory=DataloaderCfg)

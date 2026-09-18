@@ -171,12 +171,7 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101"]
 "tinyexp/utils/redis_utils.py" = ["S603"]
-# Ported verbatim from facebookresearch/deit and timm 0.3.2 (VIT_TOD.md §3.1): keep the
-# upstream asserts/exception messages/int() wrappers instead of restyling official code.
-"tinyexp/dataset/ra_sampler.py" = ["S101", "TRY003", "RUF046"]
 "tinyexp/examples/vit_tp_exp.py" = ["S101", "TRY003"]
-# The RASampler test oracle recomputes the official index math verbatim.
-"tests/dataset/test_ra_sampler.py" = ["RUF046"]
 
 [tool.ruff.format]
 preview = true
