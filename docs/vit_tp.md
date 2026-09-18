@@ -113,7 +113,7 @@ Four layers, each with a hard pass criterion; all hit.
 
 - **L1 — numerical equivalence** (CI, CPU+gloo): TP=2 forward logits and one-step
   gradients match the single-process run at fp32 `allclose(atol=1e-5)`
-  (`tests/examples/test_vit_tp_exp_tp.py`), and the split-qkv forward matches the
+  (`tests/examples/test_vit_tp_exp.py`), and the split-qkv forward matches the
   fused official one at `atol=1e-6`.
 - **L2 — eval accuracy** (official checkpoint, full 50k val): **79.82% top-1 /
   94.95% top-5 at tp=1**, **79.81% / 94.94% at tp=2** (official reference 79.8;
@@ -151,4 +151,4 @@ Honest reading: at DeiT-S scale TP is **not** a throughput win (communication do
 (384 vs 256) on the same 16 GB cards. The correctness gate is met: evaluating the official checkpoint on the full 50k
 ImageNet val yields **79.82% top-1 / 94.95% top-5 at tp=1** and **79.81% / 94.94% at
 tp=2** (official reference: 79.8%); numerical equivalence of TP=2 vs single-rank
-forward/backward is asserted in CI (fp32 `allclose`, `tests/examples/test_vit_tp_exp_tp.py`).
+forward/backward is asserted in CI (fp32 `allclose`, `tests/examples/test_vit_tp_exp.py`).

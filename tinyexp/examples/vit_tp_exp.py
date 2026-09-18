@@ -162,23 +162,6 @@ class Attention(TimmAttention):
             self.scale = qk_scale
 
 
-class Block(TimmBlock):
-    """timm block that keeps the old Attention call signature when unmasked."""
-
-    def forward(
-        self,
-        x: torch.Tensor,
-        attn_mask: torch.Tensor | None = None,
-        is_causal: bool = False,
-    ) -> torch.Tensor:
-        if attn_mask is None and not is_causal:
-            x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x))))
-        else:
-            x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x), attn_mask=attn_mask, is_causal=is_causal)))
-        x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
-        return x
-
-
 class VisionTransformer(TimmVisionTransformer):
     """DeiT-compatible timm ViT with the TP attention adapter above."""
 
@@ -216,7 +199,7 @@ class VisionTransformer(TimmVisionTransformer):
             proj_drop_rate=drop_rate,
             attn_drop_rate=attn_drop_rate,
             norm_layer=norm_layer,
-            block_fn=Block,
+            block_fn=TimmBlock,
             attn_layer=Attention,
             weight_init="skip",
             fc_norm=False,
