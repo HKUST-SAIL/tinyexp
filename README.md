@@ -86,73 +86,73 @@ experiment tasks, or you can invoke it explicitly with `$tinyexp-experiments`.
 
 ## Common Commands
 
-The commands below assume that the environment containing TinyExp is active. For a source checkout, run
-`source .venv/bin/activate` first.
-
-A larger bundled example trains DeiT-S with tensor parallelism, ported line-by-line
-against the official DeiT implementation (see `docs/vit_tp.md`):
+The commands below assume that TinyExp is installed in the active environment. For a source checkout, activate the
+environment first:
 
 ```bash
-python -m tinyexp.examples.vit_tp_exp mode=bench   # throughput/memory check on 2 GPUs
+source .venv/bin/activate
 ```
 
-Run MNIST with config override:
+### Run and inspect an experiment
+
+Use the module form for bundled examples. Configuration overrides use Hydra's `key=value` syntax:
 
 ```bash
-python tinyexp/examples/mnist_exp.py dataloader_cfg.train_batch_size_per_device=16
+python -m tinyexp.examples.mnist_exp
+python -m tinyexp.examples.mnist_exp \
+  dataloader_cfg.train_batch_size_per_device=16
 ```
 
-Print all available configs:
+`mode=help` prints the resolved configuration and exits without starting workers. The other mode values are
+experiment-specific; for example, MNIST and ResNet provide `train`/`val`, pi provides `run`, and the DeiT-S example
+also provides `eval`/`bench`.
 
 ```bash
-python tinyexp/examples/mnist_exp.py mode=help
+python -m tinyexp.examples.mnist_exp mode=help
+python -m tinyexp.examples.mnist_exp \
+  mode=help \
+  dataloader_cfg.train_batch_size_per_device=16
 ```
 
-Print all configs plus your overrides:
+### Choose how workers are created
 
-```bash
-python tinyexp/examples/mnist_exp.py mode=help dataloader_cfg.train_batch_size_per_device=16
-```
+Worker creation is controlled by both the command and TinyExp's `launcher` setting. The base `TinyExp` class defaults
+to `launcher=mp`; the bundled MNIST, ResNet, pi, and DeiT-S examples default to `launcher=ray`.
 
-Worker processes are selected by both the command and TinyExp's `launcher` config. The base `TinyExp` class defaults to
-`launcher=mp`, while the bundled examples default to `launcher=ray`.
-
-| Run style | Command owner | TinyExp launcher |
+| Invocation | TinyExp launcher | Process owner |
 | --- | --- | --- |
-| Plain Python, direct process | `python` | `launcher=mp` |
-| Plain Python, local Ray workers | TinyExp and Ray | `launcher=ray` |
-| TorchRun | `torchrun` | `launcher=mp` |
-| Accelerate launch | `accelerate launch` | `launcher=mp` |
-| Static Ray cluster | `tinyexp-run-with-ray-cluster` | `launcher=ray` |
+| Plain Python, one process | `mp` | Python |
+| Plain Python, local Ray workers | `ray` | TinyExp and Ray |
+| TorchRun | `mp` | `torchrun` |
+| Accelerate launch | `mp` | `accelerate launch` |
+| Static Ray cluster | `ray` | `tinyexp-run-with-ray-cluster` |
 
-For `launcher=ray`, using the active environment's `python` is intentional. Ray detects a driver launched through
-`uv run` and, by default, creates a `uv` runtime environment for its workers instead of reusing the already installed
-environment. TinyExp's examples and static cluster helper assume that every participating node already has the
-required environment. If a surrounding tool requires `uv run`, disable Ray's automatic `uv` runtime environment for
-that command:
-
-```bash
-RAY_ENABLE_UV_RUN_RUNTIME_ENV=0 uv run python tinyexp/examples/mnist_exp.py
-```
-
-This behavior is determined by the launch command, not by whether TinyExp was installed with `pip` or `uv`.
-`pip install "tinyexp[pytorch]"` followed by `python your_exp.py` does not need this environment variable.
-
-`torchrun` and `accelerate launch` create processes externally, so bundled examples must override `launcher=mp`:
+For `launcher=ray`, use the active environment's `python`. If the driver is started through `uv run`, Ray may create a
+separate `uv` runtime environment for workers. TinyExp's examples and static cluster helper expect the required
+environment to already exist on every participating node. If a surrounding tool requires `uv run`, disable that Ray
+integration:
 
 ```bash
-torchrun \
-  --nnodes 1 \
-  --node-rank 0 \
-  --nproc-per-node 2 \
-  --master-addr 127.0.0.1 \
-  --master-port 29500 \
-  tinyexp/examples/mnist_exp.py launcher=mp
-accelerate launch --cpu --num-processes 1 -m tinyexp.examples.pi_exp launcher=mp
+RAY_ENABLE_UV_RUN_RUNTIME_ENV=0 uv run python -m tinyexp.examples.mnist_exp
 ```
 
-A static Ray cluster must be started on every node with the same node count and head address, and a unique node rank.
-The experiment command runs on node rank 0 and should use `launcher=ray`:
+This behavior depends on the launch command, not on whether TinyExp was installed with `pip` or `uv`. A regular
+`pip install "tinyexp[pytorch]"` followed by `python your_exp.py` does not need this variable.
+
+`torchrun` and `accelerate launch` create processes externally, so use `launcher=mp`:
+
+```bash
+torchrun --standalone --nproc-per-node=2 \
+  -m tinyexp.examples.mnist_exp \
+  launcher=mp
+
+accelerate launch --cpu --num-processes=1 \
+  -m tinyexp.examples.pi_exp \
+  launcher=mp
+```
+
+A static Ray cluster must be started on every node with the same node count and head address, using a unique node rank
+on each node. Run the experiment command on node rank 0 with `launcher=ray`:
 
 ```bash
 tinyexp-run-with-ray-cluster \
@@ -161,20 +161,23 @@ tinyexp-run-with-ray-cluster \
   --head-addr 10.0.0.1 \
   --ray-port 6380 \
   -- \
-  python your_exp.py launcher=ray
+  python -m tinyexp.examples.pi_exp \
+  launcher=ray
 ```
 
 See [Running Modes and Environment Requirements](docs/running-modes.md) for the complete Python, PyTorch, CUDA/NCCL,
 Accelerate, Ray multi-node, network, data, Redis, and W&B requirements.
 
-The `mode` config selects what to execute: `train`, `val`, `run`, or `help`. Ray worker resources are explicit: set
-`ray_cfg.ray_num_cpus_per_worker` and `ray_cfg.ray_num_gpus_per_worker` for the resources required by one worker.
-The fields can be overridden in the experiment's nested `RayCfg` or from the command line.
+Ray worker resources are explicit. Set `ray_cfg.ray_num_cpus_per_worker` and `ray_cfg.ray_num_gpus_per_worker` to the
+resources required by one worker; both fields can be overridden from the command line.
 
-Run a command with TinyExp's Redis helper after installing the package:
+Run an ImageNet experiment with TinyExp's Redis helper after installing the package:
 
 ```bash
-tinyexp-run-with-redis -- python your_exp.py redis_cfg.redis_cache_enabled=true
+export IMAGENET_HOME=/path/to/imagenet
+tinyexp-run-with-redis -- \
+  python -m tinyexp.examples.resnet_exp \
+  redis_cfg.redis_cache_enabled=true
 ```
 
 `tinyexp-run-with-redis` owns and stops only the Redis processes it starts. If a configured port is already served by
@@ -191,19 +194,31 @@ failure coordination. The external launcher or supervisor owns whole-job restart
 - MNIST baseline: [`tinyexp/examples/mnist_exp.py`](tinyexp/examples/mnist_exp.py)
 - ImageNet ResNet-50: [`tinyexp/examples/resnet_exp.py`](tinyexp/examples/resnet_exp.py)
 - Distributed Monte Carlo pi (non-DL, `mode=run`): [`tinyexp/examples/pi_exp.py`](tinyexp/examples/pi_exp.py)
+- DeiT-S with tensor parallelism: [`tinyexp/examples/vit_tp_exp.py`](tinyexp/examples/vit_tp_exp.py), documented in
+  [`docs/vit_tp.md`](docs/vit_tp.md)
 
-For ImageNet example:
+Run the ImageNet ResNet-50 example with the dataset root in `IMAGENET_HOME`:
 
 ```bash
 export IMAGENET_HOME=/path/to/imagenet
-python tinyexp/examples/resnet_exp.py
+python -m tinyexp.examples.resnet_exp
 ```
 
-For the pi example (Ray workers all-reduce their sample counts, no dataloader involved):
+The pi example uses Ray workers to all-reduce sample counts and does not use a dataloader:
 
 ```bash
-python -m tinyexp.examples.pi_exp pi_cfg.total_samples=100000000 ray_cfg.ray_num_worker=4
+python -m tinyexp.examples.pi_exp \
+  pi_cfg.total_samples=100000000 \
+  ray_cfg.ray_num_worker=4
 ```
+
+The DeiT-S example includes a synthetic TP throughput/memory benchmark on two GPUs:
+
+```bash
+python -m tinyexp.examples.vit_tp_exp mode=bench
+```
+
+See [`docs/vit_tp.md`](docs/vit_tp.md) for ImageNet data preparation, evaluation, and full training commands.
 
 ## How It Works
 
