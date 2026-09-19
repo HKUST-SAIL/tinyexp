@@ -32,8 +32,7 @@ class DDPAccelerator(BaseAccelerator):
         dist.init_process_group(
             backend="nccl",
             init_method="env://",
-            # rank=self.rank,
-            # world_size=self.world_size,
+            device_id=self.device,
         )
 
     def destroy(self):
@@ -120,7 +119,7 @@ class DDPAccelerator(BaseAccelerator):
     def wait_for_everyone(self) -> None:
         if self.world_size < 2:
             return
-        dist.barrier()
+        dist.barrier(device_ids=[self.device.index])
 
     def reduce(self, tensor, reduction: Literal["sum", "mean"] = "sum", scale=1.0):
         if reduction == "sum":

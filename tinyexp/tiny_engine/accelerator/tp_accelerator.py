@@ -61,7 +61,12 @@ class TPAccelerator(BaseAccelerator):
         self.sync_gradients = True
 
     def _init_process_group(self) -> None:
-        dist.init_process_group(backend=self.backend, init_method="env://")
+        kwargs: dict[str, Any] = {}
+        if self.device.type == "cuda":
+            # Bind NCCL's process group to this rank's device so collectives such
+            # as barrier do not have to infer a device from the current context.
+            kwargs["device_id"] = self.device
+        dist.init_process_group(backend=self.backend, init_method="env://", **kwargs)
 
     def destroy(self) -> None:
         """Destroy the process group once, if this accelerator owns it."""
@@ -110,7 +115,10 @@ class TPAccelerator(BaseAccelerator):
     def wait_for_everyone(self) -> None:
         if self.world_size < 2:
             return
-        dist.barrier()
+        if self.device.type == "cuda":
+            dist.barrier(device_ids=[self.device.index])
+        else:
+            dist.barrier()
 
     def reduce_sum(self, tensor: torch.Tensor) -> torch.Tensor:
         if self.world_size < 2:
