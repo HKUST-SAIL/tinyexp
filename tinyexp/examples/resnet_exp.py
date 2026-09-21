@@ -20,6 +20,16 @@ from tinyexp.exp_mixins import CheckpointCfgMixin, LoggerCfgMixin, RayCfgMixin, 
 from tinyexp.tiny_engine.accelerator import AcceleratorProtocol
 
 
+class _StateDictProxy:
+    """Expose an already-collected state dict through the checkpoint API."""
+
+    def __init__(self, state_dict):
+        self._state_dict = state_dict
+
+    def state_dict(self):
+        return self._state_dict
+
+
 def transform_template_imagenet(
     is_train=True,
     resize_size=256,
@@ -179,12 +189,14 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
         accelerator: str = "ddp"
 
         def build_accelerator(self) -> AcceleratorProtocol:
-            from tinyexp.tiny_engine.accelerator import CPUAccelerator, DDPAccelerator
+            from tinyexp.tiny_engine.accelerator import CPUAccelerator, DDPAccelerator, FSDPAccelerator
 
             if self.accelerator == "cpu":
                 accelerator = CPUAccelerator()
             elif self.accelerator == "ddp":
                 accelerator = DDPAccelerator()
+            elif self.accelerator == "fsdp":
+                accelerator = FSDPAccelerator()
             else:
                 raise UnknownAcceleratorTypeError(self.accelerator)
             return accelerator
@@ -342,8 +354,9 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
         if val_dataloader is None:
             val_dataloader = self.dataloader_cfg.build_val_dataloader(accelerator)
 
+        # Keep the prepared wrapper for forward: FSDP needs its hooks to
+        # all-gather parameters before each wrapped module executes.
         # Ranks may have different eval batch counts when the dataset is not divisible.
-        module = accelerator.unwrap_model(module)
         module.eval()
         accurate = torch.tensor(0, dtype=torch.long, device=accelerator.device)
         seen = torch.tensor(0, dtype=torch.long, device=accelerator.device)
@@ -376,8 +389,13 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
         ori_module = self.module_cfg.build_module()
         # Keep the optimizer attached to the final device-side parameters.
         ori_module.to(accelerator.device)
-        ori_optimizer = self.optimizer_cfg.build_optimizer(ori_module, train_dataloader, accelerator)
-        module, optimizer = accelerator.prepare(ori_module, ori_optimizer)
+        if getattr(accelerator, "requires_optimizer_after_model", False):
+            module = accelerator.prepare_model(ori_module)
+            ori_optimizer = self.optimizer_cfg.build_optimizer(module, train_dataloader, accelerator)
+            optimizer = accelerator.prepare_optimizer(ori_optimizer, model=module)
+        else:
+            ori_optimizer = self.optimizer_cfg.build_optimizer(ori_module, train_dataloader, accelerator)
+            module, optimizer = accelerator.prepare(ori_module, ori_optimizer)
         lr_scheduler = self.lr_scheduler_cfg.build_lr_scheduler(optimizer)
         start_epoch = 0
         global_step = 0
@@ -386,7 +404,7 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
         if self.resume_from:
             checkpoint = self.checkpoint_cfg.load_checkpoint(
                 self.resume_from,
-                model=accelerator.unwrap_model(module),
+                model=module,
                 optimizer=optimizer,
                 scheduler=lr_scheduler,
                 map_location=accelerator.device,
@@ -459,6 +477,15 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
             is_best = best_metric is None or eval_metric > best_metric
             if is_best:
                 best_metric = eval_metric
+            checkpoint_model = accelerator.unwrap_model(module)
+            checkpoint_optimizer = optimizer
+            collect_checkpoint_state = getattr(accelerator, "collect_checkpoint_state", None)
+            if collect_checkpoint_state is not None:
+                # FSDP full state-dict collection is collective and therefore
+                # must happen before the rank-0-only checkpoint write.
+                model_state, optimizer_state = collect_checkpoint_state(module, optimizer)
+                checkpoint_model = _StateDictProxy(model_state)
+                checkpoint_optimizer = _StateDictProxy(optimizer_state)
             if accelerator.is_main_process:
                 checkpoint_extra_state = None
                 if getattr(accelerator, "world_size", 1) == 1:
@@ -466,8 +493,8 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
                 self.checkpoint_cfg.save_checkpoint(
                     run_dir=run_dir,
                     name=self.checkpoint_cfg.last_ckpt_name,
-                    model=accelerator.unwrap_model(module),
-                    optimizer=optimizer,
+                    model=checkpoint_model,
+                    optimizer=checkpoint_optimizer,
                     scheduler=lr_scheduler,
                     epoch=global_epoch,
                     global_step=global_step,
@@ -480,8 +507,8 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
                     self.checkpoint_cfg.save_checkpoint(
                         run_dir=run_dir,
                         name=self.checkpoint_cfg.best_ckpt_name,
-                        model=accelerator.unwrap_model(module),
-                        optimizer=optimizer,
+                        model=checkpoint_model,
+                        optimizer=checkpoint_optimizer,
                         scheduler=lr_scheduler,
                         epoch=global_epoch,
                         global_step=global_step,

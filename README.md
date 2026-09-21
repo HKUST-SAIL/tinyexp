@@ -204,6 +204,17 @@ export IMAGENET_HOME=/path/to/imagenet
 python -m tinyexp.examples.resnet_exp
 ```
 
+The same ResNet training loop also supports FSDP for a parameter/gradient/optimizer-state
+sharding smoke test. Run it with `accelerator_cfg.accelerator=fsdp` on a multi-GPU CUDA host;
+the recipe and validation target are otherwise the same as DDP. The existing DDP recipe reaches
+about 76% ImageNet top-1 after the full 90-epoch run; use the command below to compare FSDP on
+the same setup:
+
+```bash
+torchrun --nproc-per-node=2 tinyexp/examples/resnet_exp.py \
+  launcher=mp accelerator_cfg.accelerator=fsdp redis_cfg.redis_cache_enabled=false
+```
+
 The pi example uses Ray workers to all-reduce sample counts and does not use a dataloader:
 
 ```bash

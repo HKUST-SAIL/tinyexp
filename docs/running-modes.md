@@ -261,7 +261,11 @@ There are two distinct Accelerate integrations:
 1. `accelerate launch` can create processes for an experiment that still builds TinyExp's `CPUAccelerator` or `DDPAccelerator`.
 2. `HFAccelerator` adapts `accelerate.Accelerator` to TinyExp's accelerator protocol, but an experiment must construct it explicitly.
 
-The bundled MNIST and ResNet examples currently accept only `accelerator_cfg.accelerator=cpu` and `accelerator_cfg.accelerator=ddp`. They do not accept `accelerator_cfg.accelerator=hf`; using `accelerate launch` does not automatically select `HFAccelerator`.
+The bundled MNIST example accepts `accelerator_cfg.accelerator=cpu` and `accelerator_cfg.accelerator=ddp`.
+The ResNet example additionally accepts `accelerator_cfg.accelerator=fsdp`; this uses PyTorch FSDP to shard
+ResNet parameters, gradients, and optimizer state. It is a correctness and integration smoke test as ResNet-50
+itself fits on a modern GPU. Neither example accepts `accelerator_cfg.accelerator=hf`; using `accelerate launch`
+does not automatically select `HFAccelerator`.
 
 For multi-machine Accelerate launches, all machines need matching code and environments, and the main process IP and port must be reachable. Supply `--num-machines`, `--machine-rank`, `--main-process-ip`, and `--main-process-port`, or provide equivalent Accelerate configuration.
 

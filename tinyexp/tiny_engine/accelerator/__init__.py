@@ -4,6 +4,7 @@ import contextlib as _contextlib
 from .base_accelerator import AcceleratorProtocol, BaseAccelerator
 from .cpu_accelerator import CPUAccelerator
 from .ddp_accelerator import DDPAccelerator
+from .fsdp_accelerator import FSDPAccelerator
 from .tp_accelerator import TPAccelerator
 
 with _contextlib.suppress(ImportError):
