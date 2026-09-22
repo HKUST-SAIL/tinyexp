@@ -127,7 +127,7 @@ Four layers, each with a hard pass criterion; all hit.
 - **L4 — throughput/memory** (bench mode, table below).
 
 Two engine hardenings landed with this example, each held by a regression test:
-`DDPAccelerator.reduce_sum` stages CPU tensors through the device so nccl
+`DDPAccelerator.reduce` stages CPU tensors through the device so nccl
 metric-sync works at epoch boundaries, and `store_and_run_exp` resolves the
 canonical importable twin of a `python -m` `__main__` class so ray ships it by
 reference (robust against cluster agents that replace `builtins.print` after

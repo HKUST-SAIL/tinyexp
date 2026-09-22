@@ -35,11 +35,13 @@ class AcceleratorProtocol(Protocol):
 
     def backward(self, loss: torch.Tensor) -> None: ...
 
+    def autocast(self) -> contextlib.AbstractContextManager[None]: ...
+
+    def optimizer_step(self, optimizer: Any) -> Any: ...
+
     def wait_for_everyone(self) -> None: ...
 
-    def reduce_sum(self, tensor: torch.Tensor) -> torch.Tensor: ...
-
-    def reduce_mean(self, tensor: torch.Tensor) -> torch.Tensor: ...
+    def reduce(self, tensor: torch.Tensor, reduction: str = "sum", scale: float = 1.0) -> torch.Tensor: ...
 
     def print(self, *args: Any, **kwargs: Any) -> None: ...
 
@@ -93,16 +95,21 @@ class BaseAccelerator(abc.ABC):
     def backward(self, loss: torch.Tensor) -> None:
         pass
 
+    def autocast(self) -> contextlib.AbstractContextManager[None]:
+        """Forward-pass context manager; mixed-precision accelerators override it."""
+        return contextlib.nullcontext()
+
+    def optimizer_step(self, optimizer: Any) -> Any:
+        """Step the optimizer; mixed-precision accelerators override it for loss scaling."""
+        return optimizer.step()
+
     @abstractmethod
     def wait_for_everyone(self) -> None:
         pass
 
     @abstractmethod
-    def reduce_sum(self, tensor: torch.Tensor) -> torch.Tensor:
-        pass
-
-    @abstractmethod
-    def reduce_mean(self, tensor: torch.Tensor) -> torch.Tensor:
+    def reduce(self, tensor: torch.Tensor, reduction: str = "sum", scale: float = 1.0) -> torch.Tensor:
+        """Reduce a tensor across processes; mirrors accelerate's Accelerator.reduce."""
         pass
 
     @abstractmethod

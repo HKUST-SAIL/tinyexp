@@ -90,7 +90,7 @@ def _run_multinode_probe() -> None:
             def run(self) -> dict[str, object]:
                 accelerator = CPUAccelerator()
                 value = torch.tensor(float(accelerator.rank + 1))
-                reduced = accelerator.reduce_sum(value).item()
+                reduced = accelerator.reduce(value, reduction="sum").item()
                 result = {
                     "rank": accelerator.rank,
                     "sum": reduced,

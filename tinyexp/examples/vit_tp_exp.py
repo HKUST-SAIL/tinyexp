@@ -461,7 +461,7 @@ class MetricLogger:
         if getattr(accelerator, "world_size", 1) < 2:
             return
         for meter in self.meters.values():
-            pair = accelerator.reduce_sum(torch.tensor([meter.total, meter.count], dtype=torch.float64))
+            pair = accelerator.reduce(torch.tensor([meter.total, meter.count], dtype=torch.float64), reduction="sum")
             meter.total = float(pair[0].item()) / accelerator.world_size
             meter.count = float(pair[1].item()) / accelerator.world_size
 

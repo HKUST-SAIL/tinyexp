@@ -15,9 +15,15 @@ class CPUAccelerator(BaseAccelerator):
     CPU accelerator for distributed training.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, mixed_precision: str = "none") -> None:
         super().__init__()
+        # CPU autocast supports bf16 only; bf16 keeps fp32's exponent range,
+        # so no loss scaling is needed and backward/optimizer_step inherit
+        # the base full-precision implementations.
+        if mixed_precision not in ("none", "bf16"):
+            raise ValueError(f"CPU autocast supports none/bf16 only, got {mixed_precision!r}")  # noqa: TRY003
         self.device = torch.device("cpu")
+        self._amp_dtype = torch.bfloat16 if mixed_precision == "bf16" else None
         if self.world_size > 1:
             self._process_group_initialized = True
             self._init_process_group()
@@ -74,19 +80,23 @@ class CPUAccelerator(BaseAccelerator):
     def backward(self, loss: torch.Tensor) -> None:
         loss.backward()
 
+    def autocast(self):
+        if self._amp_dtype is None:
+            return super().autocast()
+        return torch.autocast(device_type="cpu", dtype=self._amp_dtype)
+
     def wait_for_everyone(self) -> None:
         if self.world_size > 1:
             dist.barrier()
 
-    def reduce_sum(self, tensor: torch.Tensor) -> torch.Tensor:
-        if self.world_size < 2:
+    def reduce(self, tensor: torch.Tensor, reduction: str = "sum", scale: float = 1.0) -> torch.Tensor:
+        if self.world_size < 2 or reduction == "none":
             return tensor
         tensor = tensor.clone().to(self.device)
         dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+        if reduction == "mean":
+            tensor = tensor / self.world_size
         return tensor
-
-    def reduce_mean(self, tensor: torch.Tensor) -> torch.Tensor:
-        return self.reduce_sum(tensor) / self.world_size
 
     def print(self, *args, **kwargs) -> None:
         if self.rank == 0:

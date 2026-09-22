@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,6 +10,37 @@ import torch.nn as nn
 from omegaconf import ListConfig, OmegaConf
 
 from tinyexp.examples.resnet_exp import RedisCachedImageFolder, ResNetExp
+
+
+class _TrainStepMixin:
+    """Train-loop protocol surface beyond what each DummyAccelerator defines itself."""
+
+    def autocast(self):
+        return contextlib.nullcontext()
+
+    def optimizer_step(self, optimizer):
+        return optimizer.step()
+
+
+def test_accelerator_cfg_builds_hf_and_maps_none_to_accelerates_no(monkeypatch) -> None:
+    pytest.importorskip("accelerate")
+    # accelerate keeps process-global state; swapping mixed_precision across
+    # constructions raises, so the mapping is asserted through a fake class.
+    import tinyexp.tiny_engine.accelerator as accelerator_module
+
+    created: list[dict] = []
+
+    class FakeHFAccelerator:
+        def __init__(self, **kwargs):
+            created.append(kwargs)
+
+    monkeypatch.setattr(accelerator_module, "HFAccelerator", FakeHFAccelerator)
+
+    ResNetExp.AcceleratorCfg(accelerator="hf").build_accelerator()
+    assert created == [{"mixed_precision": "no"}]
+
+    ResNetExp.AcceleratorCfg(accelerator="hf", mixed_precision="bf16").build_accelerator()
+    assert created == [{"mixed_precision": "no"}, {"mixed_precision": "bf16"}]
 
 
 def test_resnet_warmup_milestone_uses_configured_epoch() -> None:
@@ -318,7 +350,7 @@ def test_resnet_run_destroys_accelerator_when_workload_fails(
 def test_resnet_train_saves_last_and_best_checkpoints(tmp_path: Path, monkeypatch) -> None:
     exp = ResNetExp(output_root=str(tmp_path), exp_name="resnet_train")
 
-    class DummyAccelerator:
+    class DummyAccelerator(_TrainStepMixin):
         rank = 0
         device = "cpu"
         is_main_process = True
@@ -380,7 +412,7 @@ def test_resnet_train_saves_last_and_best_checkpoints(tmp_path: Path, monkeypatc
 def test_resnet_train_stops_at_max_train_epochs(tmp_path: Path, monkeypatch) -> None:
     exp = ResNetExp(output_root=str(tmp_path), exp_name="resnet_train", max_train_epochs=2)
 
-    class DummyAccelerator:
+    class DummyAccelerator(_TrainStepMixin):
         rank = 0
         device = "cpu"
         is_main_process = True
@@ -448,7 +480,7 @@ def test_resnet_train_positions_sampler_once_before_creating_iterator(
             while True:
                 yield torch.randn(2, 2), torch.tensor([0, 1])
 
-    class DummyAccelerator:
+    class DummyAccelerator(_TrainStepMixin):
         rank = 0
         device = "cpu"
         is_main_process = True
@@ -492,7 +524,7 @@ def test_resnet_train_positions_sampler_once_before_creating_iterator(
 def test_resnet_train_stops_at_max_train_steps(tmp_path: Path, monkeypatch) -> None:
     exp = ResNetExp(output_root=str(tmp_path), exp_name="resnet_train", max_train_steps=1)
 
-    class DummyAccelerator:
+    class DummyAccelerator(_TrainStepMixin):
         rank = 0
         device = "cpu"
         is_main_process = True
@@ -539,7 +571,7 @@ def test_resnet_train_stops_at_max_train_steps(tmp_path: Path, monkeypatch) -> N
 def test_resnet_train_resume_loads_checkpoint_state(tmp_path: Path, monkeypatch) -> None:
     exp = ResNetExp(output_root=str(tmp_path), exp_name="resnet_train", resume_from="resume.ckpt")
 
-    class DummyAccelerator:
+    class DummyAccelerator(_TrainStepMixin):
         rank = 0
         device = "cpu"
         is_main_process = True

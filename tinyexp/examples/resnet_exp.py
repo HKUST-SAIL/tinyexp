@@ -187,16 +187,26 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
     @dataclass
     class AcceleratorCfg:
         accelerator: str = "ddp"
+        # none | fp16 | bf16; each accelerator validates what it supports
+        # (CPU autocast is bf16-only).
+        mixed_precision: str = "none"
 
         def build_accelerator(self) -> AcceleratorProtocol:
             from tinyexp.tiny_engine.accelerator import CPUAccelerator, DDPAccelerator, FSDPAccelerator
 
             if self.accelerator == "cpu":
-                accelerator = CPUAccelerator()
+                accelerator = CPUAccelerator(mixed_precision=self.mixed_precision)
             elif self.accelerator == "ddp":
-                accelerator = DDPAccelerator()
+                accelerator = DDPAccelerator(mixed_precision=self.mixed_precision)
             elif self.accelerator == "fsdp":
-                accelerator = FSDPAccelerator()
+                accelerator = FSDPAccelerator(mixed_precision=self.mixed_precision)
+            elif self.accelerator == "hf":
+                from tinyexp.tiny_engine.accelerator import HFAccelerator
+
+                # accelerate spells the full-precision mode "no".
+                accelerator = HFAccelerator(
+                    mixed_precision="no" if self.mixed_precision == "none" else self.mixed_precision
+                )
             else:
                 raise UnknownAcceleratorTypeError(self.accelerator)
             return accelerator
@@ -371,8 +381,8 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
             if step % 20 == 0:
                 logger.info(f"Eval step {step}, accurate: {accurate.item()}")
 
-        global_accurate = accelerator.reduce_sum(accurate)
-        global_seen = accelerator.reduce_sum(seen)
+        global_accurate = accelerator.reduce(accurate, reduction="sum")
+        global_seen = accelerator.reduce(seen, reduction="sum")
         eval_metric = global_accurate.item() / global_seen.item() if global_seen.item() else 0.0
 
         nowtime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -443,12 +453,13 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
                     batch = next(train_iter)
 
                 images, labels = (item.to(accelerator.device) for item in batch)
-                preds = module(images)
-                loss = nn.CrossEntropyLoss()(preds, labels)
+                with accelerator.autocast():
+                    preds = module(images)
+                    loss = nn.CrossEntropyLoss()(preds, labels)
 
                 optimizer.zero_grad()
                 accelerator.backward(loss)
-                optimizer.step()
+                accelerator.optimizer_step(optimizer)
                 global_step += 1
 
                 if 0 < self.max_train_steps <= global_step:

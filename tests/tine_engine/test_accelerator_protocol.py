@@ -21,6 +21,6 @@ def test_hf_accelerator_implements_accelerator_protocol() -> None:
     accelerator = HFAccelerator(cpu=True)
 
     assert isinstance(accelerator, AcceleratorProtocol)
-    assert torch.equal(accelerator.reduce_sum(torch.tensor([2.0])), torch.tensor([2.0]))
-    assert torch.equal(accelerator.reduce_mean(torch.tensor([2.0])), torch.tensor([2.0]))
+    assert torch.equal(accelerator.reduce(torch.tensor([2.0]), reduction="sum"), torch.tensor([2.0]))
+    assert torch.equal(accelerator.reduce(torch.tensor([2.0]), reduction="mean"), torch.tensor([2.0]))
     accelerator.destroy()

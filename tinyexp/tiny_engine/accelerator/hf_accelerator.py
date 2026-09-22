@@ -1,7 +1,6 @@
 try:
     import contextlib
 
-    import torch
     from accelerate import Accelerator
 
     class HFAccelerator(Accelerator):
@@ -18,11 +17,11 @@ try:
             self.world_size = self.num_processes
             self.local_rank = self.local_process_index
 
-        def reduce_sum(self, tensor: torch.Tensor) -> torch.Tensor:
-            return self.reduce(tensor, reduction="sum")
-
-        def reduce_mean(self, tensor: torch.Tensor) -> torch.Tensor:
-            return self.reduce(tensor, reduction="mean")
+        def optimizer_step(self, optimizer):
+            # A prepared optimizer is an AcceleratedOptimizer whose own step()
+            # applies accelerate's loss scaling; autocast() and prepare_model()
+            # (with its device_placement signature) are inherited unchanged.
+            return optimizer.step()
 
         def destroy(self) -> None:
             if self._destroyed:

@@ -25,20 +25,30 @@ from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 
 from ...exceptions import CudaNotAvailableError
 from .base_accelerator import BaseAccelerator
+from .ddp_accelerator import _MIXED_PRECISION_DTYPES
 
 
 class FSDPAccelerator(BaseAccelerator):
-    """Accelerator for parameter, gradient, and optimizer-state sharding."""
+    """Accelerator for parameter, gradient, and optimizer-state sharding.
+
+    Mixed precision uses ``torch.autocast`` over full-precision parameters,
+    the same recipe as DDP: FSDP's native ``MixedPrecision`` policy was
+    measured ~2.2x slower per epoch on 8xH200 (its per-block parameter
+    cast machinery dominates), while autocast only recasts inside compute
+    kernels and keeps parameters, communication, and checkpoints fp32.
+    """
 
     # ResNet's generic training loop builds the optimizer before calling
     # ``prepare``. FSDP replaces the module parameters, so that order must be
     # reversed for this accelerator.
     requires_optimizer_after_model = True
 
-    def __init__(self) -> None:
+    def __init__(self, mixed_precision: str = "none") -> None:
         super().__init__()
         if not torch.cuda.is_available():
             raise CudaNotAvailableError()
+        if mixed_precision != "none" and mixed_precision not in _MIXED_PRECISION_DTYPES:
+            raise ValueError(f"Unknown mixed precision {mixed_precision!r}; expected none/fp16/bf16")  # noqa: TRY003
 
         if self.device.index is None:
             self.device = torch.device("cuda", torch.cuda.current_device())
@@ -47,6 +57,12 @@ class FSDPAccelerator(BaseAccelerator):
             self._init_process_group()
             self._process_group_initialized = True
         self.sync_gradients = True
+
+        # fp16 gradients need loss scaling to stay in range; bf16 does not.
+        # A disabled GradScaler passes scale/step through unchanged, so one
+        # code path covers every mode.
+        self._amp_dtype = _MIXED_PRECISION_DTYPES.get(mixed_precision)
+        self._scaler = torch.amp.GradScaler("cuda", enabled=mixed_precision == "fp16")
 
     def _init_process_group(self) -> None:
         dist.init_process_group(
@@ -130,23 +146,32 @@ class FSDPAccelerator(BaseAccelerator):
         return optimizer
 
     def backward(self, loss: torch.Tensor) -> None:
-        loss.backward()
+        self._scaler.scale(loss).backward()
+
+    def autocast(self):
+        if self._amp_dtype is None:
+            return super().autocast()
+        return torch.autocast(device_type="cuda", dtype=self._amp_dtype)
+
+    def optimizer_step(self, optimizer: Any) -> Any:
+        self._scaler.step(optimizer)
+        self._scaler.update()
 
     def wait_for_everyone(self) -> None:
         if self.world_size > 1:
             dist.barrier(device_ids=[self.device.index])
 
-    def reduce_sum(self, tensor: torch.Tensor) -> torch.Tensor:
-        if self.world_size < 2:
+    def reduce(self, tensor: torch.Tensor, reduction: str = "sum", scale: float = 1.0) -> torch.Tensor:
+        if self.world_size < 2 or reduction == "none":
             return tensor
         device_tensor = tensor.to(self.device)
         if device_tensor is tensor:
             device_tensor = tensor.clone()
         dist.all_reduce(device_tensor, op=dist.ReduceOp.SUM)
-        return device_tensor.to(tensor.device)
-
-    def reduce_mean(self, tensor: torch.Tensor) -> torch.Tensor:
-        return self.reduce_sum(tensor) / self.world_size
+        result = device_tensor.to(tensor.device)
+        if reduction == "mean":
+            result = result / self.world_size
+        return result
 
     def dump_model_to_state_dict(self, module: nn.Module) -> dict[str, torch.Tensor]:
         """Gather a full CPU model state dict; every rank must call this."""

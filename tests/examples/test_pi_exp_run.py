@@ -21,7 +21,7 @@ def test_pi_run_prints_result_on_stdout(
         world_size = 1
         is_main_process = True
 
-        def reduce_sum(self, tensor):
+        def reduce(self, tensor, reduction="sum", scale=1.0):
             return tensor
 
         def destroy(self) -> None:

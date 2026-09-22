@@ -64,14 +64,15 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
     @dataclass
     class AcceleratorCfg:
         accelerator: str = "cpu"
+        mixed_precision: str = "none"
 
         def build_accelerator(self) -> AcceleratorProtocol:
             from tinyexp.tiny_engine.accelerator import CPUAccelerator, DDPAccelerator
 
             if self.accelerator == "cpu":
-                accelerator = CPUAccelerator()
+                accelerator = CPUAccelerator(mixed_precision=self.mixed_precision)
             elif self.accelerator == "ddp":
-                accelerator = DDPAccelerator()
+                accelerator = DDPAccelerator(mixed_precision=self.mixed_precision)
             else:
                 raise UnknownAcceleratorTypeError(self.accelerator)
             return accelerator
@@ -216,8 +217,8 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
             accurate += (predictions == labels).sum()
             seen += labels.numel()
 
-        global_accurate = accelerator.reduce_sum(accurate)
-        global_seen = accelerator.reduce_sum(seen)
+        global_accurate = accelerator.reduce(accurate, reduction="sum")
+        global_seen = accelerator.reduce(seen, reduction="sum")
         eval_metric = global_accurate.item() / global_seen.item() if global_seen.item() else 0.0
 
         accelerator.wait_for_everyone()
@@ -283,12 +284,13 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
                     batch = next(train_iter)
 
                 features, labels = (item.to(accelerator.device) for item in batch)
-                preds = module(features)
-                loss = nn.CrossEntropyLoss()(preds, labels)
+                with accelerator.autocast():
+                    preds = module(features)
+                    loss = nn.CrossEntropyLoss()(preds, labels)
 
                 optimizer.zero_grad()
                 accelerator.backward(loss)
-                optimizer.step()
+                accelerator.optimizer_step(optimizer)
                 global_step += 1
                 if (step + 1) % 20 == 0:
                     logger.info(f"epoch {epoch} loss: {loss.item(): .4f} lr: {optimizer.param_groups[0]['lr']: .4f}")

@@ -1,5 +1,3 @@
-from typing import Literal
-
 import torch
 import torch.distributed as dist
 from torch import nn
@@ -7,12 +5,16 @@ from torch import nn
 from ...exceptions import CudaNotAvailableError
 from .base_accelerator import BaseAccelerator
 
+_MIXED_PRECISION_DTYPES = {"fp16": torch.float16, "bf16": torch.bfloat16}
+
 
 class DDPAccelerator(BaseAccelerator):
-    def __init__(self):
+    def __init__(self, mixed_precision: str = "none"):
         super().__init__()
         if not torch.cuda.is_available():
             raise CudaNotAvailableError()
+        if mixed_precision != "none" and mixed_precision not in _MIXED_PRECISION_DTYPES:
+            raise ValueError(f"Unknown mixed precision {mixed_precision!r}; expected none/fp16/bf16")  # noqa: TRY003
 
         # Select the concrete local CUDA device before initializing NCCL.
         # Ray workers may expose only one GPU, in which case the visible
@@ -27,6 +29,12 @@ class DDPAccelerator(BaseAccelerator):
             self._init_process_group()
             self._process_group_initialized = True
         self.sync_gradients = True  # currently not support accumulate gradient
+
+        # fp16 gradients need loss scaling to stay in range; bf16 does not.
+        # A disabled GradScaler passes scale/step through unchanged, so one
+        # code path covers every mode.
+        self._amp_dtype = _MIXED_PRECISION_DTYPES.get(mixed_precision)
+        self._scaler = torch.amp.GradScaler("cuda", enabled=mixed_precision == "fp16")
 
     def _init_process_group(self):
         dist.init_process_group(
@@ -90,7 +98,16 @@ class DDPAccelerator(BaseAccelerator):
         return optimizer
 
     def backward(self, loss: torch.Tensor):
-        loss.backward()
+        self._scaler.scale(loss).backward()
+
+    def autocast(self):
+        if self._amp_dtype is None:
+            return super().autocast()
+        return torch.autocast(device_type="cuda", dtype=self._amp_dtype)
+
+    def optimizer_step(self, optimizer):
+        self._scaler.step(optimizer)
+        self._scaler.update()
 
     def dump_model_to_state_dict(self, module: nn.Module) -> dict:
         """
@@ -121,18 +138,9 @@ class DDPAccelerator(BaseAccelerator):
             return
         dist.barrier(device_ids=[self.device.index])
 
-    def reduce(self, tensor, reduction: Literal["sum", "mean"] = "sum", scale=1.0):
-        if reduction == "sum":
-            return self.reduce_sum(tensor)
-        elif reduction == "mean":
-            return self.reduce_mean(tensor)
-
-    def clip_grad_norm_(self, parameters, max_norm, norm_type=2):
-        return torch.nn.utils.clip_grad_norm_(parameters, max_norm, norm_type=norm_type)
-
-    def reduce_sum(self, tensor: torch.Tensor) -> torch.Tensor:
+    def reduce(self, tensor, reduction: str = "sum", scale: float = 1.0):
         world_size = self.world_size
-        if world_size < 2:
+        if world_size < 2 or reduction == "none":
             return tensor
         # NCCL only reduces device-resident tensors; move over and back so
         # cpu-side metric tensors also reduce correctly.
@@ -140,10 +148,13 @@ class DDPAccelerator(BaseAccelerator):
         if device_tensor is tensor:
             device_tensor = tensor.clone()
         dist.all_reduce(device_tensor, op=dist.ReduceOp.SUM)
-        return device_tensor.to(tensor.device)
+        result = device_tensor.to(tensor.device)
+        if reduction == "mean":
+            result = result / world_size
+        return result
 
-    def reduce_mean(self, tensor: torch.Tensor) -> torch.Tensor:
-        return self.reduce_sum(tensor) / self.world_size
+    def clip_grad_norm_(self, parameters, max_norm, norm_type=2):
+        return torch.nn.utils.clip_grad_norm_(parameters, max_norm, norm_type=norm_type)
 
     def gather(self, tensor: torch.Tensor) -> torch.Tensor:
         """

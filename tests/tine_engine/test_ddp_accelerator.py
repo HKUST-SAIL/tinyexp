@@ -19,15 +19,15 @@ class DDPAcceleratorProxy:
         # This will initialize the process group using env vars from get_num_gpus_worker_options
         self.accelerator = DDPAccelerator()
 
-    def test_reduce_sum(self):
+    def test_reduce(self):
         # 1. Create tensor on the correct device for this worker.
         device = self.accelerator.device
         # Each worker creates a tensor with its rank [0], [1], etc.
         tensor_to_sum = torch.tensor([self.accelerator.rank], device=device, dtype=torch.float32)
 
-        # 2. Call reduce_sum. This will sum the tensors from all workers.
+        # 2. Call reduce. This will sum the tensors from all workers.
         # For 2 workers, the ranks are 0 and 1. The sum is 0 + 1 = 1.
-        res = self.accelerator.reduce_sum(tensor_to_sum)
+        res = self.accelerator.reduce(tensor_to_sum, reduction="sum")
 
         # 3. The result on all workers should be the sum of all ranks.
         # Sum of 0 to n-1 is n * (n-1) / 2
@@ -37,12 +37,12 @@ class DDPAcceleratorProxy:
 
         assert torch.equal(res, expected_result)
 
-        # nccl cannot reduce cpu tensors directly; reduce_sum must transparently
+        # nccl cannot reduce cpu tensors directly; reduce must transparently
         # stage them on the device and return the result on the input device
         # (regression: metric sync after an epoch crashed with "No backend type
         # associated with device type cpu" under DDP+nccl).
         cpu_tensor = torch.tensor([float(self.accelerator.rank)], dtype=torch.float64)
-        cpu_res = self.accelerator.reduce_sum(cpu_tensor)
+        cpu_res = self.accelerator.reduce(cpu_tensor, reduction="sum")
         expected_cpu = torch.tensor([expected_val], dtype=torch.float64)
         assert cpu_res.device.type == "cpu"
         assert torch.equal(cpu_res, expected_cpu)
@@ -103,7 +103,7 @@ class TestDDPAcceleratorWithRay:
             worker_group2 = [DDPAcceleratorProxy.options(**options).remote() for options in options_list2]
 
             worker_group = worker_group1 + worker_group2
-            run_futures = [worker.test_reduce_sum.remote() for worker in worker_group]
+            run_futures = [worker.test_reduce.remote() for worker in worker_group]
 
             results = ray.get(run_futures, timeout=60)
             assert all(results)

@@ -120,8 +120,8 @@ class TPAccelerator(BaseAccelerator):
         else:
             dist.barrier()
 
-    def reduce_sum(self, tensor: torch.Tensor) -> torch.Tensor:
-        if self.world_size < 2:
+    def reduce(self, tensor: torch.Tensor, reduction: str = "sum", scale: float = 1.0) -> torch.Tensor:
+        if self.world_size < 2 or reduction == "none":
             return tensor
         # NCCL only reduces device-resident tensors; move over and back. ``to``
         # is a no-op when the input is already on this device, while all_reduce
@@ -130,10 +130,10 @@ class TPAccelerator(BaseAccelerator):
         if device_tensor is tensor:
             device_tensor = tensor.clone()
         dist.all_reduce(device_tensor, op=dist.ReduceOp.SUM)
-        return device_tensor.to(tensor.device)
-
-    def reduce_mean(self, tensor: torch.Tensor) -> torch.Tensor:
-        return self.reduce_sum(tensor) / self.world_size
+        result = device_tensor.to(tensor.device)
+        if reduction == "mean":
+            result = result / self.world_size
+        return result
 
     def dump_model_to_state_dict(self, module: Any) -> dict:
         """

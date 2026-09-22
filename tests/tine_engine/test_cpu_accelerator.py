@@ -18,10 +18,10 @@ class CPUAcceleratorProxy:
     def __init__(self):
         self.accelerator = CPUAccelerator()
 
-    def test_reduce_sum(self):
+    def test_reduce(self):
         device = self.accelerator.device
         tensor_to_sum = torch.tensor([self.accelerator.rank], device=device, dtype=torch.float32)
-        res = self.accelerator.reduce_sum(tensor_to_sum)
+        res = self.accelerator.reduce(tensor_to_sum, reduction="sum")
         world_size = self.accelerator.world_size
         expected_val = (world_size * (world_size - 1)) / 2
         expected_result = torch.tensor([expected_val], device=device, dtype=torch.float32)
@@ -67,7 +67,7 @@ class TestCPUAcceleratorWithRay:
             worker_group = [CPUAcceleratorProxy.options(**options).remote() for options in options_list]
 
             # Run the test method on all workers and wait for them to complete.
-            run_futures = [worker.test_reduce_sum.remote() for worker in worker_group]
+            run_futures = [worker.test_reduce.remote() for worker in worker_group]
             results = ray.get(run_futures, timeout=60)
 
             # Verify that all tests passed.

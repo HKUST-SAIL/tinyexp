@@ -59,7 +59,7 @@ def test_mnist_evaluate_loads_model_state_from_checkpoint(tmp_path) -> None:
         def unwrap_model(self, module):
             return module
 
-        def reduce_sum(self, tensor):
+        def reduce(self, tensor, reduction="sum", scale=1.0):
             return tensor
 
         def wait_for_everyone(self) -> None:
@@ -98,7 +98,7 @@ def test_mnist_evaluate_reduces_correct_and_seen_counts_globally(tmp_path) -> No
         def unwrap_model(self, module):
             return module
 
-        def reduce_sum(self, tensor):  # type: ignore[no-untyped-def]
+        def reduce(self, tensor, reduction="sum", scale=1.0):  # type: ignore[no-untyped-def]
             remote_count = (2, 3)[self.reduce_calls]
             self.reduce_calls += 1
             return tensor + remote_count
@@ -132,7 +132,7 @@ def test_mnist_evaluate_empty_dataset_returns_zero(tmp_path) -> None:
         def unwrap_model(self, module):
             return module
 
-        def reduce_sum(self, tensor):  # type: ignore[no-untyped-def]
+        def reduce(self, tensor, reduction="sum", scale=1.0):  # type: ignore[no-untyped-def]
             return tensor
 
         def wait_for_everyone(self) -> None:

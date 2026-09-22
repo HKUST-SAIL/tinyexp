@@ -87,7 +87,7 @@ class Exp(TinyExp, RayCfgMixin, LoggerCfgMixin):
             inside += int((points.square().sum(dim=1) <= 1.0).sum())
             remaining -= n
 
-        total_inside = accelerator.reduce_sum(torch.tensor(inside, dtype=torch.float64))
+        total_inside = accelerator.reduce(torch.tensor(inside, dtype=torch.float64), reduction="sum")
         return 4.0 * total_inside.item() / (samples_per_rank * accelerator.world_size)
 
 

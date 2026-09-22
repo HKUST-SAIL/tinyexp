@@ -12,11 +12,58 @@ def test_cpu_accelerator_reduce_ops_world_size_one(monkeypatch: pytest.MonkeyPat
     acc = CPUAccelerator()
 
     tensor = torch.tensor([1.0], dtype=torch.float32)
-    assert torch.equal(acc.reduce_sum(tensor), tensor)
-    assert torch.equal(acc.reduce_mean(tensor), tensor)
+    assert torch.equal(acc.reduce(tensor, reduction="sum"), tensor)
+    assert torch.equal(acc.reduce(tensor, reduction="mean"), tensor)
 
     # No-op for single worker.
     acc.wait_for_everyone()
+
+
+def test_cpu_accelerator_bf16_autocast_runs_a_full_train_step(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WORLD_SIZE", "1")
+    monkeypatch.setenv("RANK", "0")
+    acc = CPUAccelerator(mixed_precision="bf16")
+
+    model = torch.nn.Linear(4, 2)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    weight_before = model.weight.detach().clone()
+
+    with acc.autocast():
+        output = model(torch.randn(3, 4))
+        assert output.dtype == torch.bfloat16
+        loss = torch.nn.functional.cross_entropy(output, torch.zeros(3, dtype=torch.long))
+    acc.backward(loss)
+    acc.optimizer_step(optimizer)
+
+    assert (model.weight.detach() - weight_before).abs().max() > 0
+
+
+def test_cpu_accelerator_rejects_fp16(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WORLD_SIZE", "1")
+    monkeypatch.setenv("RANK", "0")
+
+    with pytest.raises(ValueError, match="none/bf16"):
+        CPUAccelerator(mixed_precision="fp16")
+
+
+def test_cpu_accelerator_defaults_keep_full_precision(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WORLD_SIZE", "1")
+    monkeypatch.setenv("RANK", "0")
+    acc = CPUAccelerator()
+
+    # autocast is a no-op and optimizer_step delegates to the optimizer.
+    with acc.autocast():
+        output = torch.nn.Linear(2, 1)(torch.randn(3, 2))
+    assert output.dtype == torch.float32
+
+    stepped = []
+
+    class _Optimizer:
+        def step(self):
+            stepped.append(True)
+
+    acc.optimizer_step(_Optimizer())
+    assert stepped == [True]
 
 
 def test_cpu_accelerator_forces_cpu_even_when_cuda_is_available(monkeypatch: pytest.MonkeyPatch) -> None:
