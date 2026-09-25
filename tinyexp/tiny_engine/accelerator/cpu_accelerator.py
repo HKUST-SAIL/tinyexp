@@ -70,6 +70,7 @@ class CPUAccelerator(BaseAccelerator):
 
     def prepare_model(self, model):
         model.to(self.device)
+        model = self._wrap_forward_autocast(model)
         if self.world_size > 1:
             model = nn.parallel.DistributedDataParallel(model)
         return model

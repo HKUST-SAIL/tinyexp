@@ -99,6 +99,7 @@ class FSDPAccelerator(BaseAccelerator):
 
     def prepare_model(self, module: Any) -> Any:
         module = module.to(self.device)
+        module = self._wrap_forward_autocast(module)
         if self.world_size < 2:
             return module
 

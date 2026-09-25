@@ -111,3 +111,80 @@ def test_ddp_accelerator_fp16_enables_grad_scaler(monkeypatch: pytest.MonkeyPatc
     # asserted here; the scaled path is exercised by GPU jobs.
     assert accelerator._scaler.is_enabled()
     accelerator.destroy()
+
+
+def test_ddp_accelerator_bf16_prepare_model_wraps_forward(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Loops that never open autocast() themselves must still get mixed precision."""
+    _fake_cuda_single_process(monkeypatch)
+    accelerator = DDPAccelerator(mixed_precision="bf16")
+    model = torch.nn.Linear(4, 2)
+    monkeypatch.setattr(model, "to", lambda device: model)
+
+    prepared = accelerator.prepare_model(model)
+
+    assert prepared is model
+    assert hasattr(model, "_original_forward")
+    accelerator.destroy()
+
+
+def test_ddp_accelerator_full_precision_prepare_model_keeps_forward(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_cuda_single_process(monkeypatch)
+    accelerator = DDPAccelerator()
+    model = torch.nn.Linear(4, 2)
+    monkeypatch.setattr(model, "to", lambda device: model)
+
+    assert not hasattr(accelerator.prepare_model(model), "_original_forward")
+    accelerator.destroy()
+
+
+def test_ddp_accelerator_clip_grad_norm_unscales_prepared_optimizers_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Clipping scaled fp16 gradients would compare an inflated norm against max_norm."""
+    _fake_cuda_single_process(monkeypatch)
+    accelerator = DDPAccelerator(mixed_precision="fp16")
+    optimizer = torch.optim.SGD([torch.nn.Parameter(torch.randn(2))], lr=0.1)
+    accelerator.prepare_optimizer(optimizer)
+
+    calls: list[object] = []
+
+    class _RecordingScaler:
+        @staticmethod
+        def is_enabled() -> bool:
+            return True
+
+        @staticmethod
+        def unscale_(opt: object) -> None:
+            calls.append(opt)
+
+    # An enabled GradScaler puts its scale on CUDA, so the wiring is asserted
+    # against a stub; GPU jobs exercise the real unscale.
+    monkeypatch.setattr(accelerator, "_scaler", _RecordingScaler())
+    parameter = torch.nn.Parameter(torch.tensor([3.0, 4.0]))
+    parameter.grad = torch.tensor([3.0, 4.0])
+
+    accelerator.clip_grad_norm_([parameter], 1.0)
+
+    assert calls == [optimizer]
+    # Unscaling ran before the norm was measured, so clipping actually applied.
+    assert parameter.grad.norm().item() == pytest.approx(1.0)
+    accelerator.destroy()
+
+
+def test_ddp_accelerator_clip_grad_norm_does_not_unscale_in_bf16(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_cuda_single_process(monkeypatch)
+    accelerator = DDPAccelerator(mixed_precision="bf16")
+    optimizer = torch.optim.SGD([torch.nn.Parameter(torch.randn(2))], lr=0.1)
+    accelerator.prepare_optimizer(optimizer)
+
+    unscaled: list[object] = []
+    monkeypatch.setattr(accelerator._scaler, "unscale_", unscaled.append)
+    parameter = torch.nn.Parameter(torch.tensor([3.0, 4.0]))
+    parameter.grad = torch.tensor([3.0, 4.0])
+
+    accelerator.clip_grad_norm_([parameter], 1.0)
+
+    # bf16 disables the scaler, so there is nothing to unscale.
+    assert unscaled == []
+    assert parameter.grad.norm().item() == pytest.approx(1.0)
+    accelerator.destroy()

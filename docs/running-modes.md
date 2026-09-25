@@ -271,6 +271,23 @@ through `accelerator_cfg.accelerator=hf`.
 
 For multi-machine Accelerate launches, all machines need matching code and environments, and the main process IP and port must be reachable. Supply `--num-machines`, `--machine-rank`, `--main-process-ip`, and `--main-process-port`, or provide equivalent Accelerate configuration.
 
+### Mixed Precision
+
+Every accelerator takes `mixed_precision` (`none` | `fp16` | `bf16`; `CPUAccelerator` is bf16-only) and
+validates what it supports. `prepare_model` wraps the module's `forward` in the accelerator's autocast
+context and casts the returned tensors back to fp32, matching what `accelerate` does in its own
+`prepare_model`. A training loop therefore gets mixed precision whether or not it opens
+`accelerator.autocast()` itself, and swapping `HFAccelerator` for
+`DDPAccelerator`/`FSDPAccelerator`/`CPUAccelerator` neither silently falls back to fp32 nor changes the
+dtypes the loop sees. Opening `accelerator.autocast()` explicitly around a forward pass — as the MNIST and
+ResNet examples do — stays correct, since nesting the same dtype is a no-op, and remains the way to cover
+work that runs outside `forward`.
+
+Parameters, gradients, communication, and checkpoints stay fp32; autocast only reduces precision inside
+compute kernels. `fp16` additionally enables a `GradScaler`, and `clip_grad_norm_` unscales the gradients
+of every optimizer passed through `prepare_optimizer` before measuring the norm, so `max_norm` means the
+same thing in all three modes. Under `none` and `bf16` the scaler is disabled and unscaling is a no-op.
+
 ## Static Ray Cluster
 
 `tinyexp-run-with-ray-cluster` starts a Ray head on node rank 0, joins Ray workers from the remaining nodes, and runs the command only on the head after the requested nodes are alive. The command should use `launcher=ray` so the TinyExp driver attaches to the cluster through the injected `RAY_ADDRESS`.

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import pytest
 import torch
 
@@ -44,6 +46,95 @@ def test_cpu_accelerator_rejects_fp16(monkeypatch: pytest.MonkeyPatch) -> None:
 
     with pytest.raises(ValueError, match="none/bf16"):
         CPUAccelerator(mixed_precision="fp16")
+
+
+def test_cpu_accelerator_bf16_prepared_model_autocasts_without_an_explicit_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A loop written against accelerate never opens autocast() itself; prepare_model covers it."""
+    monkeypatch.setenv("WORLD_SIZE", "1")
+    monkeypatch.setenv("RANK", "0")
+    acc = CPUAccelerator(mixed_precision="bf16")
+
+    class _Model(torch.nn.Linear):
+        def forward(self, images):  # type: ignore[override]
+            hidden = super().forward(images)
+            # What autocast actually computed, before the output cast applies.
+            return {"dtype_inside": hidden.dtype, "hidden": hidden}
+
+    model = acc.prepare_model(_Model(4, 2))
+    output = model(torch.randn(3, 4))
+
+    assert output["dtype_inside"] == torch.bfloat16
+    # Outputs come back fp32, matching accelerate's convert_outputs_to_fp32.
+    assert output["hidden"].dtype == torch.float32
+    # Nesting the explicit context stays correct rather than double-casting.
+    with acc.autocast():
+        assert model(torch.randn(3, 4))["hidden"].dtype == torch.float32
+
+
+def test_cpu_accelerator_bf16_converts_outputs_inside_nested_containers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("WORLD_SIZE", "1")
+    monkeypatch.setenv("RANK", "0")
+    acc = CPUAccelerator(mixed_precision="bf16")
+
+    class _Model(torch.nn.Linear):
+        def forward(self, images):  # type: ignore[override]
+            hidden = super().forward(images)
+            return [hidden, {"nested": (hidden, hidden)}, "not-a-tensor", 7]
+
+    model = acc.prepare_model(_Model(4, 2))
+    first, mapping, text, number = model(torch.randn(3, 4))
+
+    assert first.dtype == torch.float32
+    assert [tensor.dtype for tensor in mapping["nested"]] == [torch.float32, torch.float32]
+    # Non-tensor leaves pass through untouched.
+    assert text == "not-a-tensor"
+    assert number == 7
+
+
+def test_cpu_accelerator_bf16_preserves_namedtuple_outputs(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WORLD_SIZE", "1")
+    monkeypatch.setenv("RANK", "0")
+    acc = CPUAccelerator(mixed_precision="bf16")
+
+    class _Output(NamedTuple):
+        logits: torch.Tensor
+
+    class _Model(torch.nn.Linear):
+        def forward(self, images):  # type: ignore[override]
+            return _Output(logits=super().forward(images))
+
+    model = acc.prepare_model(_Model(4, 2))
+    output = model(torch.randn(3, 4))
+
+    assert isinstance(output, _Output)
+    assert output.logits.dtype == torch.float32
+
+
+def test_cpu_accelerator_full_precision_leaves_forward_untouched(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WORLD_SIZE", "1")
+    monkeypatch.setenv("RANK", "0")
+    acc = CPUAccelerator()
+
+    model = acc.prepare_model(torch.nn.Linear(4, 2))
+
+    assert not hasattr(model, "_original_forward")
+    assert model(torch.randn(3, 4)).dtype == torch.float32
+
+
+def test_cpu_accelerator_prepare_model_twice_wraps_forward_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("WORLD_SIZE", "1")
+    monkeypatch.setenv("RANK", "0")
+    acc = CPUAccelerator(mixed_precision="bf16")
+
+    model = acc.prepare_model(torch.nn.Linear(4, 2))
+    once = model.forward
+    model = acc.prepare_model(model)
+
+    assert model.forward is once
 
 
 def test_cpu_accelerator_defaults_keep_full_precision(monkeypatch: pytest.MonkeyPatch) -> None:

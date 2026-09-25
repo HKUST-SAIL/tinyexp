@@ -35,6 +35,9 @@ class DDPAccelerator(BaseAccelerator):
         # code path covers every mode.
         self._amp_dtype = _MIXED_PRECISION_DTYPES.get(mixed_precision)
         self._scaler = torch.amp.GradScaler("cuda", enabled=mixed_precision == "fp16")
+        # clip_grad_norm_ must unscale before measuring the norm, and unscaling
+        # is per-optimizer, so remember the optimizers that went through prepare.
+        self._prepared_optimizers: list[torch.optim.Optimizer] = []
 
     def _init_process_group(self):
         dist.init_process_group(
@@ -66,6 +69,7 @@ class DDPAccelerator(BaseAccelerator):
 
     def prepare_model(self, module):
         module.to(self.device)
+        module = self._wrap_forward_autocast(module)
         if self.world_size < 2:
             return module
 
@@ -95,6 +99,8 @@ class DDPAccelerator(BaseAccelerator):
                                 subparam._grad.data = subparam._grad.data.to(device)
 
         optimizer_to(optimizer, self.device)
+        if optimizer not in self._prepared_optimizers:
+            self._prepared_optimizers.append(optimizer)
         return optimizer
 
     def backward(self, loss: torch.Tensor):
@@ -153,7 +159,20 @@ class DDPAccelerator(BaseAccelerator):
             result = result / world_size
         return result
 
+    def unscale_gradients(self, optimizer=None):
+        """Undo the fp16 loss scaling on ``.grad``; a no-op in none/bf16 mode."""
+        if not self._scaler.is_enabled():
+            return
+        optimizers = self._prepared_optimizers if optimizer is None else [optimizer]
+        for opt in optimizers:
+            self._scaler.unscale_(opt)
+
     def clip_grad_norm_(self, parameters, max_norm, norm_type=2):
+        # Gradients still carry the fp16 loss scale here, so clipping them
+        # directly would compare a ~65536x inflated norm against max_norm and
+        # never clip meaningfully. Unscale first, as accelerate does; the later
+        # scaler.step() sees the optimizer is already unscaled and skips it.
+        self.unscale_gradients()
         return torch.nn.utils.clip_grad_norm_(parameters, max_norm, norm_type=norm_type)
 
     def gather(self, tensor: torch.Tensor) -> torch.Tensor:
