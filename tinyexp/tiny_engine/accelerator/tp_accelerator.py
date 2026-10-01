@@ -146,21 +146,3 @@ class TPAccelerator(BaseAccelerator):
                 val = val.full_tensor()
             model_state_cpu[key] = val.cpu()
         return model_state_cpu
-
-    @property
-    def is_main_process(self) -> bool:
-        """True for one process per server."""
-        return self.rank == 0
-
-    @property
-    def is_local_main_process(self) -> bool:
-        """True for one process per server."""
-        return self.local_rank == 0
-
-    @property
-    def is_last_process(self) -> bool:
-        return self.rank == self.world_size - 1
-
-    def print(self, *args: Any, **kwargs: Any) -> None:
-        if self.is_local_main_process:
-            print(*args, **kwargs)

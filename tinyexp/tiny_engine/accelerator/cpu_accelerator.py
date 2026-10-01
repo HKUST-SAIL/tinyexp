@@ -24,9 +24,12 @@ class CPUAccelerator(BaseAccelerator):
             raise ValueError(f"CPU autocast supports none/bf16 only, got {mixed_precision!r}")  # noqa: TRY003
         self.device = torch.device("cpu")
         self._amp_dtype = torch.bfloat16 if mixed_precision == "bf16" else None
-        if self.world_size > 1:
-            self._process_group_initialized = True
+        # Attach to an existing process group rather than re-initializing it
+        # (the CUDA accelerators guard the same way), and claim ownership only
+        # once initialization has actually succeeded.
+        if self.world_size > 1 and not dist.is_initialized():
             self._init_process_group()
+            self._process_group_initialized = True
 
     def _init_process_group(self) -> None:
         if not os.getenv("GLOO_SOCKET_IFNAME"):
@@ -98,7 +101,3 @@ class CPUAccelerator(BaseAccelerator):
         if reduction == "mean":
             tensor = tensor / self.world_size
         return tensor
-
-    def print(self, *args, **kwargs) -> None:
-        if self.rank == 0:
-            print(*args, **kwargs)

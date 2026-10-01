@@ -81,3 +81,35 @@ def test_fsdp_accelerator_fp16_enables_grad_scaler(monkeypatch: pytest.MonkeyPat
     # asserted here; the scaled path is exercised by GPU jobs.
     assert accelerator._scaler.is_enabled()
     accelerator.destroy()
+
+
+def test_fsdp_accelerator_clip_grad_norm_world_one_clips_prepared_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without sharding (world 1) clip falls back to torch's, after the shared preflight."""
+    _fake_cuda_single_process(monkeypatch)
+    accelerator = FSDPAccelerator(mixed_precision="bf16")
+    parameter = torch.nn.Parameter(torch.tensor([3.0, 4.0]))
+    parameter.grad = torch.tensor([3.0, 4.0])
+    accelerator.prepare_optimizer(torch.optim.SGD([parameter], lr=0.1))
+
+    total_norm = accelerator.clip_grad_norm_([parameter], 1.0)
+
+    # The returned norm is measured before clipping; the gradients are clipped in place.
+    assert total_norm.item() == pytest.approx(5.0)
+    assert parameter.grad.norm().item() == pytest.approx(1.0)
+    accelerator.destroy()
+
+
+def test_fsdp_accelerator_clip_grad_norm_rejects_unprepared_optimizer_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """fp16 grads of an optimizer that skipped prepare_optimizer still carry the scale."""
+    _fake_cuda_single_process(monkeypatch)
+    accelerator = FSDPAccelerator(mixed_precision="fp16")
+    orphan = torch.nn.Parameter(torch.tensor([3.0, 4.0]))
+    orphan.grad = torch.tensor([3.0, 4.0])
+
+    with pytest.raises(RuntimeError, match="never went through prepare_optimizer"):
+        accelerator.clip_grad_norm_([orphan], 1.0)
+    accelerator.destroy()

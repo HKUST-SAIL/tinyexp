@@ -35,6 +35,27 @@ def test_ddp_accelerator_single_process_skips_process_group_and_ddp(
     accelerator.destroy()
 
 
+def test_ddp_accelerator_gather_world_size_one_returns_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_cuda_single_process(monkeypatch)
+    accelerator = DDPAccelerator()
+    tensor = torch.tensor([1.0, 2.0])
+
+    assert accelerator.gather(tensor) is tensor
+    accelerator.destroy()
+
+
+def test_ddp_accelerator_dump_model_to_state_dict_keeps_plain_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    _fake_cuda_single_process(monkeypatch)
+    accelerator = DDPAccelerator()
+    model = torch.nn.Sequential(torch.nn.Linear(2, 1))
+
+    state = accelerator.dump_model_to_state_dict(model)
+
+    assert list(state) == ["0.weight", "0.bias"]
+    assert all(value.device.type == "cpu" for value in state.values())
+    accelerator.destroy()
+
+
 def _fake_cuda_single_process(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
@@ -137,37 +158,57 @@ def test_ddp_accelerator_full_precision_prepare_model_keeps_forward(monkeypatch:
     accelerator.destroy()
 
 
+class _RecordingScaler:
+    """Stub for an enabled GradScaler, whose scale tensor lives on CUDA."""
+
+    def __init__(self) -> None:
+        self.unscaled: list[object] = []
+
+    @staticmethod
+    def is_enabled() -> bool:
+        return True
+
+    def unscale_(self, opt: object) -> None:
+        self.unscaled.append(opt)
+
+
 def test_ddp_accelerator_clip_grad_norm_unscales_prepared_optimizers_first(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Clipping scaled fp16 gradients would compare an inflated norm against max_norm."""
     _fake_cuda_single_process(monkeypatch)
     accelerator = DDPAccelerator(mixed_precision="fp16")
-    optimizer = torch.optim.SGD([torch.nn.Parameter(torch.randn(2))], lr=0.1)
-    accelerator.prepare_optimizer(optimizer)
-
-    calls: list[object] = []
-
-    class _RecordingScaler:
-        @staticmethod
-        def is_enabled() -> bool:
-            return True
-
-        @staticmethod
-        def unscale_(opt: object) -> None:
-            calls.append(opt)
-
-    # An enabled GradScaler puts its scale on CUDA, so the wiring is asserted
-    # against a stub; GPU jobs exercise the real unscale.
-    monkeypatch.setattr(accelerator, "_scaler", _RecordingScaler())
     parameter = torch.nn.Parameter(torch.tensor([3.0, 4.0]))
     parameter.grad = torch.tensor([3.0, 4.0])
+    optimizer = torch.optim.SGD([parameter], lr=0.1)
+    accelerator.prepare_optimizer(optimizer)
+    scaler = _RecordingScaler()
+    monkeypatch.setattr(accelerator, "_scaler", scaler)
 
     accelerator.clip_grad_norm_([parameter], 1.0)
 
-    assert calls == [optimizer]
+    assert scaler.unscaled == [optimizer]
     # Unscaling ran before the norm was measured, so clipping actually applied.
     assert parameter.grad.norm().item() == pytest.approx(1.0)
+    accelerator.destroy()
+
+
+def test_ddp_accelerator_clip_grad_norm_rejects_unprepared_optimizer_parameters(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """fp16 grads of an optimizer that skipped prepare_optimizer still carry the scale.
+
+    That includes the mixed case: one prepared optimizer does not make another
+    optimizer's gradients safe to clip.
+    """
+    _fake_cuda_single_process(monkeypatch)
+    accelerator = DDPAccelerator(mixed_precision="fp16")
+    accelerator.prepare_optimizer(torch.optim.SGD([torch.nn.Parameter(torch.randn(2))], lr=0.1))
+    orphan = torch.nn.Parameter(torch.tensor([3.0, 4.0]))
+    orphan.grad = torch.tensor([3.0, 4.0])
+
+    with pytest.raises(RuntimeError, match="never went through prepare_optimizer"):
+        accelerator.clip_grad_norm_([orphan], 1.0)
     accelerator.destroy()
 
 

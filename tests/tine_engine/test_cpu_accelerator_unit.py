@@ -178,6 +178,25 @@ def test_cpu_accelerator_destroy_is_idempotent(monkeypatch: pytest.MonkeyPatch) 
     assert accelerator._process_group_initialized is False
 
 
+def test_cpu_accelerator_attaches_to_an_existing_process_group(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An already-initialized group must be reused, not initialized a second time."""
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+    inits: list[object] = []
+    monkeypatch.setattr(torch.distributed, "init_process_group", lambda *args, **kwargs: inits.append(args))
+
+    accelerator = CPUAccelerator()
+
+    assert inits == []
+    # The accelerator does not own the group, so destroy leaves it alone.
+    assert accelerator._process_group_initialized is False
+    accelerator.destroy()
+    assert torch.distributed.is_initialized()
+
+
 def test_cpu_accelerator_destructor_is_a_cleanup_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("WORLD_SIZE", "1")
     destroyed = []
@@ -214,3 +233,23 @@ def test_cpu_accelerator_destroy_does_not_mark_failed_cleanup_as_complete(
 
 def test_cpu_accelerator_print_only_rank0(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
     monkeypatch.setenv("WORLD_SIZE", "1")
+    accelerator = CPUAccelerator()
+
+    accelerator.print("hello")
+
+    assert capsys.readouterr().out == "hello\n"
+
+
+def test_accelerator_print_gates_on_main_process_not_local_main(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A per-node main on a non-first node must not print; print mirrors accelerate, not per-node logs."""
+    monkeypatch.setenv("WORLD_SIZE", "2")
+    monkeypatch.setenv("RANK", "1")
+    monkeypatch.setenv("LOCAL_RANK", "0")
+    monkeypatch.setattr(torch.distributed, "is_initialized", lambda: True)
+    accelerator = CPUAccelerator()
+
+    accelerator.print("hello")
+
+    assert capsys.readouterr().out == ""

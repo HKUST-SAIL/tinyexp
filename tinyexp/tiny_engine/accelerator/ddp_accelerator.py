@@ -35,9 +35,6 @@ class DDPAccelerator(BaseAccelerator):
         # code path covers every mode.
         self._amp_dtype = _MIXED_PRECISION_DTYPES.get(mixed_precision)
         self._scaler = torch.amp.GradScaler("cuda", enabled=mixed_precision == "fp16")
-        # clip_grad_norm_ must unscale before measuring the norm, and unscaling
-        # is per-optimizer, so remember the optimizers that went through prepare.
-        self._prepared_optimizers: list[torch.optim.Optimizer] = []
 
     def _init_process_group(self):
         dist.init_process_group(
@@ -83,25 +80,10 @@ class DDPAccelerator(BaseAccelerator):
         )
 
     def prepare_optimizer(self, optimizer):
-        # refer to: https://github.com/pytorch/pytorch/issues/8741
-        def optimizer_to(optim, device):
-            for param in optim.state.values():
-                # Not sure there are any global tensors in the state dict
-                if isinstance(param, torch.Tensor):
-                    param.data = param.data.to(device)
-                    if param._grad is not None:
-                        param._grad.data = param._grad.data.to(device)
-                elif isinstance(param, dict):
-                    for subparam in param.values():
-                        if isinstance(subparam, torch.Tensor):
-                            subparam.data = subparam.data.to(device)
-                            if subparam._grad is not None:
-                                subparam._grad.data = subparam._grad.data.to(device)
-
-        optimizer_to(optimizer, self.device)
-        if optimizer not in self._prepared_optimizers:
-            self._prepared_optimizers.append(optimizer)
-        return optimizer
+        # Optimizer state only materializes after steps; resume-time device
+        # placement is handled by torch's Optimizer.load_state_dict, which
+        # casts loaded state to each parameter's device.
+        return self._register_optimizer(optimizer)
 
     def backward(self, loss: torch.Tensor):
         self._scaler.scale(loss).backward()
@@ -112,32 +94,15 @@ class DDPAccelerator(BaseAccelerator):
         return torch.autocast(device_type="cuda", dtype=self._amp_dtype)
 
     def optimizer_step(self, optimizer):
-        self._scaler.step(optimizer)
+        step_return = self._scaler.step(optimizer)
         self._scaler.update()
+        return step_return
 
     def dump_model_to_state_dict(self, module: nn.Module) -> dict:
-        """
-        dump model to cpu state_dict
-        """
-        model_state = module.state_dict()
-        model_state_cpu = type(model_state)()
-        for key, val in model_state.items():
-            model_state_cpu[key] = val.cpu()
-        return model_state_cpu
-
-    @property
-    def is_main_process(self):
-        """True for one process per server."""
-        return self.rank == 0
-
-    @property
-    def is_local_main_process(self) -> bool:
-        """True for one process per server."""
-        return self.local_rank == 0
-
-    @property
-    def is_last_process(self) -> bool:
-        return self.rank == self.world_size - 1
+        """Dump a full cpu state_dict; the DDP wrapper's ``module.`` prefix is stripped."""
+        if isinstance(module, nn.parallel.DistributedDataParallel):
+            module = module.module
+        return {key: value.cpu() for key, value in module.state_dict().items()}
 
     def wait_for_everyone(self) -> None:
         if self.world_size < 2:
@@ -159,41 +124,10 @@ class DDPAccelerator(BaseAccelerator):
             result = result / world_size
         return result
 
-    def unscale_gradients(self, optimizer=None):
-        """Undo the fp16 loss scaling on ``.grad``; a no-op in none/bf16 mode."""
-        if not self._scaler.is_enabled():
-            return
-        optimizers = self._prepared_optimizers if optimizer is None else [optimizer]
-        for opt in optimizers:
-            self._scaler.unscale_(opt)
-
     def clip_grad_norm_(self, parameters, max_norm, norm_type=2):
         # Gradients still carry the fp16 loss scale here, so clipping them
         # directly would compare a ~65536x inflated norm against max_norm and
         # never clip meaningfully. Unscale first, as accelerate does; the later
         # scaler.step() sees the optimizer is already unscaled and skips it.
-        self.unscale_gradients()
+        parameters = self._unscale_for_clip(parameters)
         return torch.nn.utils.clip_grad_norm_(parameters, max_norm, norm_type=norm_type)
-
-    def gather(self, tensor: torch.Tensor) -> torch.Tensor:
-        """
-        Gather tensors from all processes to the main process (rank 0).
-        Only rank 0 will have the gathered result, other ranks will return None.
-        """
-        world_size = self.world_size
-        if world_size < 2:
-            return tensor
-
-        if self.rank == 0:
-            # Main process: gather tensors from all processes
-            gather_list = [torch.zeros_like(tensor) for _ in range(world_size)]
-            dist.gather(tensor, gather_list, dst=0)
-            return torch.cat(gather_list, dim=0)
-        else:
-            # Other processes: send tensor to main process
-            dist.gather(tensor, dst=0)
-            return tensor
-
-    def print(self, *args, **kwargs) -> None:
-        if self.is_local_main_process:
-            print(*args, **kwargs)

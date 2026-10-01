@@ -15,17 +15,24 @@ from typing import Any
 import torch
 import torch.distributed as dist
 from torch import nn
-from torch.distributed.fsdp import (
-    FullOptimStateDictConfig,
-    FullStateDictConfig,
-    FullyShardedDataParallel,
-    StateDictType,
+from torch.distributed.checkpoint.state_dict import (
+    StateDictOptions,
+    get_model_state_dict,
+    get_optimizer_state_dict,
+    set_model_state_dict,
+    set_optimizer_state_dict,
 )
+from torch.distributed.fsdp import FullyShardedDataParallel
 from torch.distributed.fsdp.wrap import size_based_auto_wrap_policy
 
 from ...exceptions import CudaNotAvailableError
 from .base_accelerator import BaseAccelerator
 from .ddp_accelerator import _MIXED_PRECISION_DTYPES
+
+# Full gather materialized on rank 0 only, torch's recommendation for
+# cpu_offload; every rank must still join these collectives, and the other
+# ranks simply receive empty dicts.
+_FULL_STATE_DICT = StateDictOptions(full_state_dict=True, cpu_offload=True)
 
 
 class FSDPAccelerator(BaseAccelerator):
@@ -63,6 +70,9 @@ class FSDPAccelerator(BaseAccelerator):
         # code path covers every mode.
         self._amp_dtype = _MIXED_PRECISION_DTYPES.get(mixed_precision)
         self._scaler = torch.amp.GradScaler("cuda", enabled=mixed_precision == "fp16")
+        # The wrapped root module, for clip_grad_norm_ (FSDP's clip is
+        # model-scoped: it all-reduces the sharded local norms).
+        self._fsdp_root: FullyShardedDataParallel | None = None
 
     def _init_process_group(self) -> None:
         dist.init_process_group(
@@ -114,36 +124,45 @@ class FSDPAccelerator(BaseAccelerator):
             sync_module_states=True,
             use_orig_params=True,
         )
-        # The experiment checkpoint format expects ordinary full tensors.  All
-        # ranks participate in these collectives; only the caller writes rank 0.
-        FullyShardedDataParallel.set_state_dict_type(
-            wrapped,
-            StateDictType.FULL_STATE_DICT,
-            FullStateDictConfig(offload_to_cpu=True, rank0_only=False),
-            FullOptimStateDictConfig(offload_to_cpu=True, rank0_only=False),
-        )
+
+        # The experiment checkpoint format expects ordinary full tensors, which
+        # FSDP's own default (sharded) Module.load_state_dict does not accept.
+        # Route it through the distributed-checkpoint setter; that setter in
+        # turn dispatches through Module.load_state_dict, so the patch lifts
+        # itself for the duration of the call instead of recursing.
+        def load_full_state_dict(_module: Any, state_dict: dict[str, Any], strict: bool = True) -> Any:
+            patch = _module.__dict__.pop("load_state_dict", None)
+            try:
+                options = StateDictOptions(full_state_dict=True, cpu_offload=True, strict=strict)
+                return set_model_state_dict(_module, state_dict, options=options)
+            finally:
+                if patch is not None:
+                    _module.__dict__["load_state_dict"] = patch
+
+        wrapped.load_state_dict = types.MethodType(load_full_state_dict, wrapped)
+        self._fsdp_root = wrapped
         return wrapped
 
     def prepare_optimizer(self, optimizer: Any, model: Any = None) -> Any:
-        """Bind an optimizer to FSDP parameters and adapt checkpoint state APIs."""
+        """Bind an optimizer to FSDP parameters and adapt the checkpoint resume path."""
+        self._register_optimizer(optimizer)
         if model is None or not isinstance(model, FullyShardedDataParallel):
             return optimizer
 
-        # FSDP.optim_state_dict() must receive the optimizer's untransformed
-        # state. Capture the original methods before installing the adapters.
-        raw_state_dict = optimizer.state_dict
-        raw_load_state_dict = optimizer.load_state_dict
+        # The generic checkpoint loader resumes through Optimizer.load_state_dict
+        # with a full FQN-keyed state dict, which the raw optimizer cannot shard.
+        # Route it through the distributed-checkpoint setter; that setter in
+        # turn dispatches through Optimizer.load_state_dict, so the patch lifts
+        # itself for the duration of the call instead of recursing.
+        def load_full_state_dict(_optimizer: torch.optim.Optimizer, state: dict[str, Any]) -> Any:
+            patch = _optimizer.__dict__.pop("load_state_dict", None)
+            try:
+                return set_optimizer_state_dict(model, _optimizer, optim_state_dict=state, options=_FULL_STATE_DICT)
+            finally:
+                if patch is not None:
+                    _optimizer.__dict__["load_state_dict"] = patch
 
-        def state_dict(_optimizer: torch.optim.Optimizer) -> dict[str, Any]:
-            raw_state = raw_state_dict()
-            return FullyShardedDataParallel.optim_state_dict(model, _optimizer, optim_state_dict=raw_state)
-
-        def load_state_dict(_optimizer: torch.optim.Optimizer, state: dict[str, Any]) -> Any:
-            sharded_state = FullyShardedDataParallel.optim_state_dict_to_load(model, _optimizer, state)
-            return raw_load_state_dict(sharded_state)
-
-        optimizer.state_dict = types.MethodType(state_dict, optimizer)
-        optimizer.load_state_dict = types.MethodType(load_state_dict, optimizer)
+        optimizer.load_state_dict = types.MethodType(load_full_state_dict, optimizer)
         return optimizer
 
     def backward(self, loss: torch.Tensor) -> None:
@@ -155,8 +174,23 @@ class FSDPAccelerator(BaseAccelerator):
         return torch.autocast(device_type="cuda", dtype=self._amp_dtype)
 
     def optimizer_step(self, optimizer: Any) -> Any:
-        self._scaler.step(optimizer)
+        step_return = self._scaler.step(optimizer)
         self._scaler.update()
+        return step_return
+
+    def clip_grad_norm_(self, parameters: Any, max_norm: float, norm_type: float = 2) -> Any:
+        """Clip with the global norm across sharded gradients, after undoing fp16 scaling.
+
+        ``torch.nn.utils.clip_grad_norm_`` would measure each rank's local shard
+        norm, so ranks would clip by different coefficients and silently drift
+        apart; FSDP's clip all-reduces the local norms first. That clip is
+        model-scoped (FSDP exposes no subset clipping): ``parameters`` is only
+        used for the unscale preflight, and every wrapped gradient is clipped.
+        """
+        parameters = self._unscale_for_clip(parameters)
+        if self.world_size < 2 or self._fsdp_root is None:
+            return torch.nn.utils.clip_grad_norm_(parameters, max_norm, norm_type=norm_type)
+        return self._fsdp_root.clip_grad_norm_(max_norm, norm_type=norm_type)
 
     def wait_for_everyone(self) -> None:
         if self.world_size > 1:
@@ -175,38 +209,25 @@ class FSDPAccelerator(BaseAccelerator):
         return result
 
     def dump_model_to_state_dict(self, module: nn.Module) -> dict[str, torch.Tensor]:
-        """Gather a full CPU model state dict; every rank must call this."""
+        """Gather a full CPU model state dict on rank 0; every rank must call this.
+
+        With full_state_dict + cpu_offload the other ranks receive empty dicts,
+        so callers follow the collective but only read the result on rank 0.
+        """
         if not isinstance(module, FullyShardedDataParallel):
             return {key: value.cpu() for key, value in module.state_dict().items()}
-        with FullyShardedDataParallel.state_dict_type(
-            module,
-            StateDictType.FULL_STATE_DICT,
-            FullStateDictConfig(offload_to_cpu=True, rank0_only=False),
-        ):
-            return {key: value.cpu() for key, value in module.state_dict().items()}
+        return get_model_state_dict(module, options=_FULL_STATE_DICT)
 
     def collect_checkpoint_state(
         self, module: nn.Module, optimizer: torch.optim.Optimizer
     ) -> tuple[dict[str, torch.Tensor], dict[str, Any]]:
-        """Collect full model and optimizer state on every rank.
+        """Collect the checkpoint payloads on rank 0; every rank must call this.
 
-        FSDP state-dict APIs are collectives.  The caller must invoke this on
-        every rank and write the returned dictionaries only from rank 0.
+        These are collectives: with full_state_dict + cpu_offload the full
+        tensors materialize on rank 0 and the other ranks get empty dicts, and
+        the caller writes the checkpoint only from rank 0.
         """
-        return self.dump_model_to_state_dict(module), optimizer.state_dict()
-
-    @property
-    def is_main_process(self) -> bool:
-        return self.rank == 0
-
-    @property
-    def is_local_main_process(self) -> bool:
-        return self.local_rank == 0
-
-    @property
-    def is_last_process(self) -> bool:
-        return self.rank == self.world_size - 1
-
-    def print(self, *args: Any, **kwargs: Any) -> None:
-        if self.is_local_main_process:
-            print(*args, **kwargs)
+        return (
+            self.dump_model_to_state_dict(module),
+            get_optimizer_state_dict(module, optimizer, options=_FULL_STATE_DICT),
+        )
