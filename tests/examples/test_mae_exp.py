@@ -22,8 +22,10 @@ from tinyexp.examples.mae_exp import (
     MaeExp,
     MaskedAutoencoderViT,
     VisionTransformer,
+    _stride_indices,
     adjust_learning_rate,
     interpolate_pos_embed,
+    knn_top1,
     load_pretrained_checkpoint,
     mae_vit_base_patch16,
     vit_base_patch16,
@@ -262,6 +264,28 @@ def test_optimizer_param_groups_and_scaled_lr() -> None:
     assert id(names["pos_embed"]) not in grouped and id(names["decoder_pos_embed"]) not in grouped
 
 
+# ---------------------- k-NN monitor (D13) ---------------------- #
+
+
+def test_knn_top1_votes_correctly() -> None:
+    # three well-separated feature clusters: voting must be exact
+    base = torch.eye(3) * 10.0
+    bank_feats = base.repeat(20, 1) + torch.randn(60, 3) * 0.01
+    bank_labels = torch.arange(3).repeat(20)
+    query_feats = base + torch.randn(3, 3) * 0.01
+    query_labels = torch.arange(3)
+    assert knn_top1(bank_feats, bank_labels, query_feats, query_labels, topk=5) == 100.0
+    # labels uncorrelated with the geometry: accuracy collapses
+    shuffled = bank_labels[torch.randperm(60)]
+    assert knn_top1(bank_feats, shuffled, query_feats, query_labels, topk=5) < 50.0
+
+
+def test_stride_indices_are_deterministic_and_bounded() -> None:
+    assert _stride_indices(100, 5) == [0, 20, 40, 60, 80]
+    assert _stride_indices(4, 100) == [0, 1, 2, 3]  # size never exceeds the dataset
+    assert _stride_indices(10, 5) == _stride_indices(10, 5)
+
+
 # ---------------------- experiment run path ---------------------- #
 
 
@@ -297,6 +321,7 @@ def test_train_smoke_fake_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     exp.epochs = 2
     exp.max_train_steps = 2  # 1 step per epoch on 8 fake samples at batch 8
     exp.eval_every_n_epochs = 1  # exercise the periodic val reconstruction monitor
+    exp.knn_cfg.knn_every_n_epochs = 1  # exercise the periodic k-NN monitor
     _patch_run_dependencies(monkeypatch, exp)
 
     exp.run()
@@ -311,6 +336,7 @@ def test_train_smoke_fake_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     assert [entry["epoch"] for entry in stats] == [0, 1]
     assert all(math.isfinite(entry["train_loss"]) for entry in stats)
     assert all(math.isfinite(entry["val_loss"]) for entry in stats)  # periodic monitor fired
+    assert all(math.isfinite(entry["knn_top1"]) for entry in stats)  # k-NN monitor fired
 
 
 def test_train_resume_continues_epochs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

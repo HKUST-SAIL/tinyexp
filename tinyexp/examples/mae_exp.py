@@ -55,9 +55,12 @@ directories; set ``IMAGENET_HOME``)::
 
 Pretrain on 8 GPUs — the complete official recipe in one command (Ray workers, the
 default launcher; effective batch 64 * 8 * accum 8 = 4096, blr-scaled lr 2.4e-3, 800
-epochs, Redis train-set cache on, and a periodic val reconstruction-loss monitor every
-``eval_every_n_epochs``=10 epochs so problems surface early instead of after the full
-run)::
+epochs, Redis train-set cache on) with two periodic monitors so problems surface early
+instead of after the full run: a val reconstruction-loss health check every
+``eval_every_n_epochs``=10 epochs, and a DINO-style k-NN top-1 representation-quality
+progress bar every ``knn_cfg.knn_every_n_epochs``=50 epochs (reconstruction loss is a
+health check, not a quality metric — the official protocol is linear probing; both
+monitors land in the per-epoch JSON and wandb; docs/mae.md D12/D13)::
 
     python -m tinyexp.examples.mae_exp ray_cfg.ray_num_worker=8
 
@@ -574,6 +577,42 @@ def load_pretrained_checkpoint(model: nn.Module, source: str) -> None:
         trunc_normal_(model.head.weight, std=2e-5)
 
 
+# ---------------------- k-NN monitor (DINO-style, docs/mae.md D13) ---------------------- #
+
+
+def _stride_indices(dataset_len: int, size: int) -> list[int]:
+    """Evenly stride ``size`` indices over ``[0, dataset_len)`` (deterministic, class-spread)."""
+    size = min(size, dataset_len)
+    return [i * dataset_len // size for i in range(size)]
+
+
+def knn_top1(
+    bank_feats: torch.Tensor,
+    bank_labels: torch.Tensor,
+    query_feats: torch.Tensor,
+    query_labels: torch.Tensor,
+    topk: int = 20,
+    chunk: int = 1024,
+) -> float:
+    """Top-1 accuracy of cosine-similarity k-NN voting (DINO-style monitor).
+
+    Features are L2-normalized so the dot product is cosine similarity; each query is
+    labeled by a majority vote among its ``topk`` nearest bank neighbors.
+    """
+    bank = torch.nn.functional.normalize(bank_feats, dim=1)
+    query = torch.nn.functional.normalize(query_feats, dim=1)
+    topk = min(topk, len(bank))  # small banks (smoke runs) vote with all their neighbors
+    num_classes = int(bank_labels.max()) + 1
+    correct = 0
+    for start in range(0, len(query), chunk):
+        similarity = query[start : start + chunk] @ bank.T
+        neighbor_labels = bank_labels[similarity.topk(topk, dim=1).indices]  # (c, topk)
+        votes = torch.zeros(len(neighbor_labels), num_classes)
+        votes.scatter_add_(1, neighbor_labels, torch.ones_like(neighbor_labels, dtype=torch.float))
+        correct += (votes.argmax(dim=1) == query_labels[start : start + chunk]).sum().item()
+    return correct / len(query) * 100.0
+
+
 # ---------------------- lr schedule (mae util/lr_sched.py) ---------------------- #
 
 
@@ -782,6 +821,50 @@ class MaeExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfgMi
                 drop_last=False,
             )
 
+        def build_knn_dataloaders(
+            self, knn_cfg, redis_cfg=None
+        ) -> tuple[torch.utils.data.DataLoader, torch.utils.data.DataLoader]:
+            """Feature-bank (train split, eval transform) and query (val subset) loaders for the k-NN monitor.
+
+            The bank uses the deterministic eval transform on train images — DINO-style
+            monitors extract features without augmentation noise (docs/mae.md D13); with
+            the Redis cache on it reuses the warm train-split bytes under that transform.
+            Both sets are stride-sampled Subsets so every rank replicates identical
+            bank/query data (no collectives).
+            """
+            if self.fake_data:
+                bank_dataset: torch.utils.data.Dataset = self._build_dataset(is_train=True)
+            else:
+                root = os.path.join(self.data_root, "train")
+                transform = self._build_transform(is_train=False)
+                if redis_cfg is not None and redis_cfg.redis_cache_enabled:
+                    bank_dataset = RedisCachedImageFolder(
+                        redis_host=redis_cfg.redis_cluster_host,
+                        redis_ports=list(redis_cfg.redis_cluster_ports),
+                        root=root,
+                        transform=transform,
+                        redis_world_size=int(redis_cfg.redis_rendezvous_world_size),
+                    )
+                else:
+                    bank_dataset = datasets.ImageFolder(root, transform=transform)
+            query_dataset = self._build_dataset(is_train=False)
+            bank_subset = torch.utils.data.Subset(
+                bank_dataset, _stride_indices(len(bank_dataset), knn_cfg.knn_bank_size)
+            )
+            query_subset = torch.utils.data.Subset(
+                query_dataset, _stride_indices(len(query_dataset), knn_cfg.knn_val_size)
+            )
+            loader_kwargs = {
+                "batch_size": self.val_batch_size_per_device,
+                "num_workers": self.val_num_workers,
+                "pin_memory": self.pin_mem,
+                "drop_last": False,
+            }
+            return (
+                torch.utils.data.DataLoader(bank_subset, shuffle=False, **loader_kwargs),
+                torch.utils.data.DataLoader(query_subset, shuffle=False, **loader_kwargs),
+            )
+
     dataloader_cfg: DataloaderCfg = field(default_factory=DataloaderCfg)
 
     @dataclass
@@ -816,6 +899,20 @@ class MaeExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfgMi
         warmup_epochs: int = 40
 
     lr_scheduler_cfg: LrSchedulerCfg = field(default_factory=LrSchedulerCfg)
+
+    @dataclass
+    class KnnCfg:
+        # DINO-style k-NN monitor: the representation-quality progress bar for
+        # pretraining. Reconstruction loss is only a health check — pixel MSE does not
+        # track representation quality (the official protocol is linear probing;
+        # docs/mae.md D13). Uses the official linprobe feature (encoder cls token at
+        # mask_ratio=0); each rank replicates bank+query so no collectives are needed.
+        knn_every_n_epochs: int = 50  # <=0 disables; skipped when no val split exists
+        knn_bank_size: int = 51200  # train images for the feature bank (stride-sampled)
+        knn_val_size: int = 5000  # val images queried (stride-sampled, class-balanced)
+        knn_topk: int = 20  # bank neighbors voting
+
+    knn_cfg: KnnCfg = field(default_factory=KnnCfg)
 
     # ------------------------------ execution part ------------------------------ #
 
@@ -885,14 +982,14 @@ class MaeExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfgMi
 
         model, optimizer = accelerator.prepare(model, optimizer)
 
-        # periodic val monitor (docs/mae.md D12); None disables it for the whole run
+        # periodic monitors (docs/mae.md D12/D13); a missing val split disables both
+        has_val = self.dataloader_cfg.fake_data or os.path.isdir(os.path.join(self.dataloader_cfg.data_root, "val"))
         data_loader_val = None
-        if self.eval_every_n_epochs > 0:
-            val_root = os.path.join(self.dataloader_cfg.data_root, "val")
-            if self.dataloader_cfg.fake_data or os.path.isdir(val_root):
-                data_loader_val = self.dataloader_cfg.build_val_dataloader(accelerator)
-            else:
-                logger.warning(f"periodic val eval disabled: no val split under {val_root}")
+        if self.eval_every_n_epochs > 0 and has_val:
+            data_loader_val = self.dataloader_cfg.build_val_dataloader(accelerator)
+        elif self.eval_every_n_epochs > 0:
+            logger.warning(f"periodic val eval disabled: no val split under {self.dataloader_cfg.data_root}")
+        knn_dataloaders = None  # built lazily on the first k-NN epoch (train-root scan)
 
         if self.wandb_cfg.enable_wandb and accelerator.is_main_process:
             self.wandb_cfg.build_wandb(accelerator=accelerator, project="TinyExp", config=cfg_dict, name="mae_exp")
@@ -937,10 +1034,17 @@ class MaeExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfgMi
                     accelerator, logger, model, accelerator.device, data_loader_val
                 )
 
+            knn_stats = {}
+            if has_val and self.knn_cfg.knn_every_n_epochs > 0 and (epoch + 1) % self.knn_cfg.knn_every_n_epochs == 0:
+                if knn_dataloaders is None:
+                    knn_dataloaders = self.dataloader_cfg.build_knn_dataloaders(self.knn_cfg, self.redis_cfg)
+                knn_stats = self._evaluate_knn(accelerator, logger, model, accelerator.device, *knn_dataloaders)
+
             if accelerator.is_main_process:
                 log_stats = {
                     **{f"train_{k}": v for k, v in train_stats.items()},
                     **{f"val_{k}": v for k, v in val_stats.items()},
+                    **knn_stats,
                     "epoch": epoch,
                 }
                 with open(os.path.join(run_dir, "log.txt"), "a") as f:
@@ -1060,6 +1164,33 @@ class MaeExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfgMi
         metric_logger.synchronize_between_processes(accelerator)
         logger.info(f"* Val reconstruction loss {metric_logger.loss.global_avg:.4f}")
         return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
+
+    @torch.no_grad()
+    def _extract_features(self, accelerator, model, device, dataloader):
+        """Encoder cls-token features at ``mask_ratio=0`` — the official linprobe feature
+        (main_linprobe.py uses the cls token; no decoder, no masking)."""
+        model = accelerator.unwrap_model(model)
+        model.eval()
+        features, labels = [], []
+        for images, target in dataloader:
+            images = images.to(device, non_blocking=True)
+            with torch.amp.autocast(device.type, enabled=device.type == "cuda"):
+                latent, _, _ = model.forward_encoder(images, 0.0)
+            features.append(latent[:, 0].float().cpu())
+            labels.append(target)
+        return torch.cat(features), torch.cat(labels)
+
+    @torch.no_grad()
+    def _evaluate_knn(self, accelerator, logger, model, device, bank_loader, query_loader) -> dict:
+        """Representation-quality progress bar: DINO-style k-NN top-1 on val (docs/mae.md D13)."""
+        bank_feats, bank_labels = self._extract_features(accelerator, model, device, bank_loader)
+        query_feats, query_labels = self._extract_features(accelerator, model, device, query_loader)
+        top1 = knn_top1(bank_feats, bank_labels, query_feats, query_labels, topk=self.knn_cfg.knn_topk)
+        logger.info(
+            f"* k-NN monitor: top-1 {top1:.2f}% (bank {len(bank_labels)}, query {len(query_labels)}, "
+            f"k={self.knn_cfg.knn_topk})"
+        )
+        return {"knn_top1": top1}
 
     # ------------------------------ evaluation (main_finetune.py eval slice) ------------------------------ #
 

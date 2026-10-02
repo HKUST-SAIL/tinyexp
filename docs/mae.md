@@ -104,16 +104,33 @@ the 0.3.2 parameter layout and initialization (D1/D2 below).
   split is read once per run and stays uncached. The Ray driver starts the Redis shards
   automatically (ports 7000-7005 by default, stopped with the run); disable with
   `redis_cfg.redis_cache_enabled=false`.
-- **D12 — periodic val reconstruction-loss monitor.** Official `main_pretrain.py` has no
-  evaluation at all during pretraining; for long cluster runs this port additionally
-  evaluates the masked-reconstruction loss on the val split every
-  `eval_every_n_epochs` (=10) epochs, after the per-epoch checkpoint (the same
-  checkpoint→evaluate order as official `main_finetune.py`). It is monitor-only —
+- **D12 — periodic val reconstruction-loss monitor (health check).** Official
+  `main_pretrain.py` has no evaluation at all during pretraining; for long cluster
+  runs this port additionally evaluates the masked-reconstruction loss on the val
+  split every `eval_every_n_epochs` (=10) epochs, after the per-epoch checkpoint (the
+  same checkpoint→evaluate order as official `main_finetune.py`). It is monitor-only —
   `model.eval()` + no-grad + the training `mask_ratio`, does not touch the training
   math, optimizer, or schedule — and the value lands in the per-epoch JSON
   (`val_loss`) and wandb next to `train_loss`, so divergence/data problems surface
   within 10 epochs instead of after the full run. `<=0` disables it; a run without a
   val split skips it with one warning (train-only data still works).
+  **Scope note**: reconstruction loss is a health check, not a representation-quality
+  metric — pixel MSE is dominated by high-frequency detail and is known not to track
+  downstream performance (which is why the official protocol is linear probing and the
+  paper's ablations are decided by linprobe, not recon loss). The quality progress bar
+  is the k-NN monitor below.
+- **D13 — periodic k-NN top-1 monitor (representation-quality progress bar).** Every
+  `knn_cfg.knn_every_n_epochs` (=50) epochs, extract the official linprobe feature
+  (encoder cls token at `mask_ratio=0` — `main_linprobe.py` probes the cls token),
+  build a feature bank from `knn_bank_size` (=51200) stride-sampled train images under
+  the deterministic eval transform (Redis bytes reused when the cache is on), and
+  classify `knn_val_size` (=5000) stride-sampled val images by cosine-similarity
+  `knn_topk` (=20)-NN majority vote (DINO-style monitor). Every rank replicates
+  bank+query, so no collectives are involved and the number is exact; cost is a few
+  minutes every 50 epochs (<1% of a run). The value lands in the per-epoch JSON
+  (`knn_top1`) next to `train_loss`/`val_loss` and in wandb. It **correlates with, but
+  is not, linear probing** — expect it well below the official 67.8% linprobe for
+  ViT-B; what matters is its trend. `knn_every_n_epochs<=0` disables it.
 
 ## Usage
 
@@ -257,6 +274,13 @@ time 14:25, dataloader-bound.
 - Same smoke with the Redis cache on (default): six shards auto-started on ports
   7000-7005 by the Ray driver and stopped with the run; the cached run's loss matches
   the uncached run digit-for-digit (1.8465/1.8458 — bit-identical samples, D11).
+- Monitors on the same smoke (`eval_every_n_epochs=1 knn_cfg.knn_every_n_epochs=1`):
+  `{"train_loss": 1.8458, "val_loss": 1.8460, "knn_top1": 0.78, "epoch": 0}` — the
+  k-NN top-1 is the expected random-initialization baseline (chance 0.1% on 1000
+  classes) after 10 training steps; it is the curve that should climb as pretraining
+  progresses. Recon monitor: 56 s per full-val pass; the first k-NN bank extraction
+  paid the cold Redis cache (~7.5 min on a slow external disk, 51200 images) and
+  subsequent evaluations read the warm bytes.
 
 Full-recipe runs (800 epochs, effective batch 4096) are deferred to a GPU cluster;
 record the cluster numbers here when available.
