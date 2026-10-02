@@ -236,11 +236,14 @@ See [`docs/vit_tp.md`](docs/vit_tp.md) for ImageNet data preparation, evaluation
 The MAE example pretrains ViT-B with the official PRETRAIN.md recipe (mask ratio 0.75,
 `norm_pix_loss`, per-iteration warmup+cosine schedule), serves the train set through the
 Redis byte cache by default (resnet_exp style, bit-identical samples; disable with
-`redis_cfg.redis_cache_enabled=false`), and resumes from `output/mae_exp/last.ckpt`:
+`redis_cfg.redis_cache_enabled=false`), and resumes from `output/mae_exp/last.ckpt`.
+On an 8-GPU host this single command is the complete official configuration —
+`accum_iter=8` (the default) holds the official effective batch 4096 and its
+blr-scaled learning rate:
 
 ```bash
 export IMAGENET_HOME=/path/to/imagenet
-python -m tinyexp.examples.mae_exp ray_cfg.ray_num_worker=2
+python -m tinyexp.examples.mae_exp ray_cfg.ray_num_worker=8
 ```
 
 It also cross-checks the officially released fine-tuned checkpoint on ImageNet val (the

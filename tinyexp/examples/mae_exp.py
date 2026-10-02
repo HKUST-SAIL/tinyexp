@@ -53,24 +53,27 @@ directories; set ``IMAGENET_HOME``)::
 
     export IMAGENET_HOME=/path/to/imagenet
 
-Pretrain on 2 GPUs (Ray workers, the default launcher)::
+Pretrain on 8 GPUs — the complete official recipe in one command (Ray workers, the
+default launcher; effective batch 64 * 8 * accum 8 = 4096, blr-scaled lr 2.4e-3, 800
+epochs, Redis train-set cache on)::
 
-    python -m tinyexp.examples.mae_exp ray_cfg.ray_num_worker=2
+    python -m tinyexp.examples.mae_exp ray_cfg.ray_num_worker=8
 
-Pretrain under an external launcher such as torchrun (launcher=mp)::
+Pretrain under an external launcher such as torchrun (launcher=mp; add accum_iter=1 on
+64 GPUs, or keep effective batch 4096 by scaling accum_iter with the worker count)::
 
-    torchrun --standalone --nproc-per-node=2 \
+    torchrun --standalone --nproc-per-node=8 \
       -m tinyexp.examples.mae_exp launcher=mp
 
 Resume from the last checkpoint (``output/<exp_name>/last.ckpt`` is rewritten every
 epoch and restores model/optimizer/scaler plus the epoch counter)::
 
-    python -m tinyexp.examples.mae_exp ray_cfg.ray_num_worker=2 \
+    python -m tinyexp.examples.mae_exp ray_cfg.ray_num_worker=8 \
       resume_from=output/mae_exp/last.ckpt
 
 Quick real-data training smoke on 2 GPUs (one epoch, 20 steps)::
 
-    python -m tinyexp.examples.mae_exp ray_cfg.ray_num_worker=2 epochs=1 max_train_steps=20
+    python -m tinyexp.examples.mae_exp ray_cfg.ray_num_worker=2 epochs=1 max_train_steps=20 accum_iter=1
 
 Eval cross-check against the official finetuned checkpoint (downloaded once into
 ``~/.cache/torch/hub/checkpoints/``)::
@@ -613,7 +616,10 @@ class MaeExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfgMi
     launcher: str = "ray"
     epochs: int = 800  # PRETRAIN.md recipe (argparse default is 400)
     max_train_steps: int = -1  # smoke runs only; official has no step cap
-    accum_iter: int = 1  # official --accum_iter (effective batch = batch * accum * world)
+    # official --accum_iter (effective batch = batch * accum * world). Default 8 holds the
+    # official effective batch 4096 (blr-scaled lr 2.4e-3) on an 8-GPU host: 64 * 8 * 8.
+    # On 64 GPUs set accum_iter=1; on other sizes adjust so batch * accum * world = 4096.
+    accum_iter: int = 8
     seed: int = 0  # official --seed; _run adds the rank (official: seed + get_rank())
 
     @dataclass

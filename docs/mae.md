@@ -107,20 +107,25 @@ the 0.3.2 parameter layout and initialization (D1/D2 below).
 
 ## Usage
 
-Pretrain on 2 GPUs (Ray workers, the default launcher; recipe defaults are the official
-PRETRAIN.md values: batch 64/GPU, mask ratio 0.75, 800 epochs, 40 warmup epochs, blr
-1.5e-4 with the `lr = blr * eff_batch / 256` linear rule, weight decay 0.05, AdamW
-betas (0.9, 0.95), `norm_pix_loss`). The Redis train-set cache is on by default
-(resnet_exp style) — the Ray driver starts the shards automatically, the first epoch
-fills the cache and later epochs read bytes from memory instead of the shared FS:
+Pretrain on 8 GPUs — the complete official recipe in **one command** (Ray workers, the
+default launcher; recipe defaults are the official PRETRAIN.md values: batch 64/GPU,
+mask ratio 0.75, 800 epochs, 40 warmup epochs, blr 1.5e-4 with the
+`lr = blr * eff_batch / 256` linear rule, weight decay 0.05, AdamW betas (0.9, 0.95),
+`norm_pix_loss`). `accum_iter` defaults to 8 so an 8-GPU host holds the official
+effective batch 4096 (`64 * 8 * 8`, lr 2.4e-3) — identical optimizer math to the
+official 64-GPU run, at the same throughput (accumulation only groups updates). The
+Redis train-set cache is on by default (resnet_exp style) — the Ray driver starts the
+shards automatically, the first epoch fills the cache and later epochs read bytes from
+memory instead of the shared FS:
 
 ```bash
 export IMAGENET_HOME=/path/to/imagenet
-python -m tinyexp.examples.mae_exp ray_cfg.ray_num_worker=2
+python -m tinyexp.examples.mae_exp ray_cfg.ray_num_worker=8
 ```
 
-Cache knobs: `redis_cfg.redis_cache_enabled=false` turns it off;
-`redis_cfg.redis_cache_max_memory` (GB, default 160 ≈ one ImageNet copy) and
+On other cluster sizes, scale `accum_iter` so `batch * accum_iter * world = 4096`
+(64 GPUs: `accum_iter=1`). Cache knobs: `redis_cfg.redis_cache_enabled=false` turns it
+off; `redis_cfg.redis_cache_max_memory` (GB, default 160 ≈ one ImageNet copy) and
 `redis_cfg.redis_rendezvous_world_size` (1: one standalone Redis per node — each node
 caches what it reads; -1: Ray-managed Redis Cluster across nodes) cover multi-node
 layouts.
@@ -133,39 +138,37 @@ torchrun --standalone --nproc-per-node=2 \
 ```
 
 On a cluster, scale workers (Ray fills a placement group per worker: 1 GPU + 12 CPUs
-by default) and keep the effective batch via `accum_iter` if needed, exactly as
+by default) and adjust `accum_iter` so the effective batch stays 4096, exactly as
 PRETRAIN.md describes:
 
 ```bash
-python -m tinyexp.examples.mae_exp ray_cfg.ray_num_worker=64   # e.g. 8 nodes x 8 GPUs
-python -m tinyexp.examples.mae_exp ray_cfg.ray_num_worker=2 epochs=800 \
-    accum_iter=2048   # small clusters: hold eff_batch = 4096 by accumulating
+python -m tinyexp.examples.mae_exp ray_cfg.ray_num_worker=64 accum_iter=1  # 8 nodes x 8 GPUs
 ```
 
 Resume (rewrites `output/<exp_name>/last.ckpt` every epoch):
 
 ```bash
-python -m tinyexp.examples.mae_exp ray_cfg.ray_num_worker=2 \
+python -m tinyexp.examples.mae_exp ray_cfg.ray_num_worker=8 \
     resume_from=output/mae_exp/last.ckpt
 ```
 
 Warm-start the autoencoder from another MAE checkpoint (official `--finetune` branch):
 
 ```bash
-python -m tinyexp.examples.mae_exp ray_cfg.ray_num_worker=2 \
+python -m tinyexp.examples.mae_exp ray_cfg.ray_num_worker=8 \
     module_cfg.pretrained_from=/path/to/mae_pretrain_vit_base.pth
 ```
 
 Remote logging on a cluster run (tensorboard is not ported):
 
 ```bash
-python -m tinyexp.examples.mae_exp ray_cfg.ray_num_worker=2 wandb_cfg.enable_wandb=true
+python -m tinyexp.examples.mae_exp ray_cfg.ray_num_worker=8 wandb_cfg.enable_wandb=true
 ```
 
-Quick real-data training smoke (20 steps, both GPUs):
+Quick real-data training smoke (20 steps, two GPUs):
 
 ```bash
-python -m tinyexp.examples.mae_exp ray_cfg.ray_num_worker=2 epochs=1 max_train_steps=20
+python -m tinyexp.examples.mae_exp ray_cfg.ray_num_worker=2 epochs=1 max_train_steps=20 accum_iter=1
 ```
 
 Eval cross-check against the official finetuned checkpoint (downloaded once into
@@ -232,7 +235,7 @@ time 14:25, dataloader-bound.
 
 **L3 — pretraining 跑通 (2× RTX 4080, DDP, real ImageNet train):**
 
-- `ray_cfg.ray_num_worker=2 epochs=1 max_train_steps=20`: 20 steps × 128 images, loss
+- `ray_cfg.ray_num_worker=2 epochs=1 max_train_steps=20` (recorded before accum_iter defaulted to 8; ran with accum_iter=1): 20 steps × 128 images, loss
   1.847 → 1.846 (init-level, `norm_pix_loss` scale), 4.3 GB peak GPU memory per rank,
   `actual lr 7.50e-05` (= blr 1.5e-4 × 128/256), per-iteration warmup visible in the lr
   meter, `last.ckpt` (1.2 GB: model + optimizer + scaler) and per-epoch JSON stats

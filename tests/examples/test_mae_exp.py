@@ -267,6 +267,7 @@ def test_optimizer_param_groups_and_scaled_lr() -> None:
 
 def _smoke_exp(tmp_path: Path, exp_name: str = "mae_smoke") -> MaeExp:
     exp = MaeExp(output_root=str(tmp_path), exp_name=exp_name)
+    exp.accum_iter = 1  # the 1-step smoke must exercise the optimizer-update path
     exp.module_cfg.img_size = 32
     exp.dataloader_cfg.fake_data = True
     exp.dataloader_cfg.input_size = 32
