@@ -11,6 +11,7 @@ nav:
   - Home: index.md
   - Running Modes: running-modes.md
   - DeiT-S Tensor Parallel Example: vit_tp.md
+  - MAE ViT-B Eval Example: mae.md
   - Philosophy: philosophy.md
   - Modules: modules.md
 plugins:

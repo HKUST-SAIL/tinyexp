@@ -104,8 +104,8 @@ python -m tinyexp.examples.mnist_exp \
 ```
 
 `mode=help` prints the resolved configuration and exits without starting workers. The other mode values are
-experiment-specific; for example, MNIST and ResNet provide `train`/`val`, pi provides `run`, and the DeiT-S example
-also provides `eval`/`bench`.
+experiment-specific; for example, MNIST and ResNet provide `train`/`val`, pi provides `run`, the DeiT-S example also
+provides `eval`/`bench`, and the MAE example provides `train` (pretraining) and `eval`.
 
 ```bash
 python -m tinyexp.examples.mnist_exp mode=help
@@ -196,6 +196,8 @@ failure coordination. The external launcher or supervisor owns whole-job restart
 - Distributed Monte Carlo pi (non-DL, `mode=run`): [`tinyexp/examples/pi_exp.py`](tinyexp/examples/pi_exp.py)
 - DeiT-S with tensor parallelism: [`tinyexp/examples/vit_tp_exp.py`](tinyexp/examples/vit_tp_exp.py), documented in
   [`docs/vit_tp.md`](docs/vit_tp.md)
+- MAE ViT-B pretraining and evaluation (official finetuned-checkpoint cross-check): [`tinyexp/examples/mae_exp.py`](tinyexp/examples/mae_exp.py),
+  documented in [`docs/mae.md`](docs/mae.md)
 
 Run the ImageNet ResNet-50 example with the dataset root in `IMAGENET_HOME`:
 
@@ -230,6 +232,28 @@ python -m tinyexp.examples.vit_tp_exp mode=bench
 ```
 
 See [`docs/vit_tp.md`](docs/vit_tp.md) for ImageNet data preparation, evaluation, and full training commands.
+
+The MAE example pretrains ViT-B with the official PRETRAIN.md recipe (mask ratio 0.75,
+`norm_pix_loss`, per-iteration warmup+cosine schedule), serves the train set through the
+Redis byte cache by default (resnet_exp style, bit-identical samples; disable with
+`redis_cfg.redis_cache_enabled=false`), and resumes from `output/mae_exp/last.ckpt`:
+
+```bash
+export IMAGENET_HOME=/path/to/imagenet
+python -m tinyexp.examples.mae_exp ray_cfg.ray_num_worker=2
+```
+
+It also cross-checks the officially released fine-tuned checkpoint on ImageNet val (the
+checkpoint is downloaded automatically on first run); on an RTX 4080 it reports
+`eval acc@1=83.75% acc@5=96.54%` against the official reference 83.66/96.53 (loss 0.731
+in both; the accuracy delta is AMP/GPU-architecture numeric variance):
+
+```bash
+python -m tinyexp.examples.mae_exp mode=eval \
+    module_cfg.pretrained_from=https://dl.fbaipublicfiles.com/mae/finetune/mae_finetuned_vit_base.pth
+```
+
+See [`docs/mae.md`](docs/mae.md) for the port record, usage variants, and the cross-check results.
 
 ## How It Works
 
