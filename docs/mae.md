@@ -104,6 +104,16 @@ the 0.3.2 parameter layout and initialization (D1/D2 below).
   split is read once per run and stays uncached. The Ray driver starts the Redis shards
   automatically (ports 7000-7005 by default, stopped with the run); disable with
   `redis_cfg.redis_cache_enabled=false`.
+- **D12 — periodic val reconstruction-loss monitor.** Official `main_pretrain.py` has no
+  evaluation at all during pretraining; for long cluster runs this port additionally
+  evaluates the masked-reconstruction loss on the val split every
+  `eval_every_n_epochs` (=10) epochs, after the per-epoch checkpoint (the same
+  checkpoint→evaluate order as official `main_finetune.py`). It is monitor-only —
+  `model.eval()` + no-grad + the training `mask_ratio`, does not touch the training
+  math, optimizer, or schedule — and the value lands in the per-epoch JSON
+  (`val_loss`) and wandb next to `train_loss`, so divergence/data problems surface
+  within 10 epochs instead of after the full run. `<=0` disables it; a run without a
+  val split skips it with one warning (train-only data still works).
 
 ## Usage
 

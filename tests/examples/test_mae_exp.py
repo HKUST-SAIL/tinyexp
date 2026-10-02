@@ -295,7 +295,8 @@ def _patch_run_dependencies(monkeypatch: pytest.MonkeyPatch, exp: MaeExp) -> Non
 def test_train_smoke_fake_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     exp = _smoke_exp(tmp_path)
     exp.epochs = 2
-    exp.max_train_steps = 2  # 1 step per epoch on 8 fake samples at batch 64
+    exp.max_train_steps = 2  # 1 step per epoch on 8 fake samples at batch 8
+    exp.eval_every_n_epochs = 1  # exercise the periodic val reconstruction monitor
     _patch_run_dependencies(monkeypatch, exp)
 
     exp.run()
@@ -309,6 +310,7 @@ def test_train_smoke_fake_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) 
     stats = [json.loads(line) for line in (run_dir / "log.txt").read_text().splitlines()]
     assert [entry["epoch"] for entry in stats] == [0, 1]
     assert all(math.isfinite(entry["train_loss"]) for entry in stats)
+    assert all(math.isfinite(entry["val_loss"]) for entry in stats)  # periodic monitor fired
 
 
 def test_train_resume_continues_epochs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

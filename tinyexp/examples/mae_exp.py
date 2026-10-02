@@ -55,7 +55,9 @@ directories; set ``IMAGENET_HOME``)::
 
 Pretrain on 8 GPUs — the complete official recipe in one command (Ray workers, the
 default launcher; effective batch 64 * 8 * accum 8 = 4096, blr-scaled lr 2.4e-3, 800
-epochs, Redis train-set cache on)::
+epochs, Redis train-set cache on, and a periodic val reconstruction-loss monitor every
+``eval_every_n_epochs``=10 epochs so problems surface early instead of after the full
+run)::
 
     python -m tinyexp.examples.mae_exp ray_cfg.ray_num_worker=8
 
@@ -620,6 +622,10 @@ class MaeExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfgMi
     # official effective batch 4096 (blr-scaled lr 2.4e-3) on an 8-GPU host: 64 * 8 * 8.
     # On 64 GPUs set accum_iter=1; on other sizes adjust so batch * accum * world = 4096.
     accum_iter: int = 8
+    # periodic masked-reconstruction loss on the val split during pretraining — the
+    # self-supervised analog of periodic testing (official main_pretrain.py has none;
+    # docs/mae.md D12). <=0 disables; skipped with one warning when no val split exists.
+    eval_every_n_epochs: int = 10
     seed: int = 0  # official --seed; _run adds the rank (official: seed + get_rank())
 
     @dataclass
@@ -843,7 +849,7 @@ class MaeExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfgMi
 
     # ------------------------------ pretraining (main_pretrain.py) ------------------------------ #
 
-    def _train(self, accelerator, logger, cfg_dict, run_dir: str) -> None:
+    def _train(self, accelerator, logger, cfg_dict, run_dir: str) -> None:  # noqa: C901
         data_loader_train = self.dataloader_cfg.build_train_dataloader(accelerator, self.redis_cfg)
 
         # define the model
@@ -879,6 +885,15 @@ class MaeExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfgMi
 
         model, optimizer = accelerator.prepare(model, optimizer)
 
+        # periodic val monitor (docs/mae.md D12); None disables it for the whole run
+        data_loader_val = None
+        if self.eval_every_n_epochs > 0:
+            val_root = os.path.join(self.dataloader_cfg.data_root, "val")
+            if self.dataloader_cfg.fake_data or os.path.isdir(val_root):
+                data_loader_val = self.dataloader_cfg.build_val_dataloader(accelerator)
+            else:
+                logger.warning(f"periodic val eval disabled: no val split under {val_root}")
+
         if self.wandb_cfg.enable_wandb and accelerator.is_main_process:
             self.wandb_cfg.build_wandb(accelerator=accelerator, project="TinyExp", config=cfg_dict, name="mae_exp")
 
@@ -901,7 +916,8 @@ class MaeExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfgMi
                 global_step,
             )
 
-            # official order: checkpoint, then per-epoch log stats (rank 0 only)
+            # official order: checkpoint every epoch, then evaluate; the periodic val
+            # reconstruction loss is a monitor-only addition (docs/mae.md D12)
             if accelerator.is_main_process:
                 self.checkpoint_cfg.save_checkpoint(
                     run_dir=run_dir,
@@ -914,7 +930,19 @@ class MaeExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfgMi
                     exp_name=self.exp_name,
                     exp_class=self.exp_class,
                 )
-                log_stats = {**{f"train_{k}": v for k, v in train_stats.items()}, "epoch": epoch}
+
+            val_stats = {}
+            if data_loader_val is not None and (epoch + 1) % self.eval_every_n_epochs == 0:
+                val_stats = self._evaluate_reconstruction(
+                    accelerator, logger, model, accelerator.device, data_loader_val
+                )
+
+            if accelerator.is_main_process:
+                log_stats = {
+                    **{f"train_{k}": v for k, v in train_stats.items()},
+                    **{f"val_{k}": v for k, v in val_stats.items()},
+                    "epoch": epoch,
+                }
                 with open(os.path.join(run_dir, "log.txt"), "a") as f:
                     f.write(json.dumps(log_stats) + "\n")
                 if self.wandb_cfg.enable_wandb:
@@ -1007,6 +1035,31 @@ class MaeExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfgMi
         metric_logger.synchronize_between_processes(accelerator)
         logger.info(f"Averaged stats: {metric_logger}")
         return {k: meter.global_avg for k, meter in metric_logger.meters.items()}, global_step
+
+    @torch.no_grad()
+    def _evaluate_reconstruction(self, accelerator, logger, model, device, val_dataloader) -> dict:
+        """Masked-reconstruction loss on the val split — the pretraining analog of the
+        classifier ``_evaluate`` (engine_finetune.evaluate shape, monitor-only: D12).
+
+        Uses the training ``mask_ratio`` and the same autocast/no-grad discipline; the
+        train loop's next ``_train_one_epoch`` call restores ``model.train()``.
+        """
+        metric_logger = MetricLogger(log_fn=logger.info)
+        header = "Val:"
+
+        model.eval()
+
+        for images, _ in metric_logger.log_every(val_dataloader, 10, header):
+            images = images.to(device, non_blocking=True)
+
+            # compute output; official: torch.cuda.amp.autocast() (docs/mae.md D4)
+            with torch.amp.autocast(device.type, enabled=device.type == "cuda"):
+                loss, _, _ = model(images, mask_ratio=self.module_cfg.mask_ratio)
+
+            metric_logger.meters["loss"].update(loss.item(), n=images.shape[0])
+        metric_logger.synchronize_between_processes(accelerator)
+        logger.info(f"* Val reconstruction loss {metric_logger.loss.global_avg:.4f}")
+        return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
     # ------------------------------ evaluation (main_finetune.py eval slice) ------------------------------ #
 
