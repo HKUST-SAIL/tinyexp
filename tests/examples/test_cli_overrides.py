@@ -28,6 +28,39 @@ import pytest
             ],
             id="mae",
         ),
+        pytest.param(
+            "mae_linprobe_exp.py",
+            ["mode=help", "module_cfg.num_classes=6", "optimizer_cfg.blr=0.2"],
+            [
+                r"num_classes:\s*6\b",
+                r"blr:\s*0\.2\b",
+                r"epochs:\s*90\b",
+                r"accum_iter:\s*4\b",
+                r"global_pool:\s*false\b",
+                r"drop_path_rate:\s*0\.0\b",
+                r"train_batch_size_per_device:\s*512\b",
+                r"weight_decay:\s*0\.0\b",
+                r"warmup_epochs:\s*10\b",
+            ],
+            id="mae-linprobe",
+        ),
+        pytest.param(
+            "mae_linprobe_exp.py",
+            [
+                "mode=help",
+                "ray_cfg.ray_num_worker=8",
+                "dataloader_cfg.train_batch_size_per_device=2048",
+                "accum_iter=1",
+            ],
+            [
+                r"ray_num_worker:\s*8\b",
+                r"train_batch_size_per_device:\s*2048\b",
+                r"accum_iter:\s*1\b",
+                r"blr:\s*0\.1\b",
+                r"epochs:\s*90\b",
+            ],
+            id="mae-linprobe-8gpu-2048",
+        ),
     ],
 )
 def test_cli_override_prints_updated_value(

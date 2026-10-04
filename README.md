@@ -105,7 +105,7 @@ python -m tinyexp.examples.mnist_exp \
 
 `mode=help` prints the resolved configuration and exits without starting workers. The other mode values are
 experiment-specific; for example, MNIST and ResNet provide `train`/`val`, pi provides `run`, the DeiT-S example also
-provides `eval`/`bench`, and the MAE example provides `train` (pretraining) and `eval`.
+provides `eval`/`bench`. The MAE pretraining and linear-probe entries both provide `train` and `eval`.
 
 ```bash
 python -m tinyexp.examples.mnist_exp mode=help
@@ -196,8 +196,9 @@ failure coordination. The external launcher or supervisor owns whole-job restart
 - Distributed Monte Carlo pi (non-DL, `mode=run`): [`tinyexp/examples/pi_exp.py`](tinyexp/examples/pi_exp.py)
 - DeiT-S with tensor parallelism: [`tinyexp/examples/vit_tp_exp.py`](tinyexp/examples/vit_tp_exp.py), documented in
   [`docs/vit_tp.md`](docs/vit_tp.md)
-- MAE ViT-B pretraining and evaluation (official finetuned-checkpoint cross-check): [`tinyexp/examples/mae_exp.py`](tinyexp/examples/mae_exp.py),
-  documented in [`docs/mae.md`](docs/mae.md)
+- MAE ViT-B pretraining and evaluation (official finetuned-checkpoint cross-check): [`tinyexp/examples/mae_exp.py`](tinyexp/examples/mae_exp.py)
+- MAE ViT-B frozen-encoder linear probe: [`tinyexp/examples/mae_linprobe_exp.py`](tinyexp/examples/mae_linprobe_exp.py)
+  (two-GPU smoke-verified; full 90-epoch accuracy unvalidated). Both MAE entries are documented in [`docs/mae.md`](docs/mae.md).
 
 Run the ImageNet ResNet-50 example with the dataset root in `IMAGENET_HOME`:
 
@@ -258,7 +259,39 @@ python -m tinyexp.examples.mae_exp mode=eval \
     module_cfg.pretrained_from=https://dl.fbaipublicfiles.com/mae/finetune/mae_finetuned_vit_base.pth
 ```
 
-See [`docs/mae.md`](docs/mae.md) for the port record, usage variants, and the cross-check results.
+Train a frozen-encoder linear probe from your pretraining checkpoint with the separate
+`MaeExp` subclass. The recipe uses CLS features, `BatchNorm1d(affine=False, eps=1e-6)` +
+Linear, LARS, the official linear-probe crop, 90 epochs, 10 warmup epochs, and `blr=0.1`.
+For the large-memory eight-GPU validation run below, use batch 2048/GPU and
+`accum_iter=1` (no gradient accumulation): effective batch 16384 and scaled peak LR 6.4.
+These are explicit overrides; code defaults remain batch 512/GPU, accumulation 4, and one worker.
+
+```bash
+export IMAGENET_HOME=/path/to/imagenet
+python -m tinyexp.examples.mae_linprobe_exp ray_cfg.ray_num_worker=8 \
+    dataloader_cfg.train_batch_size_per_device=2048 accum_iter=1 \
+    module_cfg.pretrained_from=/mnt/jfs-zane-research/outputs/tinyexp/mae_exp/last.ckpt \
+    output_root=/mnt/jfs-zane-research/outputs/tinyexp
+```
+
+`module_cfg.pretrained_from` initializes the encoder from TinyExp `model_state_dict` or
+official MAE `model` payloads; use `resume_from` with the **probe** `best.ckpt` for evaluation
+or `last.ckpt` to resume training. Outputs default to `./output/mae_linprobe_exp/`; set
+`output_root=/mnt/jfs-zane-research/outputs/tinyexp` for shared storage. Each epoch evaluates
+full ImageNet val top-1/top-5, logs `test_acc1`/`test_acc5`, and writes best/last checkpoints.
+
+The probe uses ordinary local BN: the command's BN batch is 2048 rather than the official
+512, so equal effective batch and LR do not imply numerical equivalence to the upstream
+32-GPU run. Batch 2048 has not been memory-tested locally. Upstream's 67.8% top-1 used a
+**1600-epoch** encoder, not a promise for your **800-epoch** checkpoint.
+Two-GPU Ray training/resume/eval smokes passed; full 90-epoch
+ImageNet accuracy remains unvalidated. The supplied source path was inaccessible during
+verification, and the smoke's original pretraining checkpoint was left untouched. Finetuning
+training is still not implemented. The pretraining k-NN protocol is unchanged, and inherited
+`mask_ratio`, `module_cfg.norm_pix_loss`, and `knn_cfg` are unused by the probe.
+
+See [`docs/mae.md`](docs/mae.md) for probe eval/resume commands, source provenance, and the
+pretraining/evaluation cross-check results.
 
 ## How It Works
 

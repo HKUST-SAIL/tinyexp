@@ -1,4 +1,4 @@
-# MAE ViT-B Pretraining and Evaluation (`mae_exp`)
+# MAE ViT-B Pretraining, Linear Probing, and Evaluation
 
 `tinyexp/examples/mae_exp.py` ports [facebookresearch/mae](https://github.com/facebookresearch/mae)
 line by line (对拍): only formatting-level changes are allowed, and every deviation from
@@ -6,9 +6,11 @@ upstream is listed below and pinned by tests. It provides **MAE ViT-B pretrainin
 masked-autoencoder algorithm) and **evaluation** of the officially released fine-tuned
 checkpoint on the ImageNet val set.
 
-Scope: pretraining + the official eval sanity check. The finetuning and linear-probing
-training loops are an explicit follow-up; the config surface is structured so they can be
-added without churn.
+`tinyexp/examples/mae_linprobe_exp.py` adds **linear-probe training and evaluation** as a
+subclass of `MaeExp`, reusing its model, data, launcher, logging, and checkpoint plumbing.
+The linear-probe entry is **two-GPU smoke-verified** (record below), but full 90-epoch
+ImageNet accuracy is unvalidated. The later cross-check section records `mae_exp` results.
+Finetuning training is still not implemented.
 
 ## Ported sources (pinned)
 
@@ -207,10 +209,110 @@ python -m tinyexp.examples.mae_exp mode=eval \
     module_cfg.pretrained_from=https://dl.fbaipublicfiles.com/mae/finetune/mae_finetuned_vit_base.pth
 ```
 
+## Linear probe (`mae_linprobe_exp`)
+
+Source provenance: the same upstream commit pinned above, specifically
+[`main_linprobe.py`](https://github.com/facebookresearch/mae/blob/efb2a8062c206524e35e47d04501ed4f544c0ae8/main_linprobe.py),
+[`util/lars.py`](https://github.com/facebookresearch/mae/blob/efb2a8062c206524e35e47d04501ed4f544c0ae8/util/lars.py),
+[`util/crop.py`](https://github.com/facebookresearch/mae/blob/efb2a8062c206524e35e47d04501ed4f544c0ae8/util/crop.py),
+the train/eval loops in `engine_finetune.py`, and the shared `util/lr_sched.py` schedule.
+The reference recipe and 67.8% result come from upstream
+[`FINETUNE.md` (linear probing)](https://github.com/facebookresearch/mae/blob/efb2a8062c206524e35e47d04501ed4f544c0ae8/FINETUNE.md).
+Two-GPU Ray training/resume/eval smokes passed; **full 90-epoch ImageNet accuracy is
+unvalidated**. No probe accuracy is claimed here.
+
+`MaeLinprobeExp` subclasses `MaeExp`. It freezes the ViT-B encoder, takes the unmasked
+CLS-token feature (not global pooling), and trains only a Linear classifier behind
+`BatchNorm1d(affine=False, eps=1e-6)`. LARS uses the official bias/norm exclusions and no
+weight decay. The train transform is the official linear-probe
+`RandomResizedCrop(224, scale=(0.08, 1.0), bicubic) → HFlip → ToTensor → Normalize`; validation
+uses the existing deterministic eval transform.
+
+Recipe defaults: 90 epochs, 10 warmup epochs, `blr=0.1`, batch 512/GPU, and `accum_iter=4`.
+The inherited Ray worker default is **one**. The primary commands below explicitly select
+**eight GPUs, batch 2048/GPU, and `accum_iter=1`**, for large-memory cluster validation:
+
+| Setting | Official recipe | Eight-GPU validation below |
+| --- | --- | --- |
+| GPUs | 32 (4 nodes × 8) | 8 |
+| Physical batch/GPU | 512 | 2048 |
+| Gradient accumulation | 1 | 1 (none) |
+| Effective batch | 16384 | 16384 |
+| Base LR / peak scaled LR | 0.1 / 6.4 | 0.1 / 6.4 |
+
+The scaled peak is `lr = blr * eff_batch / 256 = 6.4`; warmup starts at zero.
+BN is **ordinary local BatchNorm**, not SyncBN. The eight-GPU command matches the official
+**effective batch and LR**, but BN sees **2048 rather than 512 samples** per forward,
+so it is **not a strictly numerically equivalent reproduction** of the official recipe.
+The official **67.8%** top-1 reference uses a **1600-epoch** pretraining checkpoint;
+it is not a promised result for your **800-epoch** encoder.
+
+Batch 2048 has not been memory-tested locally; the two-GPU smokes below used small batches.
+If memory is insufficient, batch 512/GPU with `accum_iter=4` on eight GPUs also preserves
+effective batch 16384 and uses the official per-forward BN batch size, though its BN running
+statistics update four times per optimizer step. Batch 128 with accumulation 16 is another
+lower-memory option with different BN statistics. Record the physical batch and accumulation
+used. An incomplete accumulation window at the end of an epoch is discarded, as upstream does.
+
+Initialize from your TinyExp pretraining checkpoint (eight GPUs, 2048/GPU, no accumulation):
+
+```bash
+export IMAGENET_HOME=/path/to/imagenet
+python -m tinyexp.examples.mae_linprobe_exp ray_cfg.ray_num_worker=8 \
+    dataloader_cfg.train_batch_size_per_device=2048 accum_iter=1 \
+    module_cfg.pretrained_from=/mnt/jfs-zane-research/outputs/tinyexp/mae_exp/last.ckpt \
+    output_root=/mnt/jfs-zane-research/outputs/tinyexp
+```
+
+`module_cfg.pretrained_from` accepts a TinyExp checkpoint containing `model_state_dict` or
+an official MAE checkpoint containing `model`. This is encoder initialization for a **new
+probe**, not pretraining-state resume. The commands here explicitly set shared storage:
+`/mnt/jfs-zane-research/outputs/tinyexp/mae_linprobe_exp/`, separate from `mae_exp/`.
+Without the `output_root` override, the default output is `./output/mae_linprobe_exp/`.
+
+Every epoch evaluates the **full** ImageNet val set for top-1/top-5, appends per-epoch JSON
+stats (`test_loss`, `test_acc1`, `test_acc5`, alongside training stats) to `log.txt`, and writes
+`last.ckpt`; an improved val top-1 also writes `best.ckpt`.
+
+Evaluate the trained probe or resume probe training using `resume_from` (a **probe**
+checkpoint, not the source autoencoder checkpoint):
+
+```bash
+python -m tinyexp.examples.mae_linprobe_exp mode=eval ray_cfg.ray_num_worker=8 \
+    resume_from=/mnt/jfs-zane-research/outputs/tinyexp/mae_linprobe_exp/best.ckpt \
+    output_root=/mnt/jfs-zane-research/outputs/tinyexp
+
+python -m tinyexp.examples.mae_linprobe_exp ray_cfg.ray_num_worker=8 \
+    dataloader_cfg.train_batch_size_per_device=2048 accum_iter=1 \
+    resume_from=/mnt/jfs-zane-research/outputs/tinyexp/mae_linprobe_exp/last.ckpt \
+    output_root=/mnt/jfs-zane-research/outputs/tinyexp
+```
+
+Resume restores the probe training state and continues at `epoch + 1`; it does not need
+`module_cfg.pretrained_from` again. Keep the same physical batch, accumulation, and worker
+count on resume: these CLI overrides are not automatically restored from the checkpoint.
+Independent eval uses its separate validation batch setting, not the training batch.
+
+Inherited `mask_ratio`, `module_cfg.norm_pix_loss`, and `knn_cfg` do not participate in probe
+training/evaluation. Reconstruction monitors are not used: full-val classification runs
+every epoch. The pretraining k-NN monitor and its protocol remain unchanged; k-NN is still
+not linear probing.
+
+**Two-GPU Ray smoke record:** loading a cached official encoder on fake images passed.
+A separate run loaded a full TinyExp MAE payload (`epoch=799`) on a real-ImageNet symlink
+subset (1000 train + 1000 val images), with batch 16/GPU, `accum_iter=2`, and 20 microsteps.
+Every encoder tensor stayed bit-identical; head weight/bias changed, BN tracked 20 batches,
+and LARS momentum was saved. The probe checkpoint correctly started at epoch 0/step 20,
+rather than inheriting pretraining epoch 799. Resume reached epoch 1/step 24, and a separate
+`best.ckpt` evaluation exited successfully. The original pretraining checkpoint was left
+untouched. The supplied `/mnt/jfs-zane-research/outputs/tinyexp/mae_exp/last.ckpt` was
+inaccessible in the verification environment; these checks validate the payload format,
+not that specific encoder or its downstream accuracy.
+
 ## Data preparation
 
-ImageNet in the standard ImageFolder layout (`train/` for pretraining, `val/` for
-evaluation):
+ImageNet in the standard ImageFolder layout (`train/` for pretraining or linear probing,
+`val/` for evaluation):
 
 ```
 $IMAGENET_HOME/train/n01440764/xxx.JPEG
@@ -287,6 +389,7 @@ record the cluster numbers here when available.
 
 ## Not ported (this round)
 
-The finetuning (`main_finetune.py` training loop) and linear-probing
-(`main_linprobe.py`) recipes, `mae_vit_large_patch16`/`mae_vit_huge_patch14`/
-`vit_large_patch16`/`vit_huge_patch14`, layer-wise lr decay, submitit, and tensorboard.
+Finetuning training (`main_finetune.py` training loop),
+`mae_vit_large_patch16`/`mae_vit_huge_patch14`/`vit_large_patch16`/`vit_huge_patch14`,
+layer-wise lr decay, submitit, and tensorboard. Linear probing is smoke-verified as documented
+above; full 90-epoch ImageNet accuracy remains unvalidated.
