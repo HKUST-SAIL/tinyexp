@@ -179,7 +179,13 @@ def _load_python_file(module_path: Path):  # type: ignore[no-untyped-def]
     if spec is None or spec.loader is None:
         return None
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    # dataclasses looks up cls.__module__ in sys.modules (required on Python 3.13+).
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(spec.name, None)
+        raise
     return module
 
 
