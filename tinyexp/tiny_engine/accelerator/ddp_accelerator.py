@@ -1,3 +1,10 @@
+"""CUDA DistributedDataParallel accelerator over NCCL, with fp16 (GradScaler) or bf16 autocast.
+
+Usage: ``DDPAccelerator(mixed_precision="none" | "fp16" | "bf16")``; one process per GPU, launched by
+``torchrun`` (``launcher=mp``) or Ray workers (``launcher=ray``). Raises ``CudaNotAvailableError`` without CUDA.
+Extra helpers: ``clip_grad_norm_`` (unscales fp16 first), ``dump_model_to_state_dict``.
+"""
+
 import torch
 import torch.distributed as dist
 from torch import nn

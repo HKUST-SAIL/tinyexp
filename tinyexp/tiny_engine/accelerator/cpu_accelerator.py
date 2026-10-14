@@ -1,3 +1,8 @@
+"""CPU accelerator: gloo process group when ``WORLD_SIZE > 1``, optional bf16 autocast.
+
+Usage: ``CPUAccelerator(mixed_precision="none" | "bf16")``.
+"""
+
 import os
 import socket
 from contextlib import suppress
@@ -11,8 +16,11 @@ from .base_accelerator import BaseAccelerator
 
 
 class CPUAccelerator(BaseAccelerator):
-    """
-    CPU accelerator for distributed training.
+    """CPU accelerator: no device placement beyond CPU, gloo process group when ``WORLD_SIZE > 1``.
+
+    ``prepare`` wraps the model in DDP only when ``world_size > 1``; ``backward``/``optimizer_step`` are the
+    plain PyTorch calls; ``reduce`` all-reduces over gloo. ``mixed_precision="bf16"`` enables CPU bf16
+    autocast inside the prepared model's forward (outputs are cast back to fp32).
     """
 
     def __init__(self, mixed_precision: str = "none") -> None:

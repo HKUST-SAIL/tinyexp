@@ -1,3 +1,10 @@
+"""``HFAccelerator``: Hugging Face ``accelerate.Accelerator`` adapted to ``AcceleratorProtocol``.
+
+Adds ``rank``/``world_size``/``local_rank`` aliases, ``optimizer_step`` and idempotent ``destroy``.
+Constructor arguments are accelerate's. Defined only when ``accelerate`` is installed (a warning is
+emitted otherwise). Pair with ``accelerate launch ... launcher=mp``.
+"""
+
 try:
     import contextlib
 

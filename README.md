@@ -104,8 +104,8 @@ python -m tinyexp.examples.mnist_exp \
 ```
 
 `mode=help` prints the resolved configuration and exits without starting workers. The other mode values are
-experiment-specific; for example, MNIST and ResNet provide `train`/`val`, pi provides `run`, and the DeiT-S example
-also provides `eval`/`bench`.
+experiment-specific; for example, MNIST and ResNet provide `train`/`eval`, pi provides `run`, and the DeiT-S example
+provides `train`/`eval`/`bench`.
 
 ```bash
 python -m tinyexp.examples.mnist_exp mode=help
@@ -171,13 +171,15 @@ Accelerate, Ray multi-node, network, data, Redis, and W&B requirements.
 Ray worker resources are explicit. Set `ray_cfg.ray_num_cpus_per_worker` and `ray_cfg.ray_num_gpus_per_worker` to the
 resources required by one worker; both fields can be overridden from the command line.
 
-Run an ImageNet experiment with TinyExp's Redis helper after installing the package:
+Launches without Ray (`launcher=mp`: plain `python`, `torchrun`, `accelerate launch`) can use TinyExp's Redis helper
+to own the cache. With `launcher=ray` (the ResNet default) the Ray driver starts and stops Redis itself, and the
+helper refuses such a command (exit code 2) before starting anything.
 
 ```bash
 export IMAGENET_HOME=/path/to/imagenet
 tinyexp-run-with-redis -- \
-  python -m tinyexp.examples.resnet_exp \
-  redis_cfg.redis_cache_enabled=true
+  torchrun --nproc-per-node=8 -m tinyexp.examples.resnet_exp \
+  launcher=mp redis_cfg.redis_cache_enabled=true
 ```
 
 `tinyexp-run-with-redis` owns and stops only the Redis processes it starts. If a configured port is already served by
@@ -191,45 +193,24 @@ failure coordination. The external launcher or supervisor owns whole-job restart
 
 ## Example Experiments
 
-- MNIST baseline: [`tinyexp/examples/mnist_exp.py`](tinyexp/examples/mnist_exp.py)
-- ImageNet ResNet-50: [`tinyexp/examples/resnet_exp.py`](tinyexp/examples/resnet_exp.py)
-- Distributed Monte Carlo pi (non-DL, `mode=run`): [`tinyexp/examples/pi_exp.py`](tinyexp/examples/pi_exp.py)
-- DeiT-S with tensor parallelism: [`tinyexp/examples/vit_tp_exp.py`](tinyexp/examples/vit_tp_exp.py), documented in
-  [`docs/vit_tp.md`](docs/vit_tp.md)
+- MNIST baseline and template for new experiments (CPU or DDP, checkpoints, resume):
+  [`tinyexp/examples/mnist_exp.py`](tinyexp/examples/mnist_exp.py)
+- Distributed Monte Carlo pi, a non-deep-learning workload (`mode=run`) and the fastest smoke test:
+  [`tinyexp/examples/pi_exp.py`](tinyexp/examples/pi_exp.py)
+- ImageNet ResNet-50 with DDP (about 76% top-1 after 90 epochs), FSDP or HF Accelerate, and the Redis byte cache:
+  [`tinyexp/examples/resnet_exp.py`](tinyexp/examples/resnet_exp.py)
+- DeiT-S with tensor parallelism and a TP-vs-DDP benchmark:
+  [`tinyexp/examples/vit_tp_exp.py`](tinyexp/examples/vit_tp_exp.py), documented in [`docs/vit_tp.md`](docs/vit_tp.md)
 
-Run the ImageNet ResNet-50 example with the dataset root in `IMAGENET_HOME`:
-
-```bash
-export IMAGENET_HOME=/path/to/imagenet
-python -m tinyexp.examples.resnet_exp
-```
-
-The same ResNet training loop also supports FSDP for a parameter/gradient/optimizer-state
-sharding smoke test. Run it with `accelerator_cfg.accelerator=fsdp` on a multi-GPU CUDA host;
-the recipe and validation target are otherwise the same as DDP. The existing DDP recipe reaches
-about 76% ImageNet top-1 after the full 90-epoch run; use the command below to compare FSDP on
-the same setup:
+Each example's module docstring starts with a run header — `Modes`, `Run`, `Env`, `Needs`, `Out` — listing its
+commands, required data and hardware. The headers are the single source of example commands and are checked by the
+test suite. Print one without opening the source:
 
 ```bash
-torchrun --nproc-per-node=2 tinyexp/examples/resnet_exp.py \
-  launcher=mp accelerator_cfg.accelerator=fsdp redis_cfg.redis_cache_enabled=false
+python -c "import tinyexp.examples.resnet_exp as m; print(m.__doc__)"
 ```
 
-The pi example uses Ray workers to all-reduce sample counts and does not use a dataloader:
-
-```bash
-python -m tinyexp.examples.pi_exp \
-  pi_cfg.total_samples=100000000 \
-  ray_cfg.ray_num_worker=4
-```
-
-The DeiT-S example includes a synthetic TP throughput/memory benchmark on two GPUs:
-
-```bash
-python -m tinyexp.examples.vit_tp_exp mode=bench
-```
-
-See [`docs/vit_tp.md`](docs/vit_tp.md) for ImageNet data preparation, evaluation, and full training commands.
+See [`tinyexp/examples/README.md`](tinyexp/examples/README.md) for choosing an example.
 
 ## How It Works
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import random
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,6 +25,17 @@ def test_root_package_re_exports_mixins() -> None:
     assert RayCfgMixin.__name__ == "RayCfgMixin"
     assert RedisCfgMixin.__name__ == "RedisCfgMixin"
     assert WandbCfgMixin.__name__ == "WandbCfgMixin"
+
+
+def test_import_tinyexp_does_not_load_optional_heavy_packages() -> None:
+    """``import tinyexp`` must work without the ``[pytorch]`` extra; torch/wandb stay lazily imported.
+
+    Runs in a subprocess because this pytest process has already imported torch.
+    """
+    code = "import sys, tinyexp, tinyexp.tiny_engine; print(sorted({'torch', 'wandb'} & set(sys.modules)))"
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)  # noqa: S603
+
+    assert result.stdout.strip() == "[]"
 
 
 def test_get_run_dir(tmp_path: Path) -> None:

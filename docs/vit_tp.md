@@ -52,6 +52,9 @@ pass. Attention runs per-head locally with no communication inside, using PyTorc
   bit-identical to `datasets.ImageFolder`; the first epoch fills the cache from disk,
   later epochs read from memory. `safe_set` failures (e.g. maxmemory full) fall back to
   disk reads — correctness never depends on the cache.
+- **D8** — the train dataloader raises `ValueError` when it has no batch (per-rank samples
+  < `train_batch_size_per_device` with `drop_last=True`). Upstream would silently train zero
+  steps and then fail on an empty metric average; valid configurations are unaffected.
 
 ## Usage
 
@@ -76,12 +79,14 @@ python -m tinyexp.examples.vit_tp_exp mode=bench
 python -m tinyexp.examples.vit_tp_exp mode=bench accelerator_cfg.accelerator=ddp
 ```
 
-CPU smoke test (no ImageNet, ray 2 workers, gloo TP=2):
+CPU smoke test (no ImageNet, ray 2 workers x 2 CPUs, gloo TP=2). The batch overrides are required:
+`fake_data` has 64 samples and the default batch of 256 with `drop_last=True` yields no training step:
 
 ```bash
 python -m tinyexp.examples.vit_tp_exp dataloader_cfg.fake_data=true dataloader_cfg.input_size=32 \
+    dataloader_cfg.train_batch_size_per_device=8 dataloader_cfg.val_batch_size_per_device=8 \
     module_cfg.img_size=32 module_cfg.num_classes=10 epochs=1 max_train_steps=4 \
-    ray_cfg.ray_num_gpus_per_worker=0.0 ray_cfg.ray_num_cpus_per_worker=4
+    ray_cfg.ray_num_gpus_per_worker=0.0 ray_cfg.ray_num_cpus_per_worker=2
 ```
 
 Full 300-epoch training on many GPUs (e.g. 8×H200/H800 single node, DDP — DeiT-S has

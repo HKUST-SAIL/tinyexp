@@ -1,3 +1,44 @@
+"""The accelerator contract that training loops are written against.
+
+Write the loop against ``AcceleratorProtocol`` and pick the backend from config; the same loop then
+runs on CPU, DDP, FSDP, TP or Hugging Face Accelerate. Grouped by when you call them:
+
+- Topology (attributes): ``rank``, ``world_size``, ``local_rank``, ``device``, ``sync_gradients``;
+  properties ``is_main_process`` (rank 0) and ``is_local_main_process`` (local rank 0).
+- Setup, once: ``prepare(model, optimizer=None)`` -> ``model`` or ``(model, optimizer)``;
+  or separately ``prepare_model`` / ``prepare_optimizer``. Build the optimizer on the *unprepared*
+  model's parameters, then prepare both.
+- Every step: ``with accelerator.autocast(): loss = ...`` (optional, prepared models already
+  autocast), ``accelerator.backward(loss)``, ``accelerator.optimizer_step(optimizer)``
+  (handles fp16 loss scaling; use it instead of ``optimizer.step()``).
+- Cross-rank: ``reduce(tensor, reduction="sum"|"mean")``, ``wait_for_everyone()``, ``print(...)``
+  (rank 0 only).
+- Gradient clipping is not part of the protocol: ``DDPAccelerator``/``FSDPAccelerator``/``HFAccelerator`` provide
+  ``accelerator.clip_grad_norm_(parameters, max_norm)`` (unscales fp16 gradients first; FSDP reduces the norm
+  across shards) and it must be used there. ``CPUAccelerator``/``TPAccelerator`` do not define it; they never
+  scale the loss, so ``torch.nn.utils.clip_grad_norm_`` is correct with them.
+- Checkpointing: ``unwrap_model(model)`` returns the bare ``nn.Module`` for ``state_dict()``.
+- Teardown: ``destroy()`` in a ``finally`` block; it is idempotent.
+
+Typical loop::
+
+    accelerator = DDPAccelerator(mixed_precision="bf16")
+    try:
+        model, optimizer = accelerator.prepare(model, torch.optim.SGD(model.parameters(), lr=0.1))
+        for x, y in loader:
+            loss = criterion(model(x.to(accelerator.device)), y.to(accelerator.device))
+            optimizer.zero_grad()
+            accelerator.backward(loss)
+            accelerator.optimizer_step(optimizer)
+        mean_loss = accelerator.reduce(loss.detach(), reduction="mean")
+    finally:
+        accelerator.destroy()
+
+``BaseAccelerator`` (the in-repo implementations' base class) additionally provides ``gather``,
+``unscale_gradients`` and reads ``RANK``/``WORLD_SIZE``/``LOCAL_RANK``/``MASTER_ADDR``/``MASTER_PORT``
+from the environment, which ``torchrun`` and ``launcher=ray`` both set.
+"""
+
 from __future__ import annotations
 
 import abc

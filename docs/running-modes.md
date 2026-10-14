@@ -120,14 +120,11 @@ python -m tinyexp.examples.pi_exp \
   pi_cfg.total_samples=100000
 ```
 
-Use the prepared environment's `python` for this mode. When Ray finds `uv run` in the driver process ancestry, its
-automatic `uv` integration adds a job-level `working_dir` and a `uv run` worker executable. Ray then packages the
-project working directory and starts workers through `uv` instead of directly using the normal Python executable on
-each worker node. That behavior is useful when Ray should distribute source and dependencies dynamically, but it is
-not the execution model used by TinyExp's examples or static cluster helper, which expect the environment to be
-installed on each node already.
-
-If a surrounding command must use `uv run`, disable Ray's automatic `uv` runtime environment before Ray is imported:
+Use the prepared environment's `python` for this mode, not `uv run`. When Ray finds `uv run` among the driver's
+ancestors, its `uv` integration packages the working directory and starts workers through `uv` instead of the
+environment already installed on each node, which TinyExp's examples and cluster helper expect. How TinyExp was
+installed (`pip`, `uv sync`) does not matter; only a `uv run` ancestor does. If the command must go through `uv run`,
+disable the integration before Ray is imported:
 
 ```bash
 RAY_ENABLE_UV_RUN_RUNTIME_ENV=0 uv run python -m tinyexp.examples.pi_exp \
@@ -137,12 +134,6 @@ RAY_ENABLE_UV_RUN_RUNTIME_ENV=0 uv run python -m tinyexp.examples.pi_exp \
   ray_cfg.ray_num_gpus_per_worker=0 \
   pi_cfg.total_samples=100000
 ```
-
-The installation tool does not determine whether this hook runs:
-
-- `pip install "tinyexp[pytorch]"` followed by `python your_exp.py` does not trigger the `uv` integration.
-- `uv sync` followed by an activated `.venv` and `python your_exp.py` does not trigger it either.
-- A driver started through `uv run` can trigger it even when TinyExp itself was installed with `pip`.
 
 Requirements:
 
@@ -157,14 +148,16 @@ Requirements:
   sufficient but currently busy, placement waits up to the configured timeout; a timeout reports total and currently
   available CPU/GPU resources.
 - GPU workers require a CUDA-enabled PyTorch installation and visible GPUs.
-- TinyExp reads the placement-group bundle-to-node topology before creating Ray worker actors, then derives `RANK` and `LOCAL_RANK` from that topology. Ray workers must be homogeneous: every participating node must host the same number of workers, so every node has the same local-rank range. When bundles are interleaved across nodes, global ranks are reassigned so ranks remain contiguous within each node (for example, node-local workers receive `0..N-1`, then the next node receives the following range).
-- For multi-worker runs, TinyExp starts a zero-CPU TCPStore actor in placement-group bundle 0. The actor binds and holds a dynamic port before worker creation, and all ranks connect to it as clients. The Ray head therefore does not need to host rank 0 or provide a GPU.
+- Ranks are assigned node by node (`RANK` contiguous within a node, `LOCAL_RANK` from 0), so every participating
+  node must host the same number of workers.
+- Multi-worker runs rendezvous through a zero-CPU TCPStore actor in placement-group bundle 0, so the Ray head does not
+  need to host rank 0 or provide a GPU.
 
 If `RAY_ADDRESS` already points to a reachable Ray cluster, `ray.init()` can attach to that cluster. Otherwise, Ray starts a local runtime.
 
-Ray forwards worker stdout asynchronously. `RayCfgMixin.get_ray_run_result()` therefore provides a synchronous channel for
-one short rank-zero result that must be printed reliably after all workers finish; it returns `None` by default. It is
-not intended for streaming logs or large outputs.
+Ray forwards worker stdout asynchronously. `RayCfgMixin.get_ray_run_result()` is a synchronous channel for one short
+rank-zero result that the driver prints after all workers finish (`None` by default); it is not meant for logs or
+large outputs. `RayCfgMixin`'s docstring has the worker-side pattern.
 
 The MNIST example uses `seed=42` by default for repeatable model initialization and dropout behavior. Override it explicitly when comparing runs across launchers or cluster topologies.
 
@@ -274,19 +267,12 @@ For multi-machine Accelerate launches, all machines need matching code and envir
 ### Mixed Precision
 
 Every accelerator takes `mixed_precision` (`none` | `fp16` | `bf16`; `CPUAccelerator` is bf16-only) and
-validates what it supports. `prepare_model` wraps the module's `forward` in the accelerator's autocast
-context and casts the returned tensors back to fp32, matching what `accelerate` does in its own
-`prepare_model`. A training loop therefore gets mixed precision whether or not it opens
-`accelerator.autocast()` itself, and swapping `HFAccelerator` for
-`DDPAccelerator`/`FSDPAccelerator`/`CPUAccelerator` neither silently falls back to fp32 nor changes the
-dtypes the loop sees. Opening `accelerator.autocast()` explicitly around a forward pass — as the MNIST and
-ResNet examples do — stays correct, since nesting the same dtype is a no-op, and remains the way to cover
-work that runs outside `forward`.
-
-Parameters, gradients, communication, and checkpoints stay fp32; autocast only reduces precision inside
-compute kernels. `fp16` additionally enables a `GradScaler`, and `clip_grad_norm_` unscales the gradients
-of every optimizer passed through `prepare_optimizer` before measuring the norm, so `max_norm` means the
-same thing in all three modes. Under `none` and `bf16` the scaler is disabled and unscaling is a no-op.
+validates what it supports. `prepare_model` wraps the module's `forward` in the accelerator's autocast and casts the
+returned tensors back to fp32, as `accelerate` does. A loop therefore gets mixed precision with or without its own
+`accelerator.autocast()` and sees the same dtypes under every accelerator; opening `accelerator.autocast()` around a
+forward pass (as the MNIST and ResNet examples do) is a harmless no-op nesting and still covers work outside `forward`.
+Parameters, gradients, communication and checkpoints stay fp32. `fp16` also enables a `GradScaler`; for gradient
+clipping under it, see `tinyexp.tiny_engine.accelerator.base_accelerator`.
 
 ## Static Ray Cluster
 
@@ -340,7 +326,7 @@ Multi-node requirements:
 - Aggregate Ray cluster resources must satisfy the requested placement group. A job waits if resources exist in theory but cannot be placed with the requested bundle shape or placement strategy.
 - The Ray head may be CPU-only. GPU worker bundles and the distributed TCPStore are placed on eligible worker nodes according to the resolved placement group.
 
-When `--node-count=1`, the helper executes the command unchanged and does not start a static Ray cluster. A command with `launcher=ray` may still start a local Ray runtime itself.
+When `--node-count=1`, the helper executes the command unchanged: it does not start a static Ray cluster and does not run `ray stop`, so an existing Ray runtime on the node is left alone. A command with `launcher=ray` may still start a local Ray runtime itself.
 
 Check every node before launch:
 
@@ -353,7 +339,10 @@ python -c "import tinyexp, torch, ray; print(tinyexp.__file__); print(torch.__ve
 
 Redis and W&B requirements are independent of the four launch styles.
 
-- Enabling Redis cache requires a reachable Redis service.
+- Enabling Redis cache requires a reachable Redis service. Its owner depends on the launcher: `launcher=ray` starts
+  and stops Redis itself; launches without Ray (`launcher=mp` under `python`, `torchrun` or `accelerate launch`)
+  wrap the command with `tinyexp-run-with-redis`. The wrapper refuses a `launcher=ray` command (exit code 2)
+  before starting anything; it reads the launcher from the command's `launcher=` override or the experiment's default.
 - TinyExp-managed standalone Redis requires `redis-server` on the host that starts it.
 - TinyExp-managed Redis Cluster also requires `redis-cli` on the coordinating host.
 - Ray-managed Redis Cluster startup and readiness use `redis_cfg.redis_cluster_startup_timeout_s` (30 seconds by

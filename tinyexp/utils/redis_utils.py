@@ -1,3 +1,16 @@
+"""Redis lifecycle and client helpers behind ``RedisCfgMixin`` and ``tinyexp-run-with-redis``.
+
+- ``RedisClientManager(host, ports, redis_world_size)``: clients that shard keys over standalone Redis
+  ports or connect to a Redis Cluster; used by Redis-cached datasets (see ``examples/resnet_exp.py``).
+- ``RedisClusterManager``: starts/stops local ``redis-server`` processes (standalone shards or Redis Cluster);
+  use it as a context manager (``with RedisClusterManager(...):``).
+- ``RayRedisClusterManager``: the same, one Redis per alive Ray node, for ``launcher=ray``.
+- ``wait_for_redis_cluster``; errors ``RedisClusterConfigError`` and ``RedisClusterStartupError``.
+
+Managers only stop the processes they started; a port already served by another process makes startup fail
+(``RedisClusterStartupError``) instead of being taken over.
+"""
+
 from __future__ import annotations
 
 import contextlib
@@ -41,6 +54,17 @@ class RedisClusterStartupError(RuntimeError):
 
 
 class RedisClientManager:
+    """Best-effort Redis client for caches: ``RedisClientManager(host, ports, redis_world_size=1)``.
+
+    ``redis_world_size <= 1`` connects to one standalone Redis per port and shards keys across them;
+    ``> 1`` connects to a Redis Cluster. Build it from ``redis_cfg`` (``redis_cluster_host``,
+    ``list(redis_cluster_ports)``, ``redis_rendezvous_world_size``). Keys and values are ``bytes``/``str``.
+
+    Nothing here raises: a failed connection is printed and leaves the manager without clients, after which
+    ``safe_get(key)`` returns ``None`` and ``safe_set(key, value)`` returns ``False``. Treat ``None`` as a
+    cache miss and fall back to the original data source.
+    """
+
     def __init__(
         self,
         redis_host: str,
@@ -102,6 +126,7 @@ class RedisClientManager:
         return self.redis_clients[shard_index]
 
     def safe_get(self, key: Any) -> Any | None:
+        """Return the stored bytes, or ``None`` on a miss or any Redis error."""
         redis_client = self._redis_client_for_key(key)
         if redis_client is None:
             return None
@@ -111,6 +136,7 @@ class RedisClientManager:
             return None
 
     def safe_set(self, key: Any, value: Any) -> bool:
+        """Store ``value``; return ``False`` when it could not be stored (e.g. Redis down or out of memory)."""
         redis_client = self._redis_client_for_key(key)
         if redis_client is None:
             return False
