@@ -1,8 +1,6 @@
 """``HFAccelerator``: Hugging Face ``accelerate.Accelerator`` adapted to ``AcceleratorProtocol``.
 
-Adds ``rank``/``world_size``/``local_rank`` aliases, ``optimizer_step`` and idempotent ``destroy``.
-Constructor arguments are accelerate's. Defined only when ``accelerate`` is installed (a warning is
-emitted otherwise). Pair with ``accelerate launch ... launcher=mp``.
+Defined only when ``accelerate`` is installed (a warning is emitted otherwise). See ``HFAccelerator``.
 """
 
 try:
@@ -11,6 +9,14 @@ try:
     from accelerate import Accelerator
 
     class HFAccelerator(Accelerator):
+        """accelerate's ``Accelerator`` plus ``rank``/``world_size``/``local_rank``, ``optimizer_step`` and an
+        idempotent ``destroy``. Pair with ``accelerate launch ... launcher=mp``.
+
+        Constructor arguments are accelerate's, e.g. ``HFAccelerator(mixed_precision="bf16")``. accelerate spells
+        full precision ``"no"`` (``"no" | "fp16" | "bf16"``) and rejects ``"none"``, so map a tinyexp-style
+        ``mixed_precision=none`` config value to ``"no"`` (as ``resnet_exp`` does).
+        """
+
         def __init__(self, *args, **kwargs):
             super().__init__(*args, **kwargs)
             self._destroyed = False
