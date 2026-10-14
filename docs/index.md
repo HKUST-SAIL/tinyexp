@@ -33,9 +33,21 @@ that use:
   example's commands, data and hardware. Print it with
   `python -c "import tinyexp.examples.mnist_exp as m; print(m.__doc__)"` instead of reading the file.
 
-Their commands are checked by `tests/examples/test_examples_help_smoke.py`: every documented command must be legal
-for the config it targets, and every `Modes` value in a run header must be handled in `run()`. The check is static,
-so it catches stale option names, not stale advice. Known gaps, deliberately left open:
+Their commands are checked by `tests/examples/test_examples_help_smoke.py`: every example must carry a run header,
+every command in the run headers, `README.md`, `SKILL.md` and `docs/*.md` must be legal for the config it targets,
+and every `Modes` value in a run header must be handled in `run()`. The check is static (key names and types only),
+so it catches stale option names, not stale advice. `tests/test_tinyexp_artifacts.py` asserts in a subprocess that
+`import tinyexp` loads neither torch nor wandb, and that every public module has a docstring.
+
+Invariants the docs rely on:
+
+- keep the `import torch` in `CheckpointCfg` and the `import wandb` in `WandbCfg` lazy (inside methods);
+- keep `from tinyexp.exp_mixins.basic_mixins import *Mixin` importable (released path);
+- do not move `tinyexp/__init__.py` and do not add a yaml at the package root (Hydra's `pkg://tinyexp` needs the
+  ConfigStore entry `cfg`);
+- code moved out of `examples/` enters coverage, where the patch target is 80%.
+
+Known gaps, deliberately left open:
 
 - `RayCfg`, `RedisCfg` and `CheckpointCfg` docstrings do not list every field default; `mode=help` prints them.
 - `tinyexp-run-with-redis` takes its ports and memory limit from `redis_cfg.*` overrides on the command after `--`,
@@ -44,6 +56,11 @@ so it catches stale option names, not stale advice. Known gaps, deliberately lef
   command; with `launcher=mp` the wrapper owns Redis.
 - The MNIST example always trains 3 epochs (not configurable); shorten it with a larger
   `dataloader_cfg.train_batch_size_per_device`.
+- Reading budget: a fresh agent finishes each multi-feature task without reading the source, but reads about
+  10-21k characters of docs; the 12k once targeted is not a bound multi-feature tasks can be held to. The fixed
+  entry (`AGENTS.md` plus the `tinyexp` module docstring) is about 7.5k, a task spanning several features needs
+  interface docs beyond the rest, and most of their sentences close a gap an earlier trial hit. Trial-to-trial
+  noise is large: the same accelerator task read 20.7k in one trial and 12.4k in the next.
 
 ## Design Philosophy
 
