@@ -1,3 +1,8 @@
+"""``update_ema(ema_model, model, decay=0.9999)``: ``ema = ema * decay + model * (1 - decay)`` in place.
+
+Parameter names are matched after stripping ``module.``, so ``model`` may be DDP-wrapped.
+"""
+
 from collections import OrderedDict
 
 import torch

@@ -1,3 +1,11 @@
+"""Ray placement and rendezvous primitives used by ``RayCfgMixin.RayCfg.run`` (``launcher=ray``).
+
+Not needed by experiment code. Main pieces: ``get_placement_group`` (one bundle per worker),
+``get_placement_group_node_ids``, ``get_num_worker_options`` (per-worker actor options carrying
+``RANK``/``WORLD_SIZE``/``LOCAL_RANK``/``MASTER_ADDR``/``MASTER_PORT``), ``start_ray_rendezvous_store``
+(TCPStore actor for multi-worker runs) and ``get_network_config``.
+"""
+
 from __future__ import annotations
 
 import os

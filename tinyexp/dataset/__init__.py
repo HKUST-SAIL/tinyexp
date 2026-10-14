@@ -1,3 +1,9 @@
+"""Data helpers for training loops.
+
+Exports: ``InfiniteSampler`` (endless, deterministic, rank-sharded index stream; see ``sampler``) and
+``HoldOnesampleDataLoader`` (repeats one cached batch, for profiling/debugging).
+"""
+
 # flake8: noqa: F401, F403
 
 from .fake_dataloader import *

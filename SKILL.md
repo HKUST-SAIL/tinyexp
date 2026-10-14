@@ -1,72 +1,46 @@
 ---
 name: tinyexp-experiments
-description: Build, run, debug, and scale PyTorch or general experiments with this TinyExp repository. Use for new experiment files, configuration overrides, CPU/GPU training, Ray jobs, and distributed launches.
+description: Write, configure and launch experiments with the TinyExp library (a dataclass Exp per file, CLI overrides, CPU/DDP/FSDP training, Ray workers, torchrun/accelerate). Use when the task involves tinyexp or a class derived from TinyExp.
 ---
 
 # TinyExp experiments
 
-Use TinyExp when the experiment should keep its configuration and execution in one Python entrypoint. Read the nearest example in `tinyexp/examples/` before adding a new abstraction.
+An experiment is one `@dataclass class Exp(TinyExp, <mixins>)` whose `run()` holds the logic; every config field is a
+CLI override (`key=value`). The installed package documents itself, so read docstrings instead of source:
+`python -c "import tinyexp; print(tinyexp.__doc__)"`, or for a class
+`python -c "from tinyexp.exp_mixins import RayCfgMixin as m; print(m.__doc__)"`.
 
-## Core pattern
+| Need | Print the `__doc__` of |
+| --- | --- |
+| New experiment: minimal example, fields, `launcher` pairing | `tinyexp` |
+| How overrides are merged and reported | `tinyexp.TinyExp.set_cfg` |
+| Training loop API; picking an accelerator | `tinyexp.tiny_engine.accelerator.base_accelerator`; `tinyexp.tiny_engine.accelerator` |
+| Code running on Ray workers (minimal example); worker count and resources | `tinyexp.exp_mixins.RayCfgMixin`; `tinyexp.exp_mixins.RayCfgMixin.RayCfg` |
+| Checkpoint save / load / resume / eval | `tinyexp.exp_mixins.CheckpointCfgMixin.CheckpointCfg` |
+| Logger, W&B, Redis cache mixins | `tinyexp.exp_mixins.basic_mixins` (table, then the nested `XXXCfg`) |
+| Infinite sampler, fake dataloader, EMA; errors | `tinyexp.dataset`, `tinyexp.utils`; `tinyexp.exceptions` |
+| A bundled example: modes, commands, data, hardware | `tinyexp.examples.<name>` (run header) |
 
-1. Define `@dataclass class Exp(TinyExp, ...)`.
-2. Put model, data, optimizer, scheduler, and runtime settings in nested dataclasses with `field(default_factory=...)`.
-3. Implement `run()` and use an accelerator implementing `AcceleratorProtocol` (`prepare`, `backward`, `reduce_*`, `wait_for_everyone`, `destroy`).
-4. End the file with `if __name__ == "__main__": store_and_run_exp(Exp)`.
+Bundled examples: `mnist_exp` (template for a training experiment: CPU or DDP, checkpoints, resume), `pi_exp`
+(non-deep-learning distributed job, fastest smoke test), `resnet_exp` (ImageNet with DDP, FSDP or HF Accelerate and
+a Redis cache), `vit_tp_exp` (tensor parallelism, TP-vs-DDP benchmark).
 
-Keep training logic in the experiment. Reuse mixins such as `RayCfgMixin`, `CheckpointCfgMixin`, `LoggerCfgMixin`, `WandbCfgMixin`, and `RedisCfgMixin` only when the feature is needed. Save outputs below `output_root` (default `./output`).
+Easy to miss:
 
-## Configuration and launch
-
-Hydra accepts dotted CLI overrides without editing code. First inspect a new experiment:
+- Check a config change before running: `mode=help` prints the resolved config and the overridden values, then
+  exits. It checks key names and types, not values.
+- `torchrun` and `accelerate launch` need `launcher=mp`; plain `python` takes `mp` (one process) or `ray` (TinyExp
+  starts Ray workers); `tinyexp-run-with-ray-cluster` (multi-node, see `--help`) needs `launcher=ray` and runs
+  `ray stop --force` on each node, so do not use it where an existing Ray runtime must survive.
+- With `launcher=ray`, start with the environment's `python -m package.module`, not `uv run` (or set
+  `RAY_ENABLE_UV_RUN_RUNTIME_ENV=0`).
+- Install with `pip install "tinyexp[pytorch]"`; for a CUDA/ROCm-specific PyTorch, install `tinyexp` without the
+  extra, then `torch`, `torchvision` and `accelerate` from that backend.
 
 ```bash
-python -m tinyexp.examples.mnist_exp mode=help
-```
-
-`launcher` selects TinyExp's process owner: `mp` runs `Exp.run()` in the current process; `ray` makes the driver create Ray workers from `ray_cfg`. `torchrun`, `accelerate launch`, and `tinyexp-run-with-ray-cluster` are external launchers and must be paired with `launcher=mp`, `launcher=mp`, and `launcher=ray` respectively.
-
-Typical commands:
-
-```bash
-# Local CPU/debug, one process
+python -m tinyexp.examples.pi_exp mode=help pi_cfg.total_samples=100000
 python -m tinyexp.examples.pi_exp launcher=mp pi_cfg.total_samples=100000
-
-# Local Ray workers (CPU in this example)
-python -m tinyexp.examples.pi_exp ray_cfg.ray_num_worker=4 pi_cfg.total_samples=1000000
-
-# Single-node GPU/DDP (one process per visible GPU)
-torchrun --nproc-per-node=2 -m tinyexp.examples.resnet_exp \
-  launcher=mp accelerator_cfg.accelerator=ddp redis_cfg.redis_cache_enabled=false
-
-# Accelerate owns the processes; TinyExp remains in mp mode
-accelerate launch --cpu --num-processes=1 -m tinyexp.examples.pi_exp \
-  launcher=mp pi_cfg.total_samples=100000
-
-# Existing multi-node Ray cluster
-tinyexp-run-with-ray-cluster --node-count=2 --node-rank=0 \
-  --head-addr=10.0.0.1 --ray-port=6380 -- \
+torchrun --nproc-per-node=2 -m tinyexp.examples.mnist_exp launcher=mp accelerator_cfg.accelerator=ddp
+tinyexp-run-with-ray-cluster --node-count=2 --node-rank=0 --head-addr=10.0.0.1 --ray-port=6380 -- \
   python -m tinyexp.examples.pi_exp launcher=ray
 ```
-
-For GPU jobs, verify CUDA visibility and use `DDPAccelerator` with NCCL. For `launcher=ray`, every node needs the same code, Python environment, dependencies, and dataset paths; set `ray_cfg.ray_num_cpus_per_worker` and `ray_cfg.ray_num_gpus_per_worker` for each worker's resources. Do not use the static Ray helper on a node whose existing Ray runtime must be preserved.
-
-## Examples to reuse
-
-- `tinyexp/examples/pi_exp.py`: general distributed workload and a fast smoke test (`mode=run`).
-- `tinyexp/examples/mnist_exp.py`: CPU or DDP image training, checkpoints, logging, and CLI overrides.
-- `tinyexp/examples/resnet_exp.py`: ImageNet training; set `IMAGENET_HOME` or override `dataloader_cfg.data_root`; defaults to DDP and Ray.
-
-The examples are included in the published package. The bundled examples use PyTorch, so a bare `pip install tinyexp`
-does not install all of their dependencies. For a normal install, use the PyTorch extra and run them as modules:
-
-```bash
-python -m pip install "tinyexp[pytorch]"
-python -m tinyexp.examples.pi_exp pi_cfg.total_samples=100000
-```
-
-If the machine needs a CUDA/ROCm/vendor-specific PyTorch build, install `tinyexp` without the extra and install a compatible `torch`, `torchvision`, and `accelerate` set using that backend's instructions.
-
-## Development checks
-
-For repository changes from a source checkout, use `make install-pytorch`, then run `make check` and focused `pytest` tests after changing library behavior.

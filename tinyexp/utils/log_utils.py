@@ -1,3 +1,9 @@
+"""``tiny_logger_setup(save_dir, distributed_rank=0, filename="log.txt", mode="a")`` -> loguru logger.
+
+Rank 0 logs INFO to ``<save_dir>/<filename>`` and stderr; other ranks log WARNING and above only.
+``mode="o"`` overwrites the file. Prefer ``LoggerCfgMixin.LoggerCfg.build_logger``, which also creates ``save_dir``.
+"""
+
 import os
 import sys
 from sys import stderr
@@ -10,7 +16,7 @@ def tiny_logger_setup(save_dir: str, distributed_rank: int = 0, filename: str = 
     Args:
         save_dir(str): loaction to save log file
         distributed_rank(int): device rank when multi-gpu environment
-        mode(str): log file write mode, `append` or `override`. default is `a`.
+        mode(str): log file write mode: `a` appends (default), `o` overwrites an existing file.
     Return:
         logger instance.
     """

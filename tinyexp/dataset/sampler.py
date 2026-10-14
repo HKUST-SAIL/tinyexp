@@ -1,3 +1,14 @@
+"""``InfiniteSampler``: an endless, deterministic, rank-sharded index stream for step-based training.
+
+Usage::
+
+    sampler = InfiniteSampler(len(dataset), shuffle=True, seed=0, accelerator=accelerator)
+    loader = torch.utils.data.DataLoader(dataset, batch_size=bs, sampler=sampler)
+    batches = iter(loader)          # create once; call next(batches) for a fixed number of steps
+
+The class docstring documents the stream model, ``len()`` semantics and ``drop_last``.
+"""
+
 import itertools
 from collections.abc import Iterator
 from typing import Any, Optional
