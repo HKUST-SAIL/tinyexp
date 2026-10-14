@@ -1,3 +1,27 @@
+"""Opt-in ``XXXCfgMixin`` components; mix only the ones an experiment needs into ``TinyExp``.
+
+Each mixin adds one config field whose nested dataclass holds both settings and a ``build_*`` helper:
+
+| mixin | field | use |
+| --- | --- | --- |
+| `LoggerCfgMixin` | `logger_cfg` | `build_logger(save_dir, distributed_rank)` -> loguru logger |
+| `RayCfgMixin` | `ray_cfg` | `launcher=ray`: worker contract and minimal example in `RayCfgMixin`, count/resources in `RayCfg` |
+| `CheckpointCfgMixin` | `checkpoint_cfg` | `save_checkpoint` / `load_checkpoint` / RNG state helpers |
+| `WandbCfgMixin` | `wandb_cfg` | `build_wandb(accelerator, **wandb_init_kwargs)` if enabled, else `None` |
+| `RedisCfgMixin` | `redis_cfg` | Redis byte-cache settings consumed by datasets and launchers |
+
+Usage: ``class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, LoggerCfgMixin)``. To change defaults,
+subclass the nested config and redeclare the field, e.g.::
+
+    @dataclass
+    class RayCfg(RayCfgMixin.RayCfg):
+        ray_num_gpus_per_worker: float = 0.0
+
+    ray_cfg: RayCfg = field(default_factory=RayCfg)
+
+``torch`` and ``wandb`` are imported lazily inside methods so ``import tinyexp`` stays torch-free.
+"""
+
 import os
 import random
 import tempfile
@@ -33,6 +57,12 @@ from ..utils.ray_utils import (
 class LoggerCfgMixin:
     @dataclass
     class LoggerCfg:
+        """``build_logger(save_dir, distributed_rank=0, filename="log.txt", mode="a")`` -> loguru logger.
+
+        Creates ``save_dir`` (usually ``self.get_run_dir()``). Every rank writes to ``<save_dir>/<filename>``
+        and stderr: rank 0 at INFO, other ranks at WARNING and above. ``mode="o"`` overwrites the file.
+        """
+
         def build_logger(
             self,
             save_dir: str,
@@ -77,12 +107,65 @@ def _resolve_ray_num_worker(
 
 @dataclass
 class RayCfgMixin:
+    """Run ``Exp.run()`` on a group of Ray workers when ``launcher=ray``; worker count/resources: ``RayCfg``.
+
+    Every worker calls ``run()`` with ``RANK``/``WORLD_SIZE``/``LOCAL_RANK``/``MASTER_ADDR``/``MASTER_PORT`` set,
+    so an accelerator built inside ``run()`` is one rank of a ready process group (``rank``, ``world_size``,
+    ``reduce``). Worker stdout reaches the driver prefixed and interleaved; for one final line, return it from
+    ``get_ray_run_result`` on rank 0 and the driver prints it after every worker has finished. The same file runs
+    unchanged with ``launcher=mp`` (one process, ``world_size == 1``), where that method is never called::
+
+        @dataclass(repr=False)
+        class Exp(TinyExp, RayCfgMixin):
+            launcher: str = "ray"
+
+            def run(self) -> None:
+                from tinyexp.tiny_engine.accelerator import CPUAccelerator
+
+                accelerator = CPUAccelerator()
+                try:
+                    part = torch.arange(accelerator.rank, 1000, accelerator.world_size).sum().double()
+                    total = accelerator.reduce(part, reduction="sum").item()
+                    self._result = f"total={total:.0f}" if accelerator.is_main_process else None
+                    if self._result and self.launcher != "ray":
+                        print(self._result, flush=True)
+                finally:
+                    accelerator.destroy()
+
+            def get_ray_run_result(self):
+                return self._result
+
+    Start it as ``python -m package.module`` rather than ``python path/to/file.py``: the class then reaches the
+    workers by import path. From ``__main__`` it is pickled by value, which works locally but is fragile
+    ("not the same object as ..." pickling errors), and its imports must still resolve on every node.
+    """
+
     def get_ray_run_result(self) -> Optional[str]:
-        """Return a short result for the Ray driver to print after the run."""
+        """Rank 0's return value is printed by the Ray driver after all workers finish (default ``None``: nothing).
+
+        Only called with ``launcher=ray``; see ``RayCfgMixin`` for the pattern.
+        """
         return None
 
     @dataclass
     class RayCfg:
+        """Ray worker group used when ``launcher=ray``.
+
+        - ``ray_num_worker``: total workers across the whole Ray cluster, not per node. Each worker is
+          one rank (``RANK``/``WORLD_SIZE``/``LOCAL_RANK``/``MASTER_ADDR``/``MASTER_PORT`` are set).
+          ``-1`` fills the currently available resources.
+        - ``ray_num_cpus_per_worker`` / ``ray_num_gpus_per_worker``: resources of one worker (one
+          placement-group bundle). Use ``ray_num_gpus_per_worker=0`` for CPU-only runs.
+        - ``ray_placement_strategy``: Ray placement-group strategy (``PACK``, ``SPREAD``, ...).
+        - ``ray_placement_timeout_s``: how long to wait for the placement group before failing.
+
+        On a static multi-node cluster (``tinyexp-run-with-ray-cluster``) the same total is spread over
+        the nodes by Ray; e.g. 2 nodes x 4 GPUs -> ``ray_cfg.ray_num_worker=8 ray_cfg.ray_num_gpus_per_worker=1``
+        (GPU examples additionally take ``accelerator_cfg.accelerator=ddp``). Workers may land on any node,
+        so ``dataloader_cfg.data_root``, ``output_root`` and ``resume_from`` must be paths every node can
+        reach (shared filesystem or identical per-node layout).
+        """
+
         # ---------------- luancher configuration ---------------- #
         ray_num_worker: int = -1  # Number of Ray workers, -1 means fill available worker resources.
         ray_num_cpus_per_worker: int = 1
@@ -93,12 +176,21 @@ class RayCfgMixin:
         @classmethod
         def run(cls, exp_class: type[Any], experiment_cfg: DictConfig) -> None:  # noqa: C901
             """
-            Run the Ray driver-side orchestration.
+            Run the Ray driver-side orchestration for ``launcher=ray``.
+
+            Steps (each marked by a ``# ---- n/5`` comment below):
+            1. validate ``ray_cfg`` and start Ray if no runtime exists yet;
+            2. resolve the worker count (``-1`` -> available resources) and check cluster capacity;
+            3. start the Ray-managed Redis cache if ``redis_cfg`` asks for it;
+            4. reserve one placement-group bundle per worker and pick the rendezvous address;
+            5. create one actor per worker, ``set_cfg`` + ``run`` on all, print rank 0's run result.
+            Cleanup releases the rendezvous actor, placement group, Redis and the Ray runtime it started.
 
             Args:
                 exp_class: Experiment class instantiated by each Ray worker.
                 experiment_cfg: Complete Hydra configuration for exp_class.
             """
+            # ---- 1/5 validate ray_cfg and own the Ray runtime ------------------------------------ #
             ray_cfg = experiment_cfg.ray_cfg
             num_cpus_per_worker = int(ray_cfg.ray_num_cpus_per_worker)
             num_gpus_per_worker = float(ray_cfg.ray_num_gpus_per_worker)
@@ -122,6 +214,7 @@ class RayCfgMixin:
             worker_group = []
 
             try:
+                # ---- 2/5 resolve the worker count and check cluster capacity ---------------------- #
                 cluster_resources = ray.cluster_resources()
                 sizing_resources = ray.available_resources() if ray_cfg.ray_num_worker == -1 else cluster_resources
                 ray_num_worker = _resolve_ray_num_worker(
@@ -150,8 +243,9 @@ class RayCfgMixin:
                         needed_gpu=needed_gpu,
                     )
 
+                # ---- 3/5 start the Ray-managed Redis cache (no-op unless redis_cfg enables it) ---- #
                 redis_manager = _maybe_start_ray_redis_cache(experiment_cfg)
-                # -------------------- allocate resources for run ----------------- #
+                # ---- 4/5 reserve placement-group bundles and choose the rendezvous address -------- #
 
                 pg = get_placement_group(
                     num_worker=ray_cfg.ray_num_worker,
@@ -179,6 +273,7 @@ class RayCfgMixin:
                     node_ids=worker_node_ids,
                 )
                 runtime_envs = [options["runtime_env"]["env_vars"] for options in options_list]
+                # ---- 5/5 print topology, launch workers, run them, report rank 0's result -------- #
                 print("==> Ray worker topology:", flush=True)
                 node_ranks = {node_id: node_rank for node_rank, node_id in enumerate(dict.fromkeys(worker_node_ids))}
                 topology = sorted(
@@ -202,6 +297,7 @@ class RayCfgMixin:
                 if result is not None:
                     print(result, flush=True)
             finally:
+                # ---- cleanup: release everything this call created, in reverse order -------------- #
                 if rendezvous_actor is not None:
                     with suppress(Exception):
                         ray.kill(rendezvous_actor, no_restart=True)
@@ -226,6 +322,18 @@ class RayCfgMixin:
 class WandbCfgMixin:
     @dataclass
     class WandbCfg:
+        """Optional Weights & Biases logging, off by default (``wandb_cfg.enable_wandb=true`` turns it on).
+
+        ``build_wandb(accelerator=None, **kwargs)`` returns ``None`` when disabled. When enabled it returns the
+        ``wandb`` module on every rank, but calls ``wandb.init(**kwargs)`` (``project=``, ``name=``, ``config=``, ...)
+        only when ``accelerator.rank == 0`` (or when no accelerator is given), so log from rank 0 only
+        (``cfg_dict`` below is what ``self.print_cfg(logger)`` returns)::
+
+            wandb = self.wandb_cfg.build_wandb(accelerator=accelerator, project="p", name=self.exp_name, config=cfg_dict)
+            if wandb is not None and accelerator.is_main_process:
+                wandb.log({"loss": loss})
+        """
+
         enable_wandb: bool = False
 
         def build_wandb(self, accelerator=None, **kwargs):
@@ -241,16 +349,32 @@ class WandbCfgMixin:
 
 @dataclass
 class RedisCfgMixin:
-    """Supplies :attr:`redis_cfg` plus thin Ray entrypoints on the *experiment* object (see below)."""
+    """Adds ``redis_cfg``: settings of the Redis byte cache (see ``RedisCfg``)."""
 
     @dataclass
     class RedisCfg:
-        """
-        Hydra-overridable options live in dataclass fields below.
+        """Settings of the Redis byte cache used by datasets (e.g. cached ImageNet files in ``resnet_exp``).
 
-        Single-machine runs use standalone Redis. Multi-machine runs can use Redis Cluster.
-        Redis lifecycle is owned by the launcher: ``tinyexp-run-with-redis`` for
-        wrapper-based runs, or Ray-managed Redis for Ray launches.
+        - ``redis_cache_enabled`` (default ``True``): whether the experiment should use the cache.
+        - ``redis_cluster_host`` / ``redis_cluster_ports``: where Redis listens; standalone mode runs one
+          ``redis-server`` per port and shards keys across them.
+        - ``redis_cache_max_memory``: total memory limit in **GB** (default 160, sized for ImageNet), split
+          evenly across the Redis processes.
+        - ``redis_cluster_startup_timeout_s``: how long to wait for Redis to come up.
+        - ``redis_rendezvous_world_size``: ``1`` standalone Redis (with ``launcher=ray``: one per Ray node);
+          ``-1`` Ray-managed Redis Cluster over the alive Ray nodes; ``>1`` externally managed Redis Cluster.
+
+        TinyExp never starts Redis from inside ``run()``; the launcher owns its lifecycle:
+        ``launcher=ray`` starts and stops it automatically, ``tinyexp-run-with-redis -- <command>`` does so for
+        any other launch (and injects the matching ``redis_cfg.*`` overrides), or point these fields at a
+        Redis you manage yourself. The wrapper refuses a ``launcher=ray`` command, which already owns its
+        Redis. Inside the experiment connect with::
+
+            from tinyexp.utils.redis_utils import RedisClientManager
+            cache = RedisClientManager(cfg.redis_cluster_host, list(cfg.redis_cluster_ports),
+                                       redis_world_size=int(cfg.redis_rendezvous_world_size))
+            if cache.safe_get(key) is None:        # miss, or Redis unavailable
+                cache.safe_set(key, value_bytes)   # False when it could not be stored
         """
 
         redis_cache_enabled: bool = True
@@ -273,6 +397,60 @@ class RedisCfgMixin:
 class CheckpointCfgMixin:
     @dataclass
     class CheckpointCfg:
+        """Atomic ``torch.save``/``torch.load`` of training state; the caller decides where and when.
+
+        Payload written by ``save_checkpoint`` to ``<run_dir>/<name>``::
+
+            {
+                "epoch": int | None, "global_step": int | None, "best_metric": float | None,
+                "meta": {"exp_name": str, "exp_class": str, "saved_at": ISO-8601 UTC str},  # names are "" unless passed
+                # present only when the object was passed:
+                "model_state_dict", "optimizer_state_dict", "scheduler_state_dict",
+                "scaler_state_dict", "extra_state": dict,
+            }
+
+        ``load_checkpoint(path, model=..., optimizer=..., scheduler=..., scaler=...)`` loads every object
+        you pass (missing key -> ``KeyError``) and returns the whole dict, so read ``epoch``/``best_metric``/
+        ``extra_state`` from it. A dict with none of ``epoch``/``global_step``/``best_metric``/``meta``/
+        ``extra_state``/``model_state_dict`` raises ``UnsupportedCheckpointFormatError``
+        (``tinyexp.exceptions``); a payload that is not a dict raises ``TypeError``. To inspect a file by
+        hand use ``torch.load(path, weights_only=False)``.
+
+        Conventions used by the examples::
+
+            if accelerator.is_main_process:                       # save on rank 0 only
+                # RNG state is per process: only a single-process run can restore it faithfully
+                rng = {"rng_state": self.checkpoint_cfg.capture_rng_state()} if accelerator.world_size == 1 else None
+                self.checkpoint_cfg.save_checkpoint(
+                    run_dir=self.get_run_dir(), name=self.checkpoint_cfg.last_ckpt_name,
+                    model=accelerator.unwrap_model(module),       # DDP/CPU: unwrap first
+                    optimizer=optimizer, scheduler=lr_scheduler, epoch=epoch,
+                    exp_name=self.exp_name, exp_class=self.exp_class,  # fills ckpt["meta"]
+                    extra_state=rng,
+                )
+            ckpt = self.checkpoint_cfg.load_checkpoint(           # every rank loads
+                self.resume_from, model=accelerator.unwrap_model(module), optimizer=optimizer,
+                scheduler=lr_scheduler, map_location=accelerator.device,
+            )
+            start_epoch, best_metric = ckpt["epoch"] + 1, ckpt["best_metric"]
+            rng_state = (ckpt.get("extra_state") or {}).get("rng_state")
+            if rng_state is not None and accelerator.world_size == 1:
+                self.checkpoint_cfg.restore_rng_state(rng_state)  # python/numpy/torch(/cuda) RNG
+
+        FSDP (``FSDPAccelerator``, see ``examples/resnet_exp.py``):
+
+        - Save: every rank calls the collective ``model_sd, optim_sd =
+          accelerator.collect_checkpoint_state(module, optimizer)``; rank 0 receives full CPU state dicts
+          and the other ranks receive empty dicts. Rank 0 then passes them as ``model=``/``optimizer=``
+          wrapped in any object whose ``state_dict()`` returns them (only ``state_dict()`` is called).
+        - Load: every rank calls ``load_checkpoint`` with the *prepared* (still wrapped) module and the
+          optimizer returned by ``accelerator.prepare(model, optimizer)``; their ``load_state_dict`` is patched
+          to accept the full, unsharded state dicts, so the same file works for DDP and FSDP.
+
+        The checkpoint path is therefore ``<output_root>/<exp_name>/{last,best}.ckpt``. For an evaluation
+        mode, require ``resume_from`` yourself (raise if empty) and call ``load_checkpoint`` with ``model=`` only.
+        """
+
         last_ckpt_name: str = "last.ckpt"
         best_ckpt_name: str = "best.ckpt"
 

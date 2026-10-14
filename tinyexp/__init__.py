@@ -1,3 +1,58 @@
+"""TinyExp: the configured experiment class is the entrypoint.
+
+Minimal experiment (see ``tinyexp/examples/mnist_exp.py`` for a full DDP/CPU recipe)::
+
+    from dataclasses import dataclass, field
+    from tinyexp import LoggerCfgMixin, TinyExp, store_and_run_exp
+
+    @dataclass(repr=False)
+    class Exp(TinyExp, LoggerCfgMixin):
+        @dataclass
+        class TrainCfg:
+            lr: float = 0.1
+
+        train_cfg: TrainCfg = field(default_factory=TrainCfg)
+
+        def run(self) -> None:  # every mode except ``help`` lands here; dispatch on self.mode
+            logger = self.logger_cfg.build_logger(save_dir=self.get_run_dir())
+            self.print_cfg(logger)
+
+    if __name__ == "__main__":
+        store_and_run_exp(Exp)
+
+    # python my_exp.py mode=help train_cfg.lr=0.01   -> print resolved config, run nothing
+
+``TinyExp`` fields (all overridable as ``key=value`` on the CLI):
+
+| field | default | meaning |
+| --- | --- | --- |
+| `exp_class` | `""` | import path of the class, filled in by `store_and_run_exp` (not listed as an override); `__main__.Exp` when started as `python file.py` |
+| `exp_name` | main file stem | run subdirectory name (`my_exp.py` -> `my_exp`) |
+| `launcher` | `"mp"` | `mp`: run `Exp.run()` in this process; `ray`: spawn Ray workers |
+| `output_root` | `"./output"` | root of all outputs; run dir `get_run_dir()` = output_root/exp_name; Hydra's own log is `<output_root>/tinyexp.log` |
+| `mode` | `"train"` | `help` is handled by TinyExp (print config, exit; it still creates `output_root`); any other value reaches `run()`, whose meaning the experiment defines |
+| `resume_from` | `""` | checkpoint path to resume or evaluate from; empty means none |
+| `hydra` | internal | Hydra settings; do not override |
+| `overrided_cfg` | internal | filled by `set_cfg`; read it, do not set it |
+
+Pairing ``launcher`` with the process owner:
+
+- ``python exp.py launcher=mp``: one process.
+- ``python exp.py launcher=ray``: the driver creates ``ray_cfg.ray_num_worker`` workers (``RayCfgMixin``).
+- ``torchrun ... exp.py launcher=mp`` / ``accelerate launch ... launcher=mp``: the external tool owns processes.
+- ``tinyexp-run-with-ray-cluster ... -- python exp.py launcher=ray``: multi-node static Ray cluster.
+
+CLI overrides are checked by Hydra against the dataclasses: unknown keys are rejected
+(``Key 'x' not in 'DataloaderCfg'``) and values are type-checked, but not otherwise validated (``mode=help``
+accepts ``accelerator_cfg.accelerator=bogus``). For a ``dict`` field, change an existing key with ``tags.owner=x``
+and add a new one with ``+tags.team=y``. How the result is merged onto the experiment and recorded for
+``mode=help``: ``TinyExp.set_cfg``. Ray workers and ``python -m`` vs ``python file.py``: ``RayCfgMixin``.
+
+Exports: ``TinyExp``, ``store_and_run_exp``, ``simple_launch_exp``, ``ConfigStore`` and the mixins
+``LoggerCfgMixin``, ``RayCfgMixin``, ``CheckpointCfgMixin``, ``WandbCfgMixin``, ``RedisCfgMixin``
+(see ``tinyexp.exp_mixins``).
+"""
+
 __author__ = "LI Zeming"
 __email__ = "zane.li@connect.ust.hk"
 __license__ = "MIT"
@@ -60,11 +115,12 @@ _patch_argparse_help_for_python314()
 @dataclass
 class _HydraConfig(HydraConf):
     """
-    To avoid hydra output the config in unexpected directory.
+    Keep Hydra's run directory (and its ``tinyexp.log``) under ``output_root`` instead of a fixed ``./output``,
+    and do not let Hydra write its own config copies.
     """
 
     output_subdir: Optional[str] = None
-    run: RunDir = field(default_factory=lambda: RunDir("./output"))
+    run: RunDir = field(default_factory=lambda: RunDir("${output_root}"))
 
 
 def _default_exp_name() -> str:
@@ -116,7 +172,7 @@ class TinyExp:
     # The experiment mode:
     # - "run": run a general experiment workload.
     # - "train": train the model.
-    # - "val": evaluate the model.
+    # - "eval": evaluate the model.
     # - "help": print the experiment configuration and exit.
     mode: str = "train"
 
@@ -134,9 +190,25 @@ class TinyExp:
         return os.path.join(self.output_root, self.exp_name)
 
     def set_cfg(self, cfg_hydra, cfg_object=None):
+        """Copy the Hydra config (dataclass defaults plus CLI overrides) onto this instance; returns ``self``.
+
+        Called by the launcher in every process (with ``launcher=ray``, by each worker on its own copy):
+
+        - nested ``XXXCfg`` dataclasses are updated field by field, recursively;
+        - fields whose current value is a mapping (``dict``) are replaced as a whole;
+        - any other value is assigned directly; a key the object does not have raises
+          ``UnknownConfigurationKeyError``.
+
+        Every changed value is recorded in ``overrided_cfg[<leaf key name>] = {"value", "original"}`` (keyed by the
+        leaf name only, not the dotted path) and listed under "Overridden" by ``print_cfg`` / ``mode=help``.
+        """
         if cfg_object is None:
             cfg_object = self
         for key, value in cfg_hydra.items():
+            if cfg_object is self and key == "overrided_cfg":
+                # Internal bookkeeping: a full config carries the default ``{}``, which must not
+                # overwrite the records collected for fields processed before it.
+                continue
             if hasattr(cfg_object, key):
                 sub_object = getattr(cfg_object, key)
                 if isinstance(value, (DictConfig, Mapping)):
@@ -160,10 +232,12 @@ class TinyExp:
                     # Otherwise, set the attribute directly
                     ori_value = getattr(cfg_object, key, None)
                     if ori_value != value:
-                        self.overrided_cfg[key] = {
-                            "value": value,
-                            "original": ori_value,
-                        }
+                        if not (cfg_object is self and key == "exp_class"):
+                            # exp_class is always filled in by store_and_run_exp; reporting it is noise.
+                            self.overrided_cfg[key] = {
+                                "value": value,
+                                "original": ori_value,
+                            }
                         setattr(cfg_object, key, value)
             else:
                 raise UnknownConfigurationKeyError(key)

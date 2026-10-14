@@ -9,8 +9,8 @@ import torch
 from tinyexp.examples.mnist_exp import Exp
 
 
-def test_mnist_run_val_mode_requires_resume_from(tmp_path: Path, monkeypatch) -> None:
-    exp = Exp(output_root=str(tmp_path), exp_name="mnist_val", mode="val", resume_from="")
+def test_mnist_run_eval_mode_requires_resume_from(tmp_path: Path, monkeypatch) -> None:
+    exp = Exp(output_root=str(tmp_path), exp_name="mnist_val", mode="eval", resume_from="")
     dummy_accelerator = SimpleNamespace(
         rank=0,
         device="cpu",
@@ -26,7 +26,7 @@ def test_mnist_run_val_mode_requires_resume_from(tmp_path: Path, monkeypatch) ->
         exp.run()
 
 
-def test_mnist_run_val_mode_uses_checkpoint(tmp_path: Path, monkeypatch) -> None:
+def test_mnist_run_eval_mode_uses_checkpoint(tmp_path: Path, monkeypatch) -> None:
     exp_for_ckpt = Exp(output_root=str(tmp_path), exp_name="mnist_val")
     checkpoint_path = exp_for_ckpt.checkpoint_cfg.save_checkpoint(
         run_dir=str(tmp_path / "mnist_val"),
@@ -36,7 +36,7 @@ def test_mnist_run_val_mode_uses_checkpoint(tmp_path: Path, monkeypatch) -> None
         exp_class=exp_for_ckpt.exp_class,
     )
 
-    exp = Exp(output_root=str(tmp_path), exp_name="mnist_val", mode="val", resume_from=checkpoint_path)
+    exp = Exp(output_root=str(tmp_path), exp_name="mnist_val", mode="eval", resume_from=checkpoint_path)
     destroy_calls = []
     dummy_accelerator = SimpleNamespace(
         rank=0,
@@ -113,3 +113,14 @@ def test_mnist_val_dataloader_partitions_without_padding(tmp_path: Path, monkeyp
 
     assert partitions == [[0, 3, 6, 9], [1, 4, 7], [2, 5, 8]]
     assert sorted(index for partition in partitions for index in partition) == list(range(10))
+
+
+def test_mnist_run_unknown_mode_lists_supported_modes(tmp_path: Path, monkeypatch) -> None:
+    from tinyexp.exceptions import UnknownExperimentModeError
+
+    monkeypatch.setenv("RANK", "0")
+    monkeypatch.setenv("WORLD_SIZE", "1")
+    exp = Exp(output_root=str(tmp_path), exp_name="mnist_bad_mode", mode="val")
+
+    with pytest.raises(UnknownExperimentModeError, match=r"Unknown mode 'val'.*train, eval, help"):
+        exp.run()

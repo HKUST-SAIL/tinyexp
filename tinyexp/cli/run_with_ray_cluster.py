@@ -64,7 +64,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--node-count",
         type=positive_int,
         default=1,
-        help="Total cluster nodes. Default: 1.",
+        help="Total cluster nodes. Default: 1 (runs the command unchanged; does not start or stop Ray).",
     )
     parser.add_argument("--node-rank", type=uint, default=0, help="Current node rank. Default: 0.")
     parser.add_argument("--head-addr", default="", help="Address workers use to reach Ray head.")

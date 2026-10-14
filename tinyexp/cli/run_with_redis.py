@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Run a command with a Redis cache lifecycle owned by this wrapper.
 
+Only for launches without Ray (``launcher=mp``: plain ``python``, ``torchrun``, ``accelerate launch``). With
+``launcher=ray`` the Ray driver starts and stops Redis itself, so the wrapper refuses such a command (exit code 2)
+before starting anything; the launcher is read from a ``launcher=`` override or the experiment's default.
+
 The wrapper reads ``redis_cfg`` overrides from the target command, starts
 standalone Redis for single-node jobs or a Redis Cluster for multi-node jobs,
 injects the final Redis connection settings back into the child command as Hydra
@@ -134,7 +138,10 @@ def env_uint(name: str, default: int) -> int:
 def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="tinyexp-run-with-redis",
-        description="Start Redis, inject redis_cfg overrides, then run <command>.",
+        description=(
+            "Start Redis, inject redis_cfg overrides, then run <command>. Only for launcher=mp commands "
+            "(python, torchrun, accelerate launch); launcher=ray starts Redis itself and must not be wrapped."
+        ),
     )
     parser.add_argument(
         "--node-count",
@@ -190,12 +197,23 @@ def _load_python_file(module_path: Path):  # type: ignore[no-untyped-def]
 
 
 def _load_experiment_module(argv: list[str]):  # type: ignore[no-untyped-def]
-    if len(argv) >= 3 and Path(argv[0]).name.startswith("python") and argv[1] == "-m":
-        return importlib.import_module(argv[2])
+    """Import the experiment the command starts, resolving it the way the child process will.
+
+    ``-m <module>`` (python, torchrun, accelerate launch; the last one wins, e.g. after
+    ``python -m torch.distributed.run``) imports with the current directory on ``sys.path``, as ``python -m`` does;
+    ``<file>.py`` runs with the file's directory on ``sys.path``, as ``python <file>.py`` does.
+    """
+    modules = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-m"]
+    if modules:
+        if os.getcwd() not in sys.path:
+            sys.path.insert(0, os.getcwd())
+        return importlib.import_module(modules[-1])
 
     for arg in argv:
         module_path = Path(arg)
         if module_path.suffix == ".py" and module_path.is_file():
+            if str(module_path.resolve().parent) not in sys.path:
+                sys.path.insert(0, str(module_path.resolve().parent))
             return _load_python_file(module_path.resolve())
 
     return None
@@ -210,7 +228,14 @@ def main(argv: list[str]) -> int:
     global CHILD_PROCESS, REDIS_LIFECYCLE
 
     args = parse_args(argv)
-    redis_cfg = build_redis_cfg(args.command)
+    redis_cfg, launcher = _infer_experiment(args.command)
+    if launcher == "ray":
+        print(
+            "tinyexp-run-with-redis: the command runs with launcher=ray, whose Ray driver starts and stops Redis "
+            "itself; run it without this wrapper. The wrapper is for launcher=mp (python, torchrun, accelerate launch).",
+            file=sys.stderr,
+        )
+        return 2
     configured_ports = [int(port) for port in redis_cfg.redis_cluster_ports]
     if not configured_ports:
         print("redis_cfg.redis_cluster_ports must not be empty", file=sys.stderr)
@@ -292,6 +317,11 @@ def main(argv: list[str]) -> int:
 
 
 def build_redis_cfg(argv: list[str]) -> Any:
+    return _infer_experiment(argv)[0]
+
+
+def _infer_experiment(argv: list[str]) -> tuple[Any, str]:
+    """Return ``(redis_cfg, launcher)`` of the command's experiment (``launcher`` is ``""`` when unknown)."""
     exp: Any | None = None
     module = _load_experiment_module(argv)
     if module is not None:
@@ -307,11 +337,13 @@ def build_redis_cfg(argv: list[str]) -> Any:
             exp = cast(Any, exp_classes[0]())
             exp.exp_class = f"{exp_classes[0].__module__}.{exp_classes[0].__qualname__}"
 
+    launcher_overrides = [arg.split("=", 1)[1] for arg in argv if arg.startswith("launcher=")]
+    launcher = launcher_overrides[-1] if launcher_overrides else (exp.launcher if exp is not None else "")
     overrides = [arg for arg in argv if arg.startswith("redis_cfg.")]
     if exp is not None:
         if overrides:
             exp.set_cfg(OmegaConf.from_dotlist(overrides))
-        return exp.redis_cfg
+        return exp.redis_cfg, launcher
 
     print(
         "Could not infer experiment config; using RedisCfgMixin defaults",
@@ -320,7 +352,7 @@ def build_redis_cfg(argv: list[str]) -> Any:
     cfg = OmegaConf.structured(RedisCfgMixin())
     if overrides:
         cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(overrides))
-    return cfg.redis_cfg
+    return cfg.redis_cfg, launcher
 
 
 def start_local_redis(redis_cfg: Any, lifecycle: _RedisLifecycle) -> tuple[str, list[int]] | None:

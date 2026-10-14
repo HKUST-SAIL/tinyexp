@@ -1,3 +1,18 @@
+"""Errors raised by TinyExp; each keeps the offending value as an attribute.
+
+- ``UnknownConfigurationKeyError`` (``.key``): ``set_cfg`` got a key the experiment does not define.
+- ``UnknownLauncherError`` (``.launcher``): ``launcher`` is not ``mp`` or ``ray``.
+- ``UnknownExperimentModeError(mode, allowed=(...))`` (``.mode``): raise from ``run()`` for an unsupported
+  ``mode``; the message lists ``allowed``, e.g. ``raise UnknownExperimentModeError(self.mode, allowed=("train", "eval", "help"))``.
+- ``UnknownAcceleratorTypeError(accelerator)`` (``.accelerator``): raise from ``build_accelerator()`` for an unknown name.
+- ``InvalidWorkerCountError`` (``.num_worker``): ``ray_num_worker`` is 0, below -1, or ``-1`` found no resources.
+- ``InsufficientCPUError``: the Ray cluster lacks the requested CPU/GPU resources.
+- ``CudaNotAvailableError``: a CUDA-only accelerator was built without CUDA.
+- ``UnsupportedCheckpointFormatError`` (``.path``): ``load_checkpoint`` got a dict that is not a TinyExp checkpoint.
+
+Import them from ``tinyexp.exceptions``.
+"""
+
 from collections.abc import Sequence
 from typing import Optional
 
@@ -21,7 +36,7 @@ class InvalidWorkerCountError(ValueError):
 
 
 class UnknownExperimentModeError(ValueError):
-    def __init__(self, mode: str, allowed: Sequence[str] = ("run", "train", "val", "help")) -> None:
+    def __init__(self, mode: str, allowed: Sequence[str] = ("run", "train", "eval", "help")) -> None:
         self.mode = mode
         self.allowed = tuple(allowed)
         super().__init__(f"Unknown mode {mode!r}, please set `mode` to one of: {', '.join(self.allowed)}.")

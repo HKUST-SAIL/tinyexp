@@ -4,7 +4,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-import ray
 
 from tinyexp.examples import pi_exp
 
@@ -29,7 +28,7 @@ def test_pi_run_prints_result_on_stdout(
 
     accelerator = DummyAccelerator()
     logger = SimpleNamespace()
-    exp = pi_exp.Exp(output_root=str(tmp_path), exp_name="pi_test")
+    exp = pi_exp.Exp(output_root=str(tmp_path), exp_name="pi_test", launcher="mp")
 
     monkeypatch.setattr(pi_exp, "torch", SimpleNamespace(pi=3.14))
     monkeypatch.setattr("tinyexp.tiny_engine.accelerator.CPUAccelerator", lambda: accelerator)
@@ -62,12 +61,6 @@ def test_pi_run_returns_result_to_ray_driver(
     monkeypatch.setattr(exp.logger_cfg, "build_logger", lambda **kwargs: SimpleNamespace())
     monkeypatch.setattr(exp, "print_cfg", lambda logger: {})
     monkeypatch.setattr(exp, "_estimate_pi", lambda accelerator: 3.14)
-    monkeypatch.setattr(ray, "is_initialized", lambda: True)
-    monkeypatch.setattr(
-        ray,
-        "get_runtime_context",
-        lambda: SimpleNamespace(get_actor_id=lambda: "actor-id"),
-    )
 
     exp.run()
 
@@ -99,3 +92,12 @@ def test_pi_run_destroys_accelerator_when_workload_fails(
         exp.run()
 
     assert events == ["destroy"]
+
+
+def test_pi_run_unknown_mode_lists_supported_modes(tmp_path: Path) -> None:
+    from tinyexp.exceptions import UnknownExperimentModeError
+
+    exp = pi_exp.Exp(output_root=str(tmp_path), mode="train")
+
+    with pytest.raises(UnknownExperimentModeError, match=r"Unknown mode 'train'.*run, help"):
+        exp.run()

@@ -109,6 +109,21 @@ def test_set_cfg_overrides_nested(monkeypatch: pytest.MonkeyPatch) -> None:
     assert exp.b == 4
 
 
+def test_set_cfg_keeps_overrides_recorded_before_overrided_cfg_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A full Hydra config carries ``overrided_cfg: {}``; it must not wipe records of earlier fields."""
+    monkeypatch.setenv("RANK", "1")
+    exp = _CfgExp()
+
+    # Field order matches the dataclass: base TinyExp fields (incl. overrided_cfg) come before subclass fields.
+    cfg = OmegaConf.create({"mode": "help", "overrided_cfg": {}, "sub_cfg": {"a": 3}})
+    exp.set_cfg(cfg)
+
+    assert exp.overrided_cfg == {
+        "mode": {"value": "help", "original": "train"},
+        "a": {"value": 3, "original": 1},
+    }
+
+
 def test_set_cfg_overrides_mapping_field(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RANK", "1")
     exp = _MappingCfgExp()
@@ -122,6 +137,17 @@ def test_set_cfg_overrides_mapping_field(monkeypatch: pytest.MonkeyPatch) -> Non
         "value": {"base": 3, "extra": {"enabled": True}},
         "original": {"base": 1},
     }
+
+
+def test_set_cfg_does_not_report_exp_class_as_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``exp_class`` is always filled in by ``store_and_run_exp``; listing it under overrides is noise."""
+    monkeypatch.setenv("RANK", "1")
+    exp = _CfgExp()
+
+    exp.set_cfg(OmegaConf.create({"exp_class": "pkg.mod.Exp", "b": 4}))
+
+    assert exp.exp_class == "pkg.mod.Exp"
+    assert exp.overrided_cfg == {"b": {"value": 4, "original": 2}}
 
 
 def test_set_cfg_unknown_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
