@@ -6,7 +6,7 @@
 | `DDPAccelerator` | nccl, CUDA required | none, fp16, bf16 | standard multi-GPU data parallel |
 | `FSDPAccelerator` | nccl, CUDA required | none, fp16, bf16 | shard params/grads/optimizer state (FULL_SHARD) |
 | `TPAccelerator` | nccl on CUDA, else gloo | n/a | tensor parallel, tp_size == world_size (`vit_tp_exp`) |
-| `HFAccelerator` | Hugging Face Accelerate | accelerate's args | when launching with `accelerate launch` |
+| `HFAccelerator` | Hugging Face Accelerate | no, fp16, bf16 (`no`, not `none`) | when launching with `accelerate launch` |
 
 All read ``RANK``/``WORLD_SIZE``/``LOCAL_RANK`` from the environment, so construct them inside the
 worker (inside ``Exp.run()``), never in the driver. ``HFAccelerator`` exists only when ``accelerate`` is

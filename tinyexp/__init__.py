@@ -45,8 +45,9 @@ Pairing ``launcher`` with the process owner:
 CLI overrides are checked by Hydra against the dataclasses: unknown keys are rejected
 (``Key 'x' not in 'DataloaderCfg'``) and values are type-checked, but not otherwise validated (``mode=help``
 accepts ``accelerator_cfg.accelerator=bogus``). For a ``dict`` field, change an existing key with ``tags.owner=x``
-and add a new one with ``+tags.team=y``. How the result is merged onto the experiment and recorded for
-``mode=help``: ``TinyExp.set_cfg``. Ray workers and ``python -m`` vs ``python file.py``: ``RayCfgMixin``.
+and add a new one with ``+tags.team=y`` (without the ``+``: ``Key 'team' is not in struct``). How the result is
+merged onto the experiment and recorded for ``mode=help``: ``TinyExp.set_cfg``. Ray workers and ``python -m`` vs
+``python file.py``: ``RayCfgMixin``.
 
 Exports: ``TinyExp``, ``store_and_run_exp``, ``simple_launch_exp``, ``ConfigStore`` and the mixins
 ``LoggerCfgMixin``, ``RayCfgMixin``, ``CheckpointCfgMixin``, ``WandbCfgMixin``, ``RedisCfgMixin``

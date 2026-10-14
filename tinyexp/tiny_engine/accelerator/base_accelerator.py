@@ -12,7 +12,9 @@ runs on CPU, DDP, FSDP, TP or Hugging Face Accelerate. Grouped by when you call 
   autocast), ``accelerator.backward(loss)``, ``accelerator.optimizer_step(optimizer)``
   (handles fp16 loss scaling; use it instead of ``optimizer.step()``).
 - Cross-rank: ``reduce(tensor, reduction="sum"|"mean")``, ``wait_for_everyone()``, ``print(...)``
-  (rank 0 only).
+  (rank 0 only). ``reduce`` returns a new tensor on the input's device and never modifies the input (with
+  ``world_size == 1`` it may return the input itself). The result keeps the input dtype, except that "mean"
+  of an integer tensor becomes floating when ``world_size > 1``; pass floating tensors to avoid that.
 - Gradient clipping is not part of the protocol: ``DDPAccelerator``/``FSDPAccelerator``/``HFAccelerator`` provide
   ``accelerator.clip_grad_norm_(parameters, max_norm)`` (unscales fp16 gradients first; FSDP reduces the norm
   across shards) and it must be used there. ``CPUAccelerator``/``TPAccelerator`` do not define it; they never

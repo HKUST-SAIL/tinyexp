@@ -9,7 +9,8 @@ Run   :
     python -m tinyexp.examples.mnist_exp launcher=mp      # one process, no Ray
     torchrun --nproc-per-node=2 -m tinyexp.examples.mnist_exp launcher=mp accelerator_cfg.accelerator=ddp
     python -m tinyexp.examples.mnist_exp mode=eval resume_from=./output/mnist_exp/best.ckpt
-Env   : none; MNIST is downloaded to dataloader_cfg.data_root (./data/) on first run
+Env   : none; global rank 0 downloads MNIST to dataloader_cfg.data_root (./data/) on first run while the other
+        ranks wait, then read it; with several nodes, data_root must be shared or already populated
 Note  : always trains 3 epochs (not configurable); raise dataloader_cfg.train_batch_size_per_device for a faster run
 Needs : tinyexp[pytorch]; accelerator_cfg.accelerator=ddp needs CUDA
 Out   : <output_root>/mnist_exp/{log.txt,last.ckpt,best.ckpt}
