@@ -1,3 +1,18 @@
+"""ImageNet ResNet-50 recipe (about 76% top-1 after 90 epochs with DDP); also runs with FSDP or HF Accelerate.
+
+Modes : train | eval | help    (eval requires resume_from=<ckpt>)
+Run   :
+    python -m tinyexp.examples.resnet_exp mode=help
+    python -m tinyexp.examples.resnet_exp                 # default: Ray, one DDP worker per GPU, Redis cache on
+    torchrun --nproc-per-node=8 -m tinyexp.examples.resnet_exp launcher=mp redis_cfg.redis_cache_enabled=false
+    torchrun --nproc-per-node=2 -m tinyexp.examples.resnet_exp launcher=mp accelerator_cfg.accelerator=fsdp redis_cfg.redis_cache_enabled=false
+    python -m tinyexp.examples.resnet_exp mode=eval resume_from=./output/resnet_exp/best.ckpt
+Env   : IMAGENET_HOME (or dataloader_cfg.data_root) with ImageFolder train/ and val/ directories
+Needs : tinyexp[pytorch] and CUDA GPUs. The Redis cache (default on) needs redis-server: launcher=ray starts it,
+        otherwise wrap the command with tinyexp-run-with-redis or set redis_cfg.redis_cache_enabled=false
+Out   : <output_root>/resnet_exp/{log.txt,last.ckpt,best.ckpt}
+"""
+
 import datetime
 import io
 import os
@@ -15,7 +30,7 @@ from torchvision import datasets, transforms
 
 from tinyexp import TinyExp, store_and_run_exp
 from tinyexp.dataset.sampler import InfiniteSampler
-from tinyexp.exceptions import UnknownAcceleratorTypeError
+from tinyexp.exceptions import UnknownAcceleratorTypeError, UnknownExperimentModeError
 from tinyexp.exp_mixins import CheckpointCfgMixin, LoggerCfgMixin, RayCfgMixin, RedisCfgMixin, WandbCfgMixin
 from tinyexp.tiny_engine.accelerator import AcceleratorProtocol
 
@@ -338,16 +353,16 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
                 cfg_dict=cfg_dict,
                 run_dir=run_dir,
             )
-        elif self.mode == "val":
+        elif self.mode == "eval":
             if not self.resume_from:
-                raise ValueError("resume_from is required when mode='val'")  # noqa: TRY003
+                raise ValueError("resume_from is required when mode='eval'")  # noqa: TRY003
             self._evaluate(
                 accelerator=accelerator,
                 logger=logger,
                 module_or_module_path=self.resume_from,
             )
         else:
-            raise NotImplementedError(f"Mode {self.mode} is not implemented")
+            raise UnknownExperimentModeError(self.mode, allowed=("train", "eval", "help"))
 
     def _evaluate(self, accelerator, logger, module_or_module_path, val_dataloader=None) -> None:
         if isinstance(module_or_module_path, str):

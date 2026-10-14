@@ -1,4 +1,23 @@
-"""DeiT-S experiment with tensor parallelism, ported against the official DeiT.
+"""DeiT-S (ViT-S/16) on ImageNet with tensor parallelism, ported against the official DeiT.
+
+Modes : train | eval | bench | help    (eval requires resume_from=<tinyexp ckpt> or module_cfg.pretrained_from)
+Run   :
+    python -m tinyexp.examples.vit_tp_exp mode=help
+    python -m tinyexp.examples.vit_tp_exp                 # default: full recipe, 2 Ray GPU workers, TP=2
+    # eval-only against the official checkpoint (accuracy cross-check):
+    python -m tinyexp.examples.vit_tp_exp mode=eval module_cfg.pretrained_from=https://dl.fbaipublicfiles.com/deit/deit_small_patch16_224-cd65a155.pth
+    # full 300-epoch recipe on 8 GPUs with DDP and the optional Redis byte cache:
+    python -m tinyexp.examples.vit_tp_exp accelerator_cfg.accelerator=ddp ray_cfg.ray_num_worker=8 redis_cfg.redis_cache_enabled=true redis_cfg.redis_cache_max_memory=300
+    # synthetic throughput/memory benchmark, TP vs DDP:
+    python -m tinyexp.examples.vit_tp_exp mode=bench
+    python -m tinyexp.examples.vit_tp_exp mode=bench accelerator_cfg.accelerator=ddp
+    # CPU smoke without ImageNet (2 Ray workers x 2 CPUs, gloo TP=2; batch must fit the 64 fake samples;
+    # max_train_steps is only checked after each epoch, so this runs the full 8-step epoch):
+    python -m tinyexp.examples.vit_tp_exp dataloader_cfg.fake_data=true dataloader_cfg.input_size=32 dataloader_cfg.train_batch_size_per_device=8 dataloader_cfg.val_batch_size_per_device=8 module_cfg.img_size=32 module_cfg.num_classes=10 epochs=1 max_train_steps=4 ray_cfg.ray_num_gpus_per_worker=0.0 ray_cfg.ray_num_cpus_per_worker=2
+Env   : IMAGENET_HOME (or dataloader_cfg.data_root) with ImageFolder train/ and val/ (not needed for bench/fake_data)
+Needs : tinyexp[vit]; 2 CUDA GPUs for the default TP=2 run (8 for the DDP recipe); Redis cache optional
+Out   : <output_root>/vit_tp_exp/{deit_train.log,log.txt (JSON metrics per epoch),last.ckpt,best.ckpt};
+        details and results in docs/vit_tp.md
 
 This module is written by strict cross-checking (对拍) against upstream sources; only
 formatting-level changes are allowed (see ``docs/vit_tp.md``). The ported sources are:
@@ -32,36 +51,6 @@ equivalent to single-rank (CI); the official checkpoint evaluates to 79.82/79.81
 top-1 at tp=1/tp=2 (official 79.8); the full 300-epoch recipe trained from scratch
 (8xH200 DDP via rjob, Redis cache on) reached **79.84% top-1 / 94.99% top-5**
 (paper: 79.8 / ~95.0).
-
-Usage (full recipe, 2 GPUs, TP=2)::
-
-    # ImageNet must use the standard ImageFolder layout with train/ and val/
-    # class directories.  The same variable is used by the ResNet example.
-    export IMAGENET_HOME=/path/to/imagenet
-
-    python -m tinyexp.examples.vit_tp_exp
-
-Eval-only against the official checkpoint (accuracy cross-check)::
-
-    export IMAGENET_HOME=/path/to/imagenet
-    python -m tinyexp.examples.vit_tp_exp mode=eval module_cfg.pretrained_from=<ckpt-or-url>
-
-Full 300-epoch training on 8 GPUs with DDP and the optional Redis byte cache::
-
-    export IMAGENET_HOME=/path/to/imagenet
-    python -m tinyexp.examples.vit_tp_exp accelerator_cfg.accelerator=ddp \\
-        ray_cfg.ray_num_worker=8 redis_cfg.redis_cache_enabled=true redis_cfg.redis_cache_max_memory=300
-
-Throughput / memory benchmark, e.g. TP vs DDP::
-
-    python -m tinyexp.examples.vit_tp_exp mode=bench
-    python -m tinyexp.examples.vit_tp_exp mode=bench accelerator_cfg.accelerator=ddp
-
-CPU smoke (no ImageNet on disk, ray 2 workers, gloo TP=2)::
-
-    python -m tinyexp.examples.vit_tp_exp dataloader_cfg.fake_data=true dataloader_cfg.input_size=32 \\
-        module_cfg.img_size=32 module_cfg.num_classes=10 epochs=1 max_train_steps=4 \\
-        ray_cfg.ray_num_gpus_per_worker=0.0 ray_cfg.ray_num_cpus_per_worker=4
 
 Not ported: ``HybridEmbed``, distilled models, distillation, ``--cosub``,
 ``--ThreeAugment``, ``--bce-loss``, ``--attn-only``, INAT/CIFAR datasets, submitit,
@@ -101,7 +90,7 @@ from torch.distributed.tensor.parallel import ColwiseParallel, ParallelStyle, Ro
 from torchvision import datasets, transforms
 
 from tinyexp import TinyExp, store_and_run_exp
-from tinyexp.exceptions import UnknownAcceleratorTypeError
+from tinyexp.exceptions import UnknownAcceleratorTypeError, UnknownExperimentModeError
 from tinyexp.exp_mixins import CheckpointCfgMixin, LoggerCfgMixin, RayCfgMixin, RedisCfgMixin, WandbCfgMixin
 from tinyexp.tiny_engine.accelerator import AcceleratorProtocol, TPAccelerator
 
@@ -782,7 +771,7 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
                 )
             else:
                 sampler = torch.utils.data.RandomSampler(dataset)
-            return torch.utils.data.DataLoader(
+            loader = torch.utils.data.DataLoader(
                 dataset,
                 sampler=sampler,
                 batch_size=self.train_batch_size_per_device,
@@ -791,6 +780,14 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
                 drop_last=True,
                 persistent_workers=self.train_num_workers > 0,
             )
+            if len(loader) == 0:
+                # docs/vit_tp.md D8: fail fast instead of training zero steps per epoch.
+                raise ValueError(
+                    f"The train dataloader has no training batch: {len(sampler)} samples per rank < "
+                    f"dataloader_cfg.train_batch_size_per_device={self.train_batch_size_per_device} with "
+                    "drop_last=True. Lower the batch size or provide more data."
+                )
+            return loader
 
         def build_val_dataloader(
             self, accelerator: AcceleratorProtocol, replicate_data: bool
@@ -966,7 +963,7 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
         elif self.mode == "bench":
             self._bench(accelerator=accelerator, logger=logger)
         else:
-            raise NotImplementedError(f"Mode {self.mode} is not implemented")
+            raise UnknownExperimentModeError(self.mode, allowed=("train", "eval", "bench", "help"))
 
     def _prepare_for_train_or_eval(self, accelerator):
         """Components shared by train and eval, in official main.py order."""

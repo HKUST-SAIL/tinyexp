@@ -238,8 +238,8 @@ def test_resnet_dataloaders_match_persistent_workers_to_num_workers(
     assert val_dataloader.persistent_workers is expected
 
 
-def test_resnet_run_val_mode_requires_resume_from(tmp_path: Path, monkeypatch) -> None:
-    exp = ResNetExp(output_root=str(tmp_path), exp_name="resnet_val", mode="val", resume_from="")
+def test_resnet_run_eval_mode_requires_resume_from(tmp_path: Path, monkeypatch) -> None:
+    exp = ResNetExp(output_root=str(tmp_path), exp_name="resnet_val", mode="eval", resume_from="")
     dummy_accelerator = SimpleNamespace(
         rank=0,
         device="cpu",
@@ -256,7 +256,7 @@ def test_resnet_run_val_mode_requires_resume_from(tmp_path: Path, monkeypatch) -
 
 
 def test_resnet_run_logs_overrides_with_experiment_logger(tmp_path: Path, monkeypatch) -> None:
-    exp = ResNetExp(mode="val", resume_from="")
+    exp = ResNetExp(mode="eval", resume_from="")
     exp.set_cfg(OmegaConf.create({"output_root": str(tmp_path), "exp_name": "resnet_val"}))
     dummy_accelerator = SimpleNamespace(
         rank=0,
@@ -276,7 +276,7 @@ def test_resnet_run_logs_overrides_with_experiment_logger(tmp_path: Path, monkey
     assert any(message.startswith("-------- Overridden Configurations --------\n") for message in messages)
 
 
-def test_resnet_run_val_mode_uses_checkpoint(tmp_path: Path, monkeypatch) -> None:
+def test_resnet_run_eval_mode_uses_checkpoint(tmp_path: Path, monkeypatch) -> None:
     exp_for_ckpt = ResNetExp(output_root=str(tmp_path), exp_name="resnet_val")
     checkpoint_path = exp_for_ckpt.checkpoint_cfg.save_checkpoint(
         run_dir=str(tmp_path / "resnet_val"),
@@ -289,7 +289,7 @@ def test_resnet_run_val_mode_uses_checkpoint(tmp_path: Path, monkeypatch) -> Non
     exp = ResNetExp(
         output_root=str(tmp_path),
         exp_name="resnet_val",
-        mode="val",
+        mode="eval",
         resume_from=checkpoint_path,
     )
     destroy_calls = []

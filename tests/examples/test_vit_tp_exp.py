@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import os
 import socket
+import types
 
 import pytest
 
@@ -159,6 +160,20 @@ def test_redis_cache_is_train_only(tmp_path, monkeypatch) -> None:
     assert isinstance(
         experiment.dataloader_cfg._build_dataset(True, experiment.redis_cfg), torch.utils.data.TensorDataset
     )
+
+
+def test_train_dataloader_rejects_empty_epoch() -> None:
+    """docs/vit_tp.md D8: a batch larger than the per-rank data must fail fast, not train zero steps."""
+    experiment = VitTpExp()
+    cfg = experiment.dataloader_cfg
+    cfg.fake_data, cfg.input_size, cfg.train_num_workers = True, 32, 0
+    accelerator = types.SimpleNamespace(rank=0, world_size=1)
+
+    with pytest.raises(ValueError, match=r"no training batch.*train_batch_size_per_device=256"):
+        cfg.build_train_dataloader(accelerator, replicate_data=True)
+
+    cfg.train_batch_size_per_device = 8
+    assert len(cfg.build_train_dataloader(accelerator, replicate_data=True)) == cfg.fake_data_len // 8
 
 
 def _tp_model() -> VisionTransformer:

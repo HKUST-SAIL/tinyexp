@@ -578,3 +578,59 @@ def test_handle_signal_stops_child_and_closes_lifecycle(signum: int, monkeypatch
 
     assert exc_info.value.code == 128 + signum
     assert calls == [(child, signum), "close-lifecycle"]
+
+
+def _write_exp_module(directory: Path, name: str, launcher: str) -> None:
+    (directory / f"{name}.py").write_text(
+        "from dataclasses import dataclass, field\n"
+        "from tinyexp import TinyExp\n"
+        "from tinyexp.exp_mixins import RedisCfgMixin\n"
+        "@dataclass\n"
+        "class Exp(TinyExp, RedisCfgMixin):\n"
+        f"    launcher: str = {launcher!r}\n"
+        "    @dataclass\n"
+        "    class RedisCfg(RedisCfgMixin.RedisCfg):\n"
+        "        redis_cache_max_memory: int = 7\n"
+        "    redis_cfg: RedisCfg = field(default_factory=RedisCfg)\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("launcher_default", "extra", "rejected"),
+    [("ray", [], True), ("mp", ["launcher=ray"], True), ("ray", ["launcher=mp"], False)],
+)
+def test_main_rejects_launcher_ray_before_starting_redis(
+    tmp_path: Path, monkeypatch, capsys, launcher_default: str, extra: list[str], rejected: bool
+) -> None:
+    _write_exp_module(tmp_path, "ray_default_exp", launcher_default)
+    monkeypatch.chdir(tmp_path)
+    started: list[str] = []
+    monkeypatch.setattr(run_with_redis, "start_local_redis", lambda *a, **k: started.append("redis") or None)
+    monkeypatch.setattr("tinyexp.cli.run_with_redis.subprocess.Popen", lambda *args, **kwargs: _FinishedProcess())
+
+    code = main(["python", "-m", "ray_default_exp", *extra])
+
+    if rejected:
+        assert code == 2
+        assert started == []
+        assert "launcher=ray" in capsys.readouterr().err
+    else:
+        assert started == ["redis"]
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["python", "-m", "cwd_exp"],
+        ["torchrun", "--nproc-per-node=2", "-m", "cwd_exp", "launcher=mp"],
+        ["accelerate", "launch", "--cpu", "-m", "cwd_exp", "launcher=mp"],
+        ["python", "-m", "torch.distributed.run", "--nproc-per-node=2", "-m", "cwd_exp"],
+    ],
+)
+def test_build_redis_cfg_resolves_module_like_python_m(tmp_path: Path, monkeypatch, command: list[str]) -> None:
+    # ``python -m`` (also run by torchrun/accelerate for ``-m``) puts the current directory on sys.path.
+    _write_exp_module(tmp_path, "cwd_exp", "mp")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "path", [p for p in sys.path if p not in ("", ".", str(tmp_path))])
+
+    assert build_redis_cfg(command).redis_cache_max_memory == 7

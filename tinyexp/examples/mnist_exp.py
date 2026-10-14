@@ -1,3 +1,20 @@
+"""MNIST baseline: CPU or DDP image classification with checkpoints, resume and logging.
+
+Start here when writing a new experiment: config sections (``XXXCfg``) on top, ``run()`` below.
+
+Modes : train | eval | help    (eval requires resume_from=<ckpt>)
+Run   :
+    python -m tinyexp.examples.mnist_exp mode=help
+    python -m tinyexp.examples.mnist_exp                  # default: 2 Ray workers x 4 CPUs (needs 8 CPUs)
+    python -m tinyexp.examples.mnist_exp launcher=mp      # one process, no Ray
+    torchrun --nproc-per-node=2 -m tinyexp.examples.mnist_exp launcher=mp accelerator_cfg.accelerator=ddp
+    python -m tinyexp.examples.mnist_exp mode=eval resume_from=./output/mnist_exp/best.ckpt
+Env   : none; MNIST is downloaded to dataloader_cfg.data_root (./data/) on first run
+Note  : always trains 3 epochs (not configurable); raise dataloader_cfg.train_batch_size_per_device for a faster run
+Needs : tinyexp[pytorch]; accelerator_cfg.accelerator=ddp needs CUDA
+Out   : <output_root>/mnist_exp/{log.txt,last.ckpt,best.ckpt}
+"""
+
 import datetime
 from dataclasses import dataclass, field
 
@@ -10,7 +27,7 @@ from torch.optim.lr_scheduler import StepLR
 from torchvision import datasets, transforms
 
 from tinyexp import TinyExp, store_and_run_exp
-from tinyexp.exceptions import UnknownAcceleratorTypeError
+from tinyexp.exceptions import UnknownAcceleratorTypeError, UnknownExperimentModeError
 from tinyexp.exp_mixins import CheckpointCfgMixin, LoggerCfgMixin, RayCfgMixin, WandbCfgMixin
 from tinyexp.tiny_engine.accelerator import AcceleratorProtocol
 
@@ -177,16 +194,16 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
                 cfg_dict=cfg_dict,
                 run_dir=run_dir,
             )
-        elif self.mode == "val":
+        elif self.mode == "eval":
             if not self.resume_from:
-                raise ValueError("resume_from is required when mode='val'")  # noqa: TRY003
+                raise ValueError("resume_from is required when mode='eval'")  # noqa: TRY003
             self._evaluate(
                 accelerator=accelerator,
                 logger=logger,
                 module_or_module_path=self.resume_from,
             )
         else:
-            raise NotImplementedError(f"Mode {self.mode} is not implemented")
+            raise UnknownExperimentModeError(self.mode, allowed=("train", "eval", "help"))
 
     def _evaluate(self, accelerator, logger, module_or_module_path, val_dataloader=None) -> float:
         if isinstance(module_or_module_path, str):

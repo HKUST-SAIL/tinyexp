@@ -1,24 +1,27 @@
-"""
-Estimate pi with distributed Monte Carlo sampling, launched by Ray in ``mode="run"``.
+"""Distributed Monte Carlo estimate of pi: a non-deep-learning workload driven by TinyExp.
 
-This example shows that tinyexp can drive general distributed programs (no deep
-learning, no dataloader): each Ray worker samples random points in the unit square,
-counts how many fall inside the unit circle (x*x + y*y <= 1.0), and the counts are
-all-reduced to estimate pi = 4 * inside / total.
+Each worker samples points in the unit square, counts those inside the unit circle, and the counts are
+all-reduced to estimate pi = 4 * inside / total. No dataloader, no model; also the fastest smoke test.
 
-Usage::
-
-    python -m tinyexp.examples.pi_exp
+Modes : run | help
+Run   :
+    python -m tinyexp.examples.pi_exp mode=help
+    python -m tinyexp.examples.pi_exp                     # default: 2 Ray CPU workers
     python -m tinyexp.examples.pi_exp pi_cfg.total_samples=100000000 ray_cfg.ray_num_worker=4
+    python -m tinyexp.examples.pi_exp launcher=mp pi_cfg.total_samples=100000
+    accelerate launch --cpu --num-processes=1 -m tinyexp.examples.pi_exp launcher=mp
+Env   : none
+Needs : tinyexp[pytorch]
+Out   : ``pi ~= ...`` on stdout (by rank 0, or by the Ray driver); log in <output_root>/pi_exp/log.txt
 """
 
 from dataclasses import dataclass, field
 from typing import Optional
 
-import ray
 import torch
 
 from tinyexp import TinyExp, store_and_run_exp
+from tinyexp.exceptions import UnknownExperimentModeError
 from tinyexp.exp_mixins import LoggerCfgMixin, RayCfgMixin
 from tinyexp.tiny_engine.accelerator import AcceleratorProtocol
 
@@ -49,7 +52,7 @@ class Exp(TinyExp, RayCfgMixin, LoggerCfgMixin):
 
     def run(self) -> None:
         if self.mode != "run":
-            raise NotImplementedError(f"Mode {self.mode} is not implemented")
+            raise UnknownExperimentModeError(self.mode, allowed=("run", "help"))
 
         self._run_result: Optional[str] = None
         from tinyexp.tiny_engine.accelerator import CPUAccelerator
@@ -67,9 +70,8 @@ class Exp(TinyExp, RayCfgMixin, LoggerCfgMixin):
         pi = self._estimate_pi(accelerator)
         if accelerator.is_main_process:
             result = f"pi ~= {pi:.6f} (error={abs(pi - torch.pi):.6f}, samples={self.pi_cfg.total_samples})"
-            if ray.is_initialized() and ray.get_runtime_context().get_actor_id() is not None:
-                self._run_result = result
-            else:
+            self._run_result = result
+            if self.launcher != "ray":
                 print(result, flush=True)
 
     def get_ray_run_result(self) -> Optional[str]:
