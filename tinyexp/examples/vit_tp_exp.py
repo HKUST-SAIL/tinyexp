@@ -609,7 +609,9 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
         ray_num_gpus_per_worker: float = 1.0
         ray_num_cpus_per_worker: int = 12  # main process plus 10 dataloader workers
 
-    ray_cfg: RayCfg = field(default_factory=RayCfg)
+    # Field types are qualified: with ``from __future__ import annotations`` they are strings, and Python 3.9's
+    # ``typing.get_type_hints`` (used by OmegaConf) does not look up names nested in the class.
+    ray_cfg: VitTpExp.RayCfg = field(default_factory=RayCfg)
 
     @dataclass
     class RedisCfg(RedisCfgMixin.RedisCfg):
@@ -618,7 +620,7 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
         # filesystems (docs/vit_tp.md D7). No effect on fake_data runs.
         redis_cache_enabled: bool = False
 
-    redis_cfg: RedisCfg = field(default_factory=RedisCfg)
+    redis_cfg: VitTpExp.RedisCfg = field(default_factory=RedisCfg)
 
     @dataclass
     class AcceleratorCfg:
@@ -635,7 +637,7 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
                 return TPAccelerator()
             raise UnknownAcceleratorTypeError(self.accelerator)
 
-    accelerator_cfg: AcceleratorCfg = field(default_factory=AcceleratorCfg)
+    accelerator_cfg: VitTpExp.AcceleratorCfg = field(default_factory=AcceleratorCfg)
 
     @dataclass
     class ModuleCfg:
@@ -674,7 +676,7 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
                 num_classes=self.num_classes,
             )
 
-    module_cfg: ModuleCfg = field(default_factory=ModuleCfg)
+    module_cfg: VitTpExp.ModuleCfg = field(default_factory=ModuleCfg)
 
     @dataclass
     class DataloaderCfg:
@@ -810,7 +812,7 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
                 persistent_workers=self.val_num_workers > 0,
             )
 
-    dataloader_cfg: DataloaderCfg = field(default_factory=DataloaderCfg)
+    dataloader_cfg: VitTpExp.DataloaderCfg = field(default_factory=DataloaderCfg)
 
     @dataclass
     class LossCfg:
@@ -849,7 +851,7 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
                 criterion = nn.CrossEntropyLoss()
             return criterion
 
-    loss_cfg: LossCfg = field(default_factory=LossCfg)
+    loss_cfg: VitTpExp.LossCfg = field(default_factory=LossCfg)
 
     @dataclass
     class OptimizerCfg:
@@ -877,7 +879,7 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
             ]
             return torch.optim.AdamW(parameters, lr=linear_scaled_lr, eps=self.opt_eps)
 
-    optimizer_cfg: OptimizerCfg = field(default_factory=OptimizerCfg)
+    optimizer_cfg: VitTpExp.OptimizerCfg = field(default_factory=OptimizerCfg)
 
     @dataclass
     class LrSchedulerCfg:
@@ -916,14 +918,14 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
             lr_scheduler, _ = create_scheduler(sched_args, optimizer)
             return lr_scheduler
 
-    lr_scheduler_cfg: LrSchedulerCfg = field(default_factory=LrSchedulerCfg)
+    lr_scheduler_cfg: VitTpExp.LrSchedulerCfg = field(default_factory=LrSchedulerCfg)
 
     @dataclass
     class EmaCfg:
         model_ema: bool = True  # official default on; forced off at tp>1 (docs/vit_tp.md D4)
         model_ema_decay: float = 0.99996
 
-    ema_cfg: EmaCfg = field(default_factory=EmaCfg)
+    ema_cfg: VitTpExp.EmaCfg = field(default_factory=EmaCfg)
 
     @dataclass
     class BenchCfg:
@@ -931,7 +933,7 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
         warmup_steps: int = 10
         measure_steps: int = 50
 
-    bench_cfg: BenchCfg = field(default_factory=BenchCfg)
+    bench_cfg: VitTpExp.BenchCfg = field(default_factory=BenchCfg)
 
     # ------------------------------ execution part ------------------------------ #
 
