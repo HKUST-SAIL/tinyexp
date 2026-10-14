@@ -214,7 +214,7 @@ For multi-node TorchRun, every node needs the same environment, source code, and
 
 ## Accelerate Launch
 
-`accelerate launch` is another external process owner. Use `launcher=mp` for the same reason as TorchRun:
+`accelerate launch` is another external process owner. Use `launcher=mp` for the same reason as TorchRun.
 
 The following portable smoke test verifies the Accelerate entry path with one CPU process:
 

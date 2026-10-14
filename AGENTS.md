@@ -51,12 +51,5 @@ Before launching GPU or Ray jobs (anything beyond `mode=help` or CPU tests), con
 - Commits follow Conventional Commits and often include an emoji (`feat: 🎸 add new accelerator`). PRs include a
   clear description, linked issue (if any), tests for behavior changes, and `README.md`/`docs/` updates when
   user-facing behavior changes.
-- Keep the agent-facing docs true. `tests/examples/test_examples_help_smoke.py` requires every example to carry a
-  run header and statically checks the commands in the run headers, `README.md`, `SKILL.md` and `docs/*.md` (key
-  names and types only, so a command can be legal yet stale), and that each run header's `Modes` are handled in
-  `run()`. `tests/test_tinyexp_artifacts.py` asserts in a subprocess that `import tinyexp` loads neither torch nor
-  wandb, and that every public module has a docstring.
-- Invariants the docs rely on: keep the `import torch` in `CheckpointCfg` and the `import wandb` in `WandbCfg` lazy
-  (inside methods); keep `from tinyexp.exp_mixins.basic_mixins import *Mixin` importable (released path); do not
-  move `tinyexp/__init__.py` and do not add a yaml at the package root (Hydra's `pkg://tinyexp` needs the
-  ConfigStore entry `cfg`); code moved out of `examples/` enters coverage, where the patch target is 80%.
+- Changing docstrings, run headers, the docs, or the package layout: first read "Documentation for Coding Agents"
+  in `docs/index.md` (what the tests check, and the invariants the docs rely on).
