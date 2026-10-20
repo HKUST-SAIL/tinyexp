@@ -91,9 +91,15 @@ def _run_multinode_probe() -> None:
                 accelerator = CPUAccelerator()
                 value = torch.tensor(float(accelerator.rank + 1))
                 reduced = accelerator.reduce(value, reduction="sum").item()
+                # prepare_model broadcasts rank 0's parameters to every worker.
+                model = torch.nn.Linear(1, 1, bias=False)
+                with torch.no_grad():
+                    model.weight.fill_(accelerator.rank + 1)
+                synced_weight = accelerator.prepare_model(model).module.weight.detach().item()
                 result = {
                     "rank": accelerator.rank,
                     "sum": reduced,
+                    "synced_weight": synced_weight,
                     "node_id": ray.get_runtime_context().get_node_id(),
                     "master_addr": accelerator.master_addr,
                     "master_port": accelerator.master_port,
@@ -108,6 +114,7 @@ def _run_multinode_probe() -> None:
 
         assert [result["rank"] for result in results] == [0, 1]
         assert [result["sum"] for result in results] == [3.0, 3.0]
+        assert [result["synced_weight"] for result in results] == [1.0, 1.0]
         assert {result["node_id"] for result in results} == {gpu_node.node_id}
         assert {result["master_addr"] for result in results} == {master_addr}
         assert {result["master_port"] for result in results} == {master_port}

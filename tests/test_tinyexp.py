@@ -26,53 +26,34 @@ class _MappingCfgExp(TinyExp):
 
 @dataclass
 class _StoreAndRunExpCfg(TinyExp):
-    check_exp_class: str = f"{__name__}._StoreAndRunExpCfg"
+    pass
 
 
-def test_tiny_exp_instantiation():
-    class MyExperiment(TinyExp):
-        pass
-
-    _ = MyExperiment()
+@dataclass
+class _WrongExpClassCfg(TinyExp):
+    exp_class: str = "some.wrong.Path"
 
 
-def test_exp_name_defaults_from_main_module_file(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    dummy_main = types.ModuleType("__main__")
-    dummy_main.__file__ = str(tmp_path / "resnet_exp.py")
-    monkeypatch.setitem(sys.modules, "__main__", dummy_main)
-
-    exp = TinyExp()
-    assert exp.exp_name == "resnet_exp"
-
-
-def test_exp_name_falls_back_to_argv(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
-    dummy_main = types.ModuleType("__main__")
-    monkeypatch.setitem(sys.modules, "__main__", dummy_main)
-    monkeypatch.setattr(sys, "argv", [str(tmp_path / "mnist_exp.py")])
-
-    exp = TinyExp()
-    assert exp.exp_name == "mnist_exp"
-
-
-def test_exp_name_defaults_to_exp_for_dash_c(monkeypatch: pytest.MonkeyPatch) -> None:
-    dummy_main = types.ModuleType("__main__")
-    monkeypatch.setitem(sys.modules, "__main__", dummy_main)
-    monkeypatch.setattr(sys, "argv", ["-c"])
-
-    exp = TinyExp()
-    assert exp.exp_name == "exp"
-
-
-def test_set_cfg_overrides_exp_name(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.fixture
+def quiet_rank(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RANK", "1")  # avoid noisy stdout prints during tests
-    exp = TinyExp()
-    original_exp_name = exp.exp_name
 
-    cfg = OmegaConf.create({"exp_name": "my_exp"})
-    exp.set_cfg(cfg)
 
-    assert exp.exp_name == "my_exp"
-    assert exp.overrided_cfg["exp_name"] == {"value": "my_exp", "original": original_exp_name}
+@pytest.mark.parametrize(
+    ("main_file", "argv", "expected"),
+    [("resnet_exp.py", None, "resnet_exp"), (None, "mnist_exp.py", "mnist_exp"), (None, "-c", "exp")],
+)
+def test_exp_name_defaults_from_main_module_then_argv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, main_file, argv, expected
+) -> None:
+    dummy_main = types.ModuleType("__main__")
+    if main_file:
+        dummy_main.__file__ = str(tmp_path / main_file)
+    if argv:
+        monkeypatch.setattr(sys, "argv", [argv if argv == "-c" else str(tmp_path / argv)])
+    monkeypatch.setitem(sys.modules, "__main__", dummy_main)
+
+    assert TinyExp().exp_name == expected
 
 
 def test_print_cfg_can_show_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -98,38 +79,32 @@ def test_print_cfg_can_show_overrides(monkeypatch: pytest.MonkeyPatch) -> None:
     assert messages[0].startswith("-------- Configurations --------\n")
 
 
-def test_set_cfg_overrides_nested(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("RANK", "1")  # avoid noisy stdout prints during tests
-    exp = _CfgExp()
+def test_set_cfg_overrides_nested_fields_and_records_them(quiet_rank: None) -> None:
+    """A full Hydra config carries ``overrided_cfg: {}``; it must not wipe records of earlier fields.
 
-    cfg = OmegaConf.create({"sub_cfg": {"a": 3}, "b": 4})
-    exp.set_cfg(cfg)
-
-    assert exp.sub_cfg.a == 3
-    assert exp.b == 4
-
-
-def test_set_cfg_keeps_overrides_recorded_before_overrided_cfg_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A full Hydra config carries ``overrided_cfg: {}``; it must not wipe records of earlier fields."""
-    monkeypatch.setenv("RANK", "1")
+    ``exp_class`` is always filled in by ``store_and_run_exp``; listing it under overrides is noise.
+    """
     exp = _CfgExp()
 
     # Field order matches the dataclass: base TinyExp fields (incl. overrided_cfg) come before subclass fields.
-    cfg = OmegaConf.create({"mode": "help", "overrided_cfg": {}, "sub_cfg": {"a": 3}})
-    exp.set_cfg(cfg)
+    exp.set_cfg(
+        OmegaConf.create({"mode": "help", "overrided_cfg": {}, "exp_class": "pkg.mod.Exp", "sub_cfg": {"a": 3}, "b": 4})
+    )
 
+    assert exp.sub_cfg.a == 3
+    assert exp.b == 4
+    assert exp.exp_class == "pkg.mod.Exp"
     assert exp.overrided_cfg == {
         "mode": {"value": "help", "original": "train"},
         "a": {"value": 3, "original": 1},
+        "b": {"value": 4, "original": 2},
     }
 
 
-def test_set_cfg_overrides_mapping_field(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("RANK", "1")
+def test_set_cfg_overrides_mapping_field(quiet_rank: None) -> None:
     exp = _MappingCfgExp()
 
-    cfg = OmegaConf.create({"options": {"base": 3, "extra": {"enabled": True}}})
-    exp.set_cfg(cfg)
+    exp.set_cfg(OmegaConf.create({"options": {"base": 3, "extra": {"enabled": True}}}))
 
     assert exp.options == {"base": 3, "extra": {"enabled": True}}
     assert isinstance(exp.options, dict)
@@ -139,80 +114,26 @@ def test_set_cfg_overrides_mapping_field(monkeypatch: pytest.MonkeyPatch) -> Non
     }
 
 
-def test_set_cfg_does_not_report_exp_class_as_override(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``exp_class`` is always filled in by ``store_and_run_exp``; listing it under overrides is noise."""
-    monkeypatch.setenv("RANK", "1")
-    exp = _CfgExp()
-
-    exp.set_cfg(OmegaConf.create({"exp_class": "pkg.mod.Exp", "b": 4}))
-
-    assert exp.exp_class == "pkg.mod.Exp"
-    assert exp.overrided_cfg == {"b": {"value": 4, "original": 2}}
-
-
-def test_set_cfg_unknown_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("RANK", "1")
-    exp = _CfgExp()
-
-    cfg = OmegaConf.create({"no_such_key": 1})
+def test_set_cfg_unknown_key_raises(quiet_rank: None) -> None:
     with pytest.raises(UnknownConfigurationKeyError):
-        exp.set_cfg(cfg)
+        _CfgExp().set_cfg(OmegaConf.create({"no_such_key": 1}))
 
 
-def test_store_and_run_exp_derives_exp_class_from_class(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("exp_cls", [_StoreAndRunExpCfg, _WrongExpClassCfg])
+def test_store_and_run_exp_derives_exp_class_from_class(monkeypatch: pytest.MonkeyPatch, exp_cls: type) -> None:
     import tinyexp
 
     recorded: dict[str, object] = {}
-
-    class _DummyConfigStore:
-        def store(self, name: str, node: object) -> None:
-            recorded["name"] = name
-            recorded["node"] = node
-
-    dummy_store = _DummyConfigStore()
-
-    def _instance(cls):
-        return dummy_store
-
-    monkeypatch.setattr(tinyexp.ConfigStore, "instance", classmethod(_instance))
+    store = types.SimpleNamespace(store=lambda name, node: recorded.update(name=name, node=node))
+    monkeypatch.setattr(tinyexp.ConfigStore, "instance", classmethod(lambda cls: store))
     monkeypatch.setattr(tinyexp, "simple_launch_exp", lambda: None)
 
-    store_and_run_exp(_StoreAndRunExpCfg)
+    store_and_run_exp(exp_cls)
 
-    expected_path = f"{_StoreAndRunExpCfg.__module__}.{_StoreAndRunExpCfg.__qualname__}"
     assert recorded["name"] == "cfg"
-    assert isinstance(recorded["node"], _StoreAndRunExpCfg)
-    assert recorded["node"].exp_class == expected_path
-
-
-def test_store_and_run_exp_overrides_exp_class_field(monkeypatch: pytest.MonkeyPatch) -> None:
-    import tinyexp
-
-    @dataclass
-    class _BadExpClass(TinyExp):
-        exp_class: str = "some.wrong.Path"
-
-    recorded: dict[str, object] = {}
-
-    class _DummyConfigStore:
-        def store(self, name: str, node: object) -> None:
-            recorded["name"] = name
-            recorded["node"] = node
-
-    dummy_store = _DummyConfigStore()
-
-    def _instance(cls):
-        return dummy_store
-
-    monkeypatch.setattr(tinyexp.ConfigStore, "instance", classmethod(_instance))
-    monkeypatch.setattr(tinyexp, "simple_launch_exp", lambda: None)
-
-    store_and_run_exp(_BadExpClass)
-
-    expected_path = f"{_BadExpClass.__module__}.{_BadExpClass.__qualname__}"
-    assert recorded["name"] == "cfg"
-    assert isinstance(recorded["node"], _BadExpClass)
-    assert recorded["node"].exp_class == expected_path
+    assert isinstance(recorded["node"], exp_cls)
+    # A wrong exp_class default is overridden too.
+    assert recorded["node"].exp_class == f"{exp_cls.__module__}.{exp_cls.__qualname__}"
 
 
 def test_canonical_exp_class_prefers_importable_spec_name(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -220,37 +141,26 @@ def test_canonical_exp_class_prefers_importable_spec_name(monkeypatch: pytest.Mo
     the canonical importable class so ray ships it by reference (regression:
     by-value export crashed with "Can't pickle <built-in function print>" when a
     platform agent patched builtins.print)."""
-    import types
-
     from tinyexp import _resolve_canonical_exp_class
+    from tinyexp.examples import vit_tp_exp
 
     # A class from a normally imported module has no canonical twin to swap in.
     assert _resolve_canonical_exp_class(_CfgExp) is None
 
     # A __main__ class whose running module has a spec name resolves canonically.
-    from tinyexp.examples import vit_tp_exp
-
-    original_module = vit_tp_exp.VitTpExp.__module__
     dummy_main = types.ModuleType("__main__")
     dummy_main.__spec__ = types.SimpleNamespace(name="tinyexp.examples.vit_tp_exp")  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "__main__", dummy_main)
-    try:
-        vit_tp_exp.VitTpExp.__module__ = "__main__"
-        resolved = _resolve_canonical_exp_class(vit_tp_exp.VitTpExp)
-        # In this single-import simulation the spec-name lookup returns the very
-        # class object we aliased to __main__; under ``python -m`` it is a
-        # distinct twin of the same file. Either way it must be a TinyExp subclass
-        # with the right qualname.
-        assert resolved is not None
-        assert issubclass(resolved, TinyExp)
-        assert resolved.__qualname__ == "VitTpExp"
-    finally:
-        vit_tp_exp.VitTpExp.__module__ = original_module
+    monkeypatch.setattr(vit_tp_exp.VitTpExp, "__module__", "__main__")
+    resolved = _resolve_canonical_exp_class(vit_tp_exp.VitTpExp)
+    # In this single-import simulation the spec-name lookup returns the very
+    # class object we aliased to __main__; under ``python -m`` it is a
+    # distinct twin of the same file. Either way it must be a TinyExp subclass
+    # with the right qualname.
+    assert resolved is not None
+    assert issubclass(resolved, TinyExp)
+    assert resolved.__qualname__ == "VitTpExp"
 
     # A plain script (no spec) has no canonical twin.
     dummy_main.__spec__ = None  # type: ignore[attr-defined]
-    try:
-        vit_tp_exp.VitTpExp.__module__ = "__main__"
-        assert _resolve_canonical_exp_class(vit_tp_exp.VitTpExp) is None
-    finally:
-        vit_tp_exp.VitTpExp.__module__ = original_module
+    assert _resolve_canonical_exp_class(vit_tp_exp.VitTpExp) is None

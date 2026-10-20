@@ -9,30 +9,38 @@ from tinyexp.dataset.fake_dataloader import HoldOnesampleDataLoader
 from tinyexp.dataset.sampler import InfiniteSampler
 
 
-def test_infinite_sampler_seed_none_is_resolved_once() -> None:
-    sampler = InfiniteSampler(size=5, shuffle=True, seed=None)
-    first_stream = iter(sampler)
-    first_values = [next(first_stream) for _ in range(10)]
-
-    sampler.set_epoch(0)
-    reset_stream = iter(sampler)
-    assert [next(reset_stream) for _ in range(10)] == first_values
+def _take(sampler: InfiniteSampler, count: int) -> list[int]:
+    stream = iter(sampler)
+    return [next(stream) for _ in range(count)]
 
 
-def test_infinite_sampler_rejects_invalid_size() -> None:
-    for size in (0, -1):
-        with pytest.raises(ValueError, match="size"):
-            InfiniteSampler(size=size)
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"size": 0}, "size"),
+        ({"size": -1}, "size"),
+        ({"size": 3, "accelerator": SimpleNamespace(rank=0, world_size=0)}, "world_size"),
+        ({"size": 3, "accelerator": SimpleNamespace(rank=0, world_size=-1)}, "world_size"),
+        ({"size": 3, "accelerator": SimpleNamespace(rank=-1, world_size=2)}, "rank"),
+        ({"size": 3, "accelerator": SimpleNamespace(rank=2, world_size=2)}, "rank"),
+    ],
+)
+def test_infinite_sampler_rejects_invalid_arguments(kwargs: dict, match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        InfiniteSampler(**kwargs)
 
 
-def test_infinite_sampler_rejects_invalid_world_size_and_rank() -> None:
-    for world_size in (0, -1):
-        with pytest.raises(ValueError, match="world_size"):
-            InfiniteSampler(size=3, accelerator=SimpleNamespace(rank=0, world_size=world_size))
+@pytest.mark.parametrize(
+    ("size", "rank", "world_size", "expected"),
+    [(3, 0, 1, [0, 1, 2, 0, 1, 2, 0]), (4, 1, 2, [1, 3, 1, 3, 1, 3])],
+)
+def test_infinite_sampler_no_shuffle_repeats_the_rank_slice(
+    size: int, rank: int, world_size: int, expected: list[int]
+) -> None:
+    accelerator = SimpleNamespace(rank=rank, world_size=world_size)
+    sampler = InfiniteSampler(size=size, shuffle=False, seed=0, accelerator=accelerator)
 
-    for rank in (-1, 2):
-        with pytest.raises(ValueError, match="rank"):
-            InfiniteSampler(size=3, accelerator=SimpleNamespace(rank=rank, world_size=2))
+    assert _take(sampler, len(expected)) == expected
 
 
 def test_infinite_sampler_non_divisible_stream_with_drop_last() -> None:
@@ -45,43 +53,39 @@ def test_infinite_sampler_non_divisible_stream_with_drop_last() -> None:
 
     assert len(keep_remainder) == 3
     assert len(drop_remainder) == 2
-    keep_iter = iter(keep_remainder)
-    other_iter = iter(other_rank)
-    assert [next(keep_iter) for _ in range(4)] == [0, 2, 4, 1]
-    assert [next(other_iter) for _ in range(4)] == [1, 3, 0, 2]
+    assert _take(keep_remainder, 4) == [0, 2, 4, 1]
+    assert _take(other_rank, 4) == [1, 3, 0, 2]
 
     drop_remainder.set_epoch(1)
-    resumed_iter = iter(drop_remainder)
-    assert [next(resumed_iter) for _ in range(2)] == [4, 1]
+    assert _take(drop_remainder, 2) == [4, 1]
 
 
-def test_hold_one_sample_dataloader_deepcopies() -> None:
-    data = [{"x": [1]}, {"x": [2]}]
-    dl = HoldOnesampleDataLoader(data)
+def test_infinite_sampler_seed_none_is_resolved_once() -> None:
+    sampler = InfiniteSampler(size=5, shuffle=True, seed=None)
+    first_values = _take(sampler, 10)
 
-    it = iter(dl)
-    first = next(it)
-    second = next(it)
-
-    assert first == {"x": [1]}
-    assert second == {"x": [1]}
-    assert first is not second
-    assert first["x"] is not second["x"]
+    sampler.set_epoch(0)
+    assert _take(sampler, 10) == first_values
 
 
-def test_infinite_sampler_no_shuffle_single_worker() -> None:
-    sampler = InfiniteSampler(size=3, shuffle=False, seed=0)
-    it = iter(sampler)
-    first_seven = [next(it) for _ in range(7)]
-    assert first_seven == [0, 1, 2, 0, 1, 2, 0]
+def test_infinite_sampler_set_epoch_continues_fixed_stream() -> None:
+    expected_values = _take(InfiniteSampler(size=10, shuffle=True, seed=17), 20)
+
+    sampler = InfiniteSampler(size=10, shuffle=True, seed=17)
+    sampler.set_epoch(1)
+    assert _take(sampler, 10) == expected_values[10:20]
+
+    sampler.set_epoch(0)
+    assert _take(sampler, 10) == expected_values[:10]
 
 
-def test_infinite_sampler_no_shuffle_multi_worker_slices() -> None:
-    accelerator = SimpleNamespace(rank=1, world_size=2)
-    sampler = InfiniteSampler(size=4, shuffle=False, seed=0, accelerator=accelerator)
-    it = iter(sampler)
-    first_six = [next(it) for _ in range(6)]
-    assert first_six == [1, 3, 1, 3, 1, 3]
+def test_infinite_sampler_set_epoch_preserves_distributed_stream_position() -> None:
+    expected_global = _take(InfiniteSampler(size=12, shuffle=True, seed=23), 40)
+
+    sampler = InfiniteSampler(size=12, shuffle=True, seed=23, accelerator=SimpleNamespace(rank=1, world_size=2))
+    sampler.set_epoch(2)
+
+    assert _take(sampler, 5) == expected_global[2 * 6 * 2 + 1 :: 2][:5]
 
 
 def test_infinite_sampler_reuses_one_dataloader_iterator_across_epochs() -> None:
@@ -106,75 +110,14 @@ def test_infinite_sampler_reuses_one_dataloader_iterator_across_epochs() -> None
     epochs = [[next(iterator).tolist() for _ in range(len(dataloader))] for _ in range(3)]
 
     assert CountingInfiniteSampler.iterator_count == 1
-    assert epochs == [
-        [[0, 1], [2, 3]],
-        [[0, 1], [2, 3]],
-        [[0, 1], [2, 3]],
-    ]
+    assert epochs == [[[0, 1], [2, 3]]] * 3
 
 
-def test_infinite_sampler_resumes_at_epoch_before_iterator_creation() -> None:
-    class IndexDataset(Dataset[int]):
-        def __len__(self) -> int:
-            return 4
+def test_hold_one_sample_dataloader_deepcopies() -> None:
+    it = iter(HoldOnesampleDataLoader([{"x": [1]}, {"x": [2]}]))
+    first = next(it)
+    second = next(it)
 
-        def __getitem__(self, index: int) -> int:
-            return index
-
-    sampler = InfiniteSampler(size=4, shuffle=True, seed=17)
-    dataloader = DataLoader(IndexDataset(), batch_size=2, sampler=sampler, num_workers=0)
-    iterator = iter(dataloader)
-    first_epoch = [next(iterator).tolist() for _ in range(len(dataloader))]
-    second_epoch = [next(iterator).tolist() for _ in range(len(dataloader))]
-
-    resumed_sampler = InfiniteSampler(size=4, shuffle=True, seed=17)
-    resumed_sampler.set_epoch(1)
-    resumed_dataloader = DataLoader(
-        IndexDataset(),
-        batch_size=2,
-        sampler=resumed_sampler,
-        num_workers=0,
-    )
-    resumed_iterator = iter(resumed_dataloader)
-    resumed_epoch = [next(resumed_iterator).tolist() for _ in range(len(resumed_dataloader))]
-
-    assert first_epoch != second_epoch
-    assert resumed_epoch == second_epoch
-
-
-def test_infinite_sampler_set_epoch_continues_fixed_stream() -> None:
-    expected_sampler = InfiniteSampler(size=10, shuffle=True, seed=17)
-    expected_stream = iter(expected_sampler)
-    expected_values = [next(expected_stream) for _ in range(20)]
-
-    sampler = InfiniteSampler(size=10, shuffle=True, seed=17)
-    sampler.set_epoch(1)
-    resumed_stream = iter(sampler)
-    resumed_values = [next(resumed_stream) for _ in range(10)]
-
-    assert resumed_values == expected_values[10:20]
-
-    sampler.set_epoch(0)
-    reset_stream = iter(sampler)
-    assert [next(reset_stream) for _ in range(10)] == expected_values[:10]
-
-
-def test_infinite_sampler_set_epoch_preserves_distributed_stream_position() -> None:
-    accelerator = SimpleNamespace(rank=1, world_size=2)
-    global_sampler = InfiniteSampler(size=12, shuffle=True, seed=23)
-    global_stream = iter(global_sampler)
-    expected_global = [next(global_stream) for _ in range(40)]
-
-    sampler = InfiniteSampler(size=12, shuffle=True, seed=23, accelerator=accelerator)
-    sampler.set_epoch(2)
-    resumed_stream = iter(sampler)
-    resumed_values = [next(resumed_stream) for _ in range(5)]
-    expected_values = expected_global[2 * 6 * 2 + 1 :: 2][:5]
-
-    assert resumed_values == expected_values
-
-
-def test_infinite_sampler_len_respects_drop_last() -> None:
-    accelerator = SimpleNamespace(rank=0, world_size=2)
-    assert len(InfiniteSampler(size=5, shuffle=False, seed=0, accelerator=accelerator, drop_last=False)) == 3
-    assert len(InfiniteSampler(size=5, shuffle=False, seed=0, accelerator=accelerator, drop_last=True)) == 2
+    assert first == second == {"x": [1]}
+    assert first is not second
+    assert first["x"] is not second["x"]

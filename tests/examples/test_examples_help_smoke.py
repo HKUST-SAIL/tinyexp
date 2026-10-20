@@ -5,7 +5,7 @@
   handled by the experiment.
 - Every command in a run header and in the user docs (README, SKILL, docs/) is checked statically:
   overrides for a bundled example are composed with Hydra (unknown keys and bad types fail) and
-  ``tinyexp-run-with-*`` arguments are parsed with the tool's own argument parser.
+  ``tinyexp-run-with-*`` arguments are parsed with the tool's own argument parser, which must be a project script.
 """
 
 import ast
@@ -187,23 +187,30 @@ def test_documented_command_is_valid(location: str, tokens: list[str]) -> None:
         pytest.fail(f"{location}: invalid arguments for {tokens[0]!r}: exit {error.code}")
 
 
-def test_help_writes_only_under_output_root(tmp_path: Path) -> None:
-    cwd = tmp_path / "cwd"
-    cwd.mkdir()
-    output_root = tmp_path / "out"
-
-    result = _run_help("mnist_exp", cwd, f"output_root={output_root}")
-
-    assert result.returncode == 0, result.stderr
-    assert list(cwd.iterdir()) == []
-
-
-def test_help_ignores_unusable_default_output_in_cwd(tmp_path: Path) -> None:
-    """A stale ``./output`` (e.g. a broken symlink) must not break runs that set ``output_root``."""
+def test_help_applies_overrides_and_writes_only_under_output_root(tmp_path: Path) -> None:
+    """Overrides are printed; a stale ``./output`` (e.g. a broken symlink) must not break runs that set
+    ``output_root``, and nothing else is written to the working directory."""
     cwd = tmp_path / "cwd"
     cwd.mkdir()
     (cwd / "output").symlink_to(tmp_path / "missing-target")
 
-    result = _run_help("mnist_exp", cwd, f"output_root={tmp_path / 'out'}")
+    result = _run_help(
+        "mnist_exp",
+        cwd,
+        f"output_root={tmp_path / 'out'}",
+        "dataloader_cfg.train_batch_size_per_device=16",
+        "ray_cfg.ray_num_worker=1",
+    )
 
     assert result.returncode == 0, result.stderr
+    assert [path.name for path in cwd.iterdir()] == ["output"]
+    output = f"{result.stdout}\n{result.stderr}"
+    assert re.search(r"train_batch_size_per_device:\s*16\b", output)
+    assert re.search(r"ray_num_worker:\s*1\b", output)
+
+
+def test_cli_tools_are_project_scripts() -> None:
+    pyproject = (PROJECT_ROOT / "pyproject.toml").read_text()
+
+    for tool, module in CLI_TOOLS.items():
+        assert f'{tool} = "{module}:cli"' in pyproject

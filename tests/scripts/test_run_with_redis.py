@@ -14,8 +14,7 @@ import pytest
 
 from tinyexp.cli import run_with_redis
 from tinyexp.cli.run_with_redis import build_redis_cfg, main, stop_child_process
-
-ROOT = Path(__file__).resolve().parents[2]
+from tinyexp.exp_mixins import RedisCfgMixin
 
 
 def _free_port() -> int:
@@ -36,15 +35,19 @@ def _post_register(port: int, host: str, timeout_s: float = 3.0) -> dict[str, ob
         return json.loads(response.read())
 
 
-def _write_demo_exp(tmp_path: Path) -> Path:
-    exp_file = tmp_path / "demo_exp.py"
+def _write_exp_module(directory: Path, name: str = "demo_exp", launcher: str = "mp") -> Path:
+    exp_file = directory / f"{name}.py"
     exp_file.write_text(
-        "from dataclasses import dataclass\n"
+        "from dataclasses import dataclass, field\n"
         "from tinyexp import TinyExp\n"
         "from tinyexp.exp_mixins import RedisCfgMixin\n"
         "@dataclass\n"
-        "class DemoExp(TinyExp, RedisCfgMixin):\n"
-        "    pass\n"
+        "class Exp(TinyExp, RedisCfgMixin):\n"
+        f"    launcher: str = {launcher!r}\n"
+        "    @dataclass\n"
+        "    class RedisCfg(RedisCfgMixin.RedisCfg):\n"
+        "        redis_cache_max_memory: int = 7\n"
+        "    redis_cfg: RedisCfg = field(default_factory=RedisCfg)\n"
     )
     return exp_file
 
@@ -61,30 +64,15 @@ class _FinishedProcess:
         return self.returncode
 
 
-def test_run_with_redis_python_syntax() -> None:
-    assert (
-        subprocess.run(  # noqa: S603
-            [sys.executable, "-m", "py_compile", "tinyexp/cli/run_with_redis.py"],
-            cwd=ROOT,
-            check=False,
-        ).returncode
-        == 0
-    )
-
-
-def test_project_scripts_define_redis_command() -> None:
-    pyproject = (ROOT / "pyproject.toml").read_text()
-
-    assert 'tinyexp-run-with-redis = "tinyexp.cli.run_with_redis:cli"' in pyproject
-
-
-def test_build_redis_cfg_uses_exp_class_overrides(tmp_path: Path) -> None:
-    exp_file = _write_demo_exp(tmp_path)
+@pytest.mark.parametrize("exp_name", ["demo_exp.py", "missing_exp.py"])
+def test_build_redis_cfg_applies_overrides(tmp_path: Path, exp_name: str) -> None:
+    """Overrides apply to the experiment's RedisCfg, or to the default one when the file is missing."""
+    _write_exp_module(tmp_path)
 
     redis_cfg = build_redis_cfg(
         [
             "python",
-            str(exp_file),
+            str(tmp_path / exp_name),
             "redis_cfg.redis_cluster_ports=[7002]",
             "redis_cfg.redis_cache_enabled=false",
             "redis_cfg.redis_rendezvous_world_size=2",
@@ -94,22 +82,9 @@ def test_build_redis_cfg_uses_exp_class_overrides(tmp_path: Path) -> None:
     assert redis_cfg.redis_cluster_ports == [7002]
     assert redis_cfg.redis_cache_enabled is False
     assert redis_cfg.redis_rendezvous_world_size == 2
-
-
-def test_build_redis_cfg_applies_overrides_to_default_config() -> None:
-    redis_cfg = build_redis_cfg(
-        [
-            "python",
-            "missing_exp.py",
-            "redis_cfg.redis_cluster_ports=[7002]",
-            "redis_cfg.redis_cache_enabled=false",
-            "redis_cfg.redis_rendezvous_world_size=2",
-        ]
+    assert redis_cfg.redis_cache_max_memory == (
+        7 if exp_name == "demo_exp.py" else RedisCfgMixin.RedisCfg().redis_cache_max_memory
     )
-
-    assert redis_cfg.redis_cluster_ports == [7002]
-    assert redis_cfg.redis_cache_enabled is False
-    assert redis_cfg.redis_rendezvous_world_size == 2
 
 
 def test_build_redis_cfg_uses_local_exp_class_over_imported_base(tmp_path: Path, monkeypatch) -> None:
@@ -143,25 +118,30 @@ def test_build_redis_cfg_uses_local_exp_class_over_imported_base(tmp_path: Path,
     assert redis_cfg.redis_cache_max_memory == 321
 
 
-def test_rendezvous_mode_requires_non_local_master_host(tmp_path: Path) -> None:
-    exp_file = _write_demo_exp(tmp_path)
+@pytest.mark.parametrize(
+    "wrapper_args",
+    [
+        # Rendezvous mode needs a non-local master host.
+        [],
+        ["--node-count", "2", "--node-rank", "2", "--head-addr", "10.0.0.1", "--"],
+    ],
+)
+def test_main_rejects_invalid_topology(tmp_path: Path, wrapper_args: list[str]) -> None:
+    exp_file = _write_exp_module(tmp_path)
+    overrides = ["redis_cfg.redis_cluster_ports=[7010,7011]"]
+    if not wrapper_args:
+        overrides.append("redis_cfg.redis_rendezvous_world_size=2")
 
-    assert (
-        main(
-            [
-                "python",
-                str(exp_file),
-                "redis_cfg.redis_rendezvous_world_size=2",
-                "redis_cfg.redis_cluster_ports=[7010,7011]",
-            ]
-        )
-        == 2
-    )
+    assert main([*wrapper_args, "python", str(exp_file), *overrides]) == 2
 
 
 def test_run_with_redis_appends_connection_overrides_for_torchrun_command(tmp_path: Path, monkeypatch) -> None:
-    exp_file = _write_demo_exp(tmp_path)
+    exp_file = _write_exp_module(tmp_path)
     captured = {}
+    # Multi-machine launchers export NODE_RANK=0,1,2,... on every host. When each host only starts its own
+    # (unshared) local Redis, world_size is 1 and the inherited NODE_RANK must not trigger the
+    # "--node-rank must be < --node-count" guard, which only applies to multi-node cluster mode.
+    monkeypatch.setenv("NODE_RANK", "3")
 
     def fake_start_local_redis(redis_cfg, started_nodes):
         captured["startup_ports"] = list(redis_cfg.redis_cluster_ports)
@@ -204,65 +184,8 @@ def test_run_with_redis_appends_connection_overrides_for_torchrun_command(tmp_pa
     assert captured["popen_kwargs"]["start_new_session"] is True
 
 
-def test_single_node_local_redis_ignores_inherited_node_rank(tmp_path: Path, monkeypatch) -> None:
-    # Multi-machine launchers export NODE_RANK=0,1,2,... on every host. When each
-    # host only starts its own (unshared) local Redis, world_size is 1 and the
-    # inherited NODE_RANK must not trigger the "--node-rank must be < --node-count"
-    # guard, which only applies to multi-node cluster mode.
-    exp_file = _write_demo_exp(tmp_path)
-    captured = {}
-    monkeypatch.setenv("NODE_RANK", "3")
-
-    def fake_start_local_redis(redis_cfg, started_nodes):
-        captured["started_local"] = True
-        return "127.0.0.1", [7014]
-
-    def fake_popen(args, **kwargs):
-        captured["argv"] = args
-        return _FinishedProcess()
-
-    monkeypatch.setattr("tinyexp.cli.run_with_redis.start_local_redis", fake_start_local_redis)
-    monkeypatch.setattr("tinyexp.cli.run_with_redis.subprocess.Popen", fake_popen)
-
-    assert (
-        main(
-            [
-                "python",
-                str(exp_file),
-                "redis_cfg.redis_cluster_ports=[7014]",
-                "redis_cfg.redis_cache_enabled=true",
-                "redis_cfg.redis_rendezvous_world_size=1",
-            ]
-        )
-        == 0
-    )
-    assert captured["started_local"] is True
-
-
-def test_multi_node_rejects_out_of_range_node_rank(tmp_path: Path) -> None:
-    exp_file = _write_demo_exp(tmp_path)
-
-    assert (
-        main(
-            [
-                "--node-count",
-                "2",
-                "--node-rank",
-                "2",
-                "--head-addr",
-                "10.0.0.1",
-                "--",
-                "python",
-                str(exp_file),
-                "redis_cfg.redis_cluster_ports=[7010,7011]",
-            ]
-        )
-        == 2
-    )
-
-
 def test_rendezvous_mode_uses_exp_ports(tmp_path: Path, monkeypatch) -> None:
-    exp_file = _write_demo_exp(tmp_path)
+    exp_file = _write_exp_module(tmp_path)
     captured = {}
 
     def fake_start_rendezvous_redis_cluster(
@@ -416,7 +339,7 @@ def test_multi_node_wrapper_cleans_up_immediately_after_child_exit(
     monkeypatch,
     child_exit_code: int,
 ) -> None:
-    exp_file = _write_demo_exp(tmp_path)
+    exp_file = _write_exp_module(tmp_path)
     events: list[str] = []
 
     class FakeLifecycle:
@@ -473,7 +396,7 @@ def test_multi_node_wrapper_cleans_up_immediately_after_child_exit(
 
 
 def test_main_restores_signal_handlers_after_child_exit(tmp_path: Path, monkeypatch) -> None:
-    exp_file = _write_demo_exp(tmp_path)
+    exp_file = _write_exp_module(tmp_path)
     previous_handlers = {
         signal.SIGTERM: signal.getsignal(signal.SIGTERM),
         signal.SIGINT: signal.getsignal(signal.SIGINT),
@@ -580,21 +503,6 @@ def test_handle_signal_stops_child_and_closes_lifecycle(signum: int, monkeypatch
     assert calls == [(child, signum), "close-lifecycle"]
 
 
-def _write_exp_module(directory: Path, name: str, launcher: str) -> None:
-    (directory / f"{name}.py").write_text(
-        "from dataclasses import dataclass, field\n"
-        "from tinyexp import TinyExp\n"
-        "from tinyexp.exp_mixins import RedisCfgMixin\n"
-        "@dataclass\n"
-        "class Exp(TinyExp, RedisCfgMixin):\n"
-        f"    launcher: str = {launcher!r}\n"
-        "    @dataclass\n"
-        "    class RedisCfg(RedisCfgMixin.RedisCfg):\n"
-        "        redis_cache_max_memory: int = 7\n"
-        "    redis_cfg: RedisCfg = field(default_factory=RedisCfg)\n"
-    )
-
-
 @pytest.mark.parametrize(
     ("launcher_default", "extra", "rejected"),
     [("ray", [], True), ("mp", ["launcher=ray"], True), ("ray", ["launcher=mp"], False)],
@@ -602,7 +510,7 @@ def _write_exp_module(directory: Path, name: str, launcher: str) -> None:
 def test_main_rejects_launcher_ray_before_starting_redis(
     tmp_path: Path, monkeypatch, capsys, launcher_default: str, extra: list[str], rejected: bool
 ) -> None:
-    _write_exp_module(tmp_path, "ray_default_exp", launcher_default)
+    _write_exp_module(tmp_path, "ray_default_exp", launcher=launcher_default)
     monkeypatch.chdir(tmp_path)
     started: list[str] = []
     monkeypatch.setattr(run_with_redis, "start_local_redis", lambda *a, **k: started.append("redis") or None)
@@ -629,7 +537,7 @@ def test_main_rejects_launcher_ray_before_starting_redis(
 )
 def test_build_redis_cfg_resolves_module_like_python_m(tmp_path: Path, monkeypatch, command: list[str]) -> None:
     # ``python -m`` (also run by torchrun/accelerate for ``-m``) puts the current directory on sys.path.
-    _write_exp_module(tmp_path, "cwd_exp", "mp")
+    _write_exp_module(tmp_path, "cwd_exp")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "path", [p for p in sys.path if p not in ("", ".", str(tmp_path))])
 

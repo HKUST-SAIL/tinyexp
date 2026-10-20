@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import pytest
+import torch
 
-from tinyexp.tiny_engine.accelerator import HFAccelerator
+pytest.importorskip("accelerate")
+
+from tinyexp.tiny_engine.accelerator import AcceleratorProtocol, HFAccelerator
 
 
-def test_hf_accelerator_aliases_accelerate_indices() -> None:
+def test_hf_accelerator_implements_protocol_and_aliases_accelerate_indices() -> None:
     accelerator = HFAccelerator(cpu=True)
 
+    assert isinstance(accelerator, AcceleratorProtocol)
     assert accelerator.rank == accelerator.process_index
     assert accelerator.world_size == accelerator.num_processes
     assert accelerator.local_rank == accelerator.local_process_index
+    assert torch.equal(accelerator.reduce(torch.tensor([2.0]), reduction="sum"), torch.tensor([2.0]))
+    assert torch.equal(accelerator.reduce(torch.tensor([2.0]), reduction="mean"), torch.tensor([2.0]))
     accelerator.destroy()
 
 

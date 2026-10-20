@@ -16,26 +16,16 @@ from tinyexp.utils.ray_utils import (
 @ray.remote
 class DDPAcceleratorProxy:
     def __init__(self):
-        # This will initialize the process group using env vars from get_num_gpus_worker_options
+        # Initializes the process group from the env vars set by get_num_worker_options.
         self.accelerator = DDPAccelerator()
 
     def test_reduce(self):
-        # 1. Create tensor on the correct device for this worker.
         device = self.accelerator.device
-        # Each worker creates a tensor with its rank [0], [1], etc.
-        tensor_to_sum = torch.tensor([self.accelerator.rank], device=device, dtype=torch.float32)
-
-        # 2. Call reduce. This will sum the tensors from all workers.
-        # For 2 workers, the ranks are 0 and 1. The sum is 0 + 1 = 1.
-        res = self.accelerator.reduce(tensor_to_sum, reduction="sum")
-
-        # 3. The result on all workers should be the sum of all ranks.
-        # Sum of 0 to n-1 is n * (n-1) / 2
         world_size = self.accelerator.world_size
-        expected_val = (world_size * (world_size - 1)) / 2
-        expected_result = torch.tensor([expected_val], device=device, dtype=torch.float32)
+        expected_val = (world_size * (world_size - 1)) / 2  # sum of ranks 0..n-1
 
-        assert torch.equal(res, expected_result)
+        res = self.accelerator.reduce(torch.tensor([self.accelerator.rank], device=device, dtype=torch.float32))
+        assert torch.equal(res, torch.tensor([expected_val], device=device, dtype=torch.float32))
 
         # nccl cannot reduce cpu tensors directly; reduce must transparently
         # stage them on the device and return the result on the input device
@@ -43,75 +33,40 @@ class DDPAcceleratorProxy:
         # associated with device type cpu" under DDP+nccl).
         cpu_tensor = torch.tensor([float(self.accelerator.rank)], dtype=torch.float64)
         cpu_res = self.accelerator.reduce(cpu_tensor, reduction="sum")
-        expected_cpu = torch.tensor([expected_val], dtype=torch.float64)
         assert cpu_res.device.type == "cpu"
-        assert torch.equal(cpu_res, expected_cpu)
+        assert torch.equal(cpu_res, torch.tensor([expected_val], dtype=torch.float64))
         # The caller's tensor is never mutated in place.
         assert torch.equal(cpu_tensor, torch.tensor([float(self.accelerator.rank)], dtype=torch.float64))
         return True
 
 
 @pytest.mark.skipif(torch.cuda.device_count() < 2, reason="Requires at least 2 GPUs")
-class TestDDPAcceleratorWithRay:
-    def test_ddp_accelerator(self, ray_session):
-        num_workers = 2
-        # This utility correctly sets up env vars and placement groups.
-        pg = get_placement_group(
-            num_worker=num_workers,
-            num_gpus_per_worker=1.0,  # Each worker gets 1 GPU
-            num_cpus_per_worker=4,
-        )
-        node_ids = get_placement_group_node_ids(pg, num_workers)
-        gpu_per_actor = 0.2
-        cpus_per_actor = 1
+def test_two_ddp_groups_share_one_placement_group(ray_session):
+    num_workers = 2
+    pg = get_placement_group(num_worker=num_workers, num_gpus_per_worker=1.0, num_cpus_per_worker=4)
+    node_ids = get_placement_group_node_ids(pg, num_workers)
 
-        worker_group = []
-        rendezvous_actors = []
-        try:
-            rendezvous_actor1, master_addr1, master_port1 = start_ray_rendezvous_store(
+    worker_group = []
+    rendezvous_actors = []
+    try:
+        # Two independent process groups, each with its own rendezvous store, on fractional GPUs.
+        for _ in range(2):
+            rendezvous_actor, master_addr, master_port = start_ray_rendezvous_store(pg, num_workers, timeout_s=30)
+            rendezvous_actors.append(rendezvous_actor)
+            options_list = get_num_worker_options(
                 pg,
                 num_workers,
-                timeout_s=30,
-            )
-            rendezvous_actors.append(rendezvous_actor1)
-            options_list1 = get_num_worker_options(
-                pg,
-                num_workers,
-                gpu_ratio=gpu_per_actor,
-                num_cpus_per_worker=cpus_per_actor,
-                master_addr=master_addr1,
-                master_port=master_port1,
+                gpu_ratio=0.2,
+                num_cpus_per_worker=1,
+                master_addr=master_addr,
+                master_port=master_port,
                 node_ids=node_ids,
             )
-            worker_group1 = [DDPAcceleratorProxy.options(**options).remote() for options in options_list1]
+            worker_group += [DDPAcceleratorProxy.options(**options).remote() for options in options_list]
 
-            rendezvous_actor2, master_addr2, master_port2 = start_ray_rendezvous_store(
-                pg,
-                num_workers,
-                timeout_s=30,
-            )
-            rendezvous_actors.append(rendezvous_actor2)
-            options_list2 = get_num_worker_options(
-                pg,
-                num_workers,
-                gpu_ratio=gpu_per_actor,
-                num_cpus_per_worker=cpus_per_actor,
-                master_addr=master_addr2,
-                master_port=master_port2,
-                node_ids=node_ids,
-            )
-            worker_group2 = [DDPAcceleratorProxy.options(**options).remote() for options in options_list2]
-
-            worker_group = worker_group1 + worker_group2
-            run_futures = [worker.test_reduce.remote() for worker in worker_group]
-
-            results = ray.get(run_futures, timeout=60)
-            assert all(results)
-        finally:
-            for worker in worker_group:
-                with suppress(Exception):
-                    ray.kill(worker, no_restart=True)
-            for rendezvous_actor in rendezvous_actors:
-                with suppress(Exception):
-                    ray.kill(rendezvous_actor, no_restart=True)
-            ray.util.remove_placement_group(pg)
+        assert all(ray.get([worker.test_reduce.remote() for worker in worker_group], timeout=60))
+    finally:
+        for actor in worker_group + rendezvous_actors:
+            with suppress(Exception):
+                ray.kill(actor, no_restart=True)
+        ray.util.remove_placement_group(pg)

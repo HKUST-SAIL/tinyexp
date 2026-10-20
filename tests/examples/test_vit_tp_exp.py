@@ -176,13 +176,6 @@ def test_train_dataloader_rejects_empty_epoch() -> None:
     assert len(cfg.build_train_dataloader(accelerator, replicate_data=True)) == cfg.fake_data_len // 8
 
 
-def _tp_model() -> VisionTransformer:
-    torch.manual_seed(42)
-    return VisionTransformer(
-        img_size=32, patch_size=16, embed_dim=64, depth=2, num_heads=4, num_classes=10, qkv_bias=True
-    ).eval()
-
-
 def _free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))
@@ -190,7 +183,7 @@ def _free_port() -> int:
 
 
 def _tp_reference(state_dict: dict, inputs: torch.Tensor) -> dict:
-    model = _tp_model()
+    model = _tiny_vit()
     model.load_state_dict(state_dict)
     with torch.no_grad():
         logits = model(inputs)
@@ -209,7 +202,7 @@ def _tp_worker(rank: int, world_size: int, port: int, state_dict: dict, inputs: 
     )
     accelerator = TPAccelerator()
     try:
-        model = _tp_model()
+        model = _tiny_vit()
         model.load_state_dict(state_dict)
         model = accelerator.prepare_model(model, parallelize_plan=build_tp_parallelize_plan(model, world_size))
         logits = model(inputs).detach()
@@ -229,7 +222,7 @@ def _tp_worker(rank: int, world_size: int, port: int, state_dict: dict, inputs: 
 
 
 def test_tp2_matches_single_process(tmp_path) -> None:
-    state_dict = _tp_model().state_dict()
+    state_dict = _tiny_vit().state_dict()
     inputs = torch.randn(4, 3, 32, 32)
     reference = _tp_reference(state_dict, inputs)
     output_path = tmp_path / "tp2_result.pt"
@@ -243,4 +236,4 @@ def test_tp2_matches_single_process(tmp_path) -> None:
 
 def test_tp_plan_requires_divisible_heads() -> None:
     with pytest.raises(ValueError, match="divisible"):
-        build_tp_parallelize_plan(_tp_model(), tp_size=3)
+        build_tp_parallelize_plan(_tiny_vit(), tp_size=3)
