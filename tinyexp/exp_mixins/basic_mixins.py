@@ -8,7 +8,7 @@ Each mixin adds one config field whose nested dataclass holds both settings and 
 | `RayCfgMixin` | `ray_cfg` | `launcher=ray`: worker contract and minimal example in `RayCfgMixin`, count/resources in `RayCfg` |
 | `CheckpointCfgMixin` | `checkpoint_cfg` | `save_checkpoint` / `load_checkpoint` / RNG state helpers |
 | `WandbCfgMixin` | `wandb_cfg` | `build_wandb(accelerator, **wandb_init_kwargs)` if enabled, else `None` |
-| `TrackioCfgMixin` | `trackio_cfg` | same contract for `trackio`: `build_trackio(accelerator, **trackio_init_kwargs)` |
+| `TrackioCfgMixin` | `trackio_cfg` | `build_trackio(accelerator, output_root, **trackio_init_kwargs)` writes to `output_root/trackio` |
 | `RedisCfgMixin` | `redis_cfg` | Redis byte-cache settings consumed by datasets and launchers |
 
 Usage: ``class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, LoggerCfgMixin)``. To change defaults,
@@ -352,28 +352,40 @@ class WandbCfgMixin:
 class TrackioCfgMixin:
     @dataclass
     class TrackioCfg:
-        """Optional Trackio logging, off by default (``trackio_cfg.enable_trackio=true`` turns it on).
+        """Optional local Trackio logging, enabled with ``trackio_cfg.enable_trackio=true`` (Python 3.10+).
 
-        Same contract as ``WandbCfg``: ``build_trackio(accelerator=None, **kwargs)`` returns ``None`` when disabled
-        and otherwise the ``trackio`` module, calling ``trackio.init(**kwargs)`` (``project=``, ``name=``,
-        ``config=``, ...) only on rank 0 (or when no accelerator is given), so log from rank 0 only::
+        ``build_trackio(accelerator=None, output_root="./output", **kwargs)`` returns ``None`` when disabled,
+        otherwise the ``trackio`` module; only rank 0 calls ``trackio.init(**kwargs)``. Log and finish there::
 
-            trackio = self.trackio_cfg.build_trackio(accelerator=accelerator, project="p", name=self.exp_name, config=cfg_dict)
+            trackio = self.trackio_cfg.build_trackio(
+                accelerator=accelerator, output_root=self.output_root,
+                project="p", name=self.exp_name, config=cfg_dict,
+            )
             if trackio is not None and accelerator.is_main_process:
-                trackio.log({"loss": loss}, step=global_step)
+                try:
+                    trackio.log({"loss": loss}, step=global_step)
+                finally:
+                    trackio.finish()
 
-        Runs are written below ``trackio.TRACKIO_DIR`` (``~/.cache/huggingface/trackio`` by default): no account,
-        no network, inspect them with the ``trackio show`` CLI. Unlike ``wandb.log``, ``trackio.log`` raises when
-        no run is initialized, so call ``build_trackio`` (it inits on rank 0) before logging. Trackio needs
-        Python 3.10+, so on 3.9 ``enable_trackio=true`` ends in ``ModuleNotFoundError``.
+        Sets ``TRACKIO_DIR=<output_root>/trackio`` before importing Trackio. View runs with
+        ``TRACKIO_DIR=<output_root>/trackio trackio show --project p``. Trackio fixes its directory at import;
+        if already imported with another directory, use a fresh process. No account or network is required.
         """
 
         enable_trackio: bool = False
 
-        def build_trackio(self, accelerator=None, **kwargs):
+        def build_trackio(self, accelerator=None, output_root: str = "./output", **kwargs):
             if self.enable_trackio:
+                trackio_dir = (Path(output_root) / "trackio").resolve()
+                os.environ["TRACKIO_DIR"] = str(trackio_dir)
                 import trackio
 
+                if Path(trackio.TRACKIO_DIR).resolve() != trackio_dir:
+                    message = (
+                        f"Trackio was already imported with TRACKIO_DIR={trackio.TRACKIO_DIR}; "
+                        f"start a fresh process with TRACKIO_DIR={trackio_dir} before importing Trackio."
+                    )
+                    raise RuntimeError(message)
                 if accelerator is None or accelerator.rank == 0:
                     trackio.init(**kwargs)
                 return trackio

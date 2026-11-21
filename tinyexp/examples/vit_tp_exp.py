@@ -3,6 +3,7 @@
 Modes : train | eval | bench | help    (eval requires resume_from=<tinyexp ckpt> or module_cfg.pretrained_from)
 Run   :
     python -m tinyexp.examples.vit_tp_exp mode=help
+    python -m tinyexp.examples.vit_tp_exp trackio_cfg.enable_trackio=true    # local metrics in output_root/trackio
     python -m tinyexp.examples.vit_tp_exp                 # default: full recipe, 2 Ray GPU workers, TP=2
     # eval-only against the official checkpoint (accuracy cross-check):
     python -m tinyexp.examples.vit_tp_exp mode=eval module_cfg.pretrained_from=https://dl.fbaipublicfiles.com/deit/deit_small_patch16_224-cd65a155.pth
@@ -17,7 +18,7 @@ Run   :
 Env   : IMAGENET_HOME (or dataloader_cfg.data_root) with ImageFolder train/ and val/ (not needed for bench/fake_data)
 Needs : tinyexp[vit]; 2 CUDA GPUs for the default TP=2 run (8 for the DDP recipe); Redis cache optional
 Out   : <output_root>/vit_tp_exp/{deit_train.log,log.txt (JSON metrics per epoch),last.ckpt,best.ckpt};
-        details and results in docs/vit_tp.md
+        Trackio database in <output_root>/trackio/; details and results in docs/vit_tp.md
 
 This module is written by strict cross-checking (对拍) against upstream sources; only
 formatting-level changes are allowed (see ``docs/vit_tp.md``). The ported sources are:
@@ -68,6 +69,7 @@ import sys
 import time
 import weakref
 from collections import defaultdict, deque
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from functools import partial
 from types import SimpleNamespace
@@ -91,7 +93,14 @@ from torchvision import datasets, transforms
 
 from tinyexp import TinyExp, store_and_run_exp
 from tinyexp.exceptions import UnknownAcceleratorTypeError, UnknownExperimentModeError
-from tinyexp.exp_mixins import CheckpointCfgMixin, LoggerCfgMixin, RayCfgMixin, RedisCfgMixin, WandbCfgMixin
+from tinyexp.exp_mixins import (
+    CheckpointCfgMixin,
+    LoggerCfgMixin,
+    RayCfgMixin,
+    RedisCfgMixin,
+    TrackioCfgMixin,
+    WandbCfgMixin,
+)
 from tinyexp.tiny_engine.accelerator import AcceleratorProtocol, TPAccelerator
 
 # Official DeiT-S checkpoint (facebookresearch/deit models.py).
@@ -593,7 +602,7 @@ def _set_cudnn_benchmark(value: bool = True) -> None:
 
 
 @dataclass(repr=False)
-class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixin):
+class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfgMixin, TrackioCfgMixin, LoggerCfgMixin):
     mode: str = "train"  # train / eval / bench
     launcher: str = "ray"
     epochs: int = 300  # official --epochs
@@ -958,14 +967,29 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
         torch.manual_seed(seed)
         np.random.seed(seed)
 
-        if self.mode == "train":
-            self._train(accelerator=accelerator, logger=logger, cfg_dict=cfg_dict, run_dir=run_dir)
-        elif self.mode == "eval":
-            self._run_eval(accelerator=accelerator, logger=logger)
-        elif self.mode == "bench":
+        if self.mode == "bench":
             self._bench(accelerator=accelerator, logger=logger)
-        else:
-            raise UnknownExperimentModeError(self.mode, allowed=("train", "eval", "bench", "help"))
+            return
+
+        # docs/vit_tp.md D9: publish existing epoch/eval statistics through optional trackers.
+        with ExitStack() as tracker_cleanup:
+            trackers = []
+            for build in (
+                self.wandb_cfg.build_wandb,
+                partial(self.trackio_cfg.build_trackio, output_root=self.output_root),
+            ):
+                tracker = build(accelerator=accelerator, project="TinyExp", config=cfg_dict, name="vit_tp_exp")
+                if tracker is not None:
+                    trackers.append(tracker)
+                    if accelerator.is_main_process:
+                        tracker_cleanup.callback(tracker.finish)
+
+            if self.mode == "train":
+                self._train(accelerator=accelerator, logger=logger, run_dir=run_dir, trackers=trackers)
+            elif self.mode == "eval":
+                self._run_eval(accelerator=accelerator, logger=logger, trackers=trackers)
+            else:
+                raise UnknownExperimentModeError(self.mode, allowed=("train", "eval", "bench", "help"))
 
     def _prepare_for_train_or_eval(self, accelerator):
         """Components shared by train and eval, in official main.py order."""
@@ -996,7 +1020,7 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
             return accelerator.prepare(model, optimizer, parallelize_plan=plan)
         return accelerator.prepare(model, optimizer)
 
-    def _train(self, accelerator, logger, cfg_dict, run_dir: str) -> None:  # noqa: C901
+    def _train(self, accelerator, logger, run_dir: str, trackers=()) -> None:  # noqa: C901
         replicate_data, data_loader_val, mixup_fn, criterion, model = self._prepare_for_train_or_eval(accelerator)
         data_loader_train = self.dataloader_cfg.build_train_dataloader(accelerator, replicate_data, self.redis_cfg)
 
@@ -1035,9 +1059,6 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
             if model_ema is not None and extra_state.get("model_ema_state_dict") is not None:
                 model_ema.ema.load_state_dict(extra_state["model_ema_state_dict"])
             lr_scheduler.step(start_epoch)
-
-        if self.wandb_cfg.enable_wandb and accelerator.is_main_process:
-            self.wandb_cfg.build_wandb(accelerator=accelerator, project="TinyExp", config=cfg_dict, name="vit_tp_exp")
 
         logger.info(f"Start training for {self.epochs} epochs")
         start_training_time = time.time()
@@ -1110,10 +1131,8 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
             if accelerator.is_main_process:
                 with open(os.path.join(run_dir, "log.txt"), "a") as f:
                     f.write(json.dumps(log_stats) + "\n")
-                if self.wandb_cfg.enable_wandb:
-                    import wandb
-
-                    wandb.log(log_stats)
+                for tracker in trackers:
+                    tracker.log(log_stats)
 
             if 0 < self.max_train_steps <= global_step:
                 break
@@ -1254,7 +1273,7 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
 
         return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
-    def _run_eval(self, accelerator, logger) -> float:
+    def _run_eval(self, accelerator, logger, trackers=()) -> float:
         source = self.resume_from or self.module_cfg.pretrained_from
         if not source:
             raise ValueError("mode=eval requires resume_from (tinyexp ckpt) or module_cfg.pretrained_from")
@@ -1267,6 +1286,9 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
         logger.info(
             f"Accuracy of the network on the {len(data_loader_val.dataset)} test images: {test_stats['acc1']:.1f}%"
         )
+        if accelerator.is_main_process:
+            for tracker in trackers:
+                tracker.log({f"test_{key}": value for key, value in test_stats.items()})
         self._run_result = f"eval acc@1={test_stats['acc1']:.2f}% acc@5={test_stats['acc5']:.2f}%"
         return test_stats["acc1"]
 

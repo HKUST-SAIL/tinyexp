@@ -12,14 +12,16 @@ Run   :
 Env   : IMAGENET_HOME (or dataloader_cfg.data_root) with ImageFolder train/ and val/ directories
 Needs : tinyexp[pytorch] and CUDA GPUs. The Redis cache (default on) needs redis-server: launcher=ray starts it,
         otherwise wrap the command with tinyexp-run-with-redis or set redis_cfg.redis_cache_enabled=false
-Out   : <output_root>/resnet_exp/{log.txt,last.ckpt,best.ckpt}
+Out   : <output_root>/resnet_exp/{log.txt,last.ckpt,best.ckpt}; Trackio database in <output_root>/trackio/
 """
 
 import datetime
 import io
 import os
 import time
+from contextlib import ExitStack
 from dataclasses import dataclass, field
+from functools import partial
 
 import torch
 import torch.nn as nn
@@ -211,7 +213,7 @@ class ResNetExp(
 
     @dataclass
     class RayCfg(RayCfgMixin.RayCfg):
-        ray_num_cpus_per_worker: int = 10  # Main process plus train/validation dataloader workers.
+        ray_num_cpus_per_worker: int = 12  # Main process plus train/validation dataloader workers.
 
     ray_cfg: RayCfg = field(default_factory=RayCfg)
 
@@ -301,7 +303,7 @@ class ResNetExp(
     class DataloaderCfg:
         data_root: str = os.environ.get("IMAGENET_HOME", "./data/imagenet/")
         train_batch_size_per_device: int = 32
-        train_data_worker_per_gpu: int = 8
+        train_data_worker_per_gpu: int = 10
         val_batch_size_per_device: int = 50
         val_data_worker_per_gpu: int = 1
         seed: int = 42
@@ -361,30 +363,38 @@ class ResNetExp(
         run_dir = self.get_run_dir()
         logger = self.logger_cfg.build_logger(save_dir=run_dir, distributed_rank=accelerator.rank)
         cfg_dict = self.print_cfg(logger)
-        trackers = [
-            build(accelerator=accelerator, config=cfg_dict, project="Baselines", name=self.__class__.__name__)
-            for build in (self.wandb_cfg.build_wandb, self.trackio_cfg.build_trackio)
-        ]
-        trackers = [tracker for tracker in trackers if tracker is not None]
+        with ExitStack() as tracker_cleanup:
+            trackers = []
+            for build in (
+                self.wandb_cfg.build_wandb,
+                partial(self.trackio_cfg.build_trackio, output_root=self.output_root),
+            ):
+                tracker = build(
+                    accelerator=accelerator, config=cfg_dict, project="Baselines", name=self.__class__.__name__
+                )
+                if tracker is not None:
+                    trackers.append(tracker)
+                    if accelerator.is_main_process:
+                        tracker_cleanup.callback(tracker.finish)
 
-        if self.mode == "train":
-            self._train(
-                accelerator=accelerator,
-                logger=logger,
-                run_dir=run_dir,
-                trackers=trackers,
-            )
-        elif self.mode == "eval":
-            if not self.resume_from:
-                raise ValueError("resume_from is required when mode='eval'")  # noqa: TRY003
-            self._evaluate(
-                accelerator=accelerator,
-                logger=logger,
-                module_or_module_path=self.resume_from,
-                trackers=trackers,
-            )
-        else:
-            raise UnknownExperimentModeError(self.mode, allowed=("train", "eval", "help"))
+            if self.mode == "train":
+                self._train(
+                    accelerator=accelerator,
+                    logger=logger,
+                    run_dir=run_dir,
+                    trackers=trackers,
+                )
+            elif self.mode == "eval":
+                if not self.resume_from:
+                    raise ValueError("resume_from is required when mode='eval'")  # noqa: TRY003
+                self._evaluate(
+                    accelerator=accelerator,
+                    logger=logger,
+                    module_or_module_path=self.resume_from,
+                    trackers=trackers,
+                )
+            else:
+                raise UnknownExperimentModeError(self.mode, allowed=("train", "eval", "help"))
 
     def _evaluate(self, accelerator, logger, module_or_module_path, val_dataloader=None, trackers=()) -> None:
         if isinstance(module_or_module_path, str):

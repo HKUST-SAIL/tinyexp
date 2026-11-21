@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import random
+import sqlite3
 import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -27,11 +29,6 @@ class LoggerExp(TinyExp, LoggerCfgMixin):
     pass
 
 
-@dataclass
-class TrackioExp(TinyExp, TrackioCfgMixin):
-    pass
-
-
 def test_root_package_re_exports_mixins() -> None:
     assert CheckpointCfgMixin.__name__ == "CheckpointCfgMixin"
     assert LoggerCfgMixin.__name__ == "LoggerCfgMixin"
@@ -41,27 +38,48 @@ def test_root_package_re_exports_mixins() -> None:
     assert WandbCfgMixin.__name__ == "WandbCfgMixin"
 
 
-def test_trackio_cfg_builds_trackio(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_trackio_cfg_builds_trackio(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Disabled: ``None``. Enabled: the module, with ``init`` on rank 0 only."""
-    exp = TrackioExp()
-    assert exp.trackio_cfg.enable_trackio is False
-    assert exp.trackio_cfg.build_trackio() is None
+    cfg = TrackioCfgMixin.TrackioCfg()
+    monkeypatch.setenv("TRACKIO_DIR", str(tmp_path / "trackio"))
+    assert cfg.build_trackio() is None
 
     calls: list[dict] = []
     fake = type(sys)("trackio")
+    fake.TRACKIO_DIR = tmp_path / "trackio"  # type: ignore[attr-defined]
     fake.init = lambda **kwargs: calls.append(kwargs)  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "trackio", fake)
 
-    exp.trackio_cfg.enable_trackio = True
-    assert exp.trackio_cfg.build_trackio(project="p") is fake
+    cfg.enable_trackio = True
+    assert cfg.build_trackio(output_root=str(tmp_path), project="p") is fake
+    assert cfg.build_trackio(accelerator=SimpleNamespace(rank=1), output_root=str(tmp_path), project="p") is fake
     assert calls == [{"project": "p"}]
 
-    @dataclass
-    class _Accelerator:
-        rank: int
-
-    assert exp.trackio_cfg.build_trackio(accelerator=_Accelerator(rank=1), project="p") is fake
+    with pytest.raises(RuntimeError, match="already imported"):
+        cfg.build_trackio(output_root=str(tmp_path / "another-root"), project="p")
     assert calls == [{"project": "p"}]
+
+
+def test_trackio_persists_metrics_under_output_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    if sys.version_info < (3, 10):
+        pytest.skip("Trackio requires Python 3.10+")
+    monkeypatch.setenv("TRACKIO_DIR", str(tmp_path / "old-cache"))
+    code = """
+import sys
+from tinyexp import TrackioCfgMixin
+tracker = TrackioCfgMixin.TrackioCfg(enable_trackio=True).build_trackio(
+    output_root=sys.argv[1], project="test", auto_log_cpu=False, auto_log_gpu=False,
+)
+tracker.log({"val_metric": 0.5})
+tracker.finish()
+"""
+    subprocess.run(  # noqa: S603
+        [sys.executable, "-c", code, str(tmp_path)], capture_output=True, text=True, check=True
+    )
+
+    with sqlite3.connect(tmp_path / "trackio" / "test.db") as connection:
+        assert connection.execute("SELECT count(*) FROM metrics").fetchone()[0] == 1
+    assert not (tmp_path / "old-cache").exists()
 
 
 def test_import_tinyexp_does_not_load_optional_heavy_packages() -> None:

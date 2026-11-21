@@ -108,3 +108,49 @@ def test_run_eval_mode_evaluates_resume_from(tmp_path: Path, monkeypatch: pytest
 
     assert called == {"accelerator": accelerator, "module_or_module_path": checkpoint_path, "val_dataloader": None}
     assert accelerator.destroy_calls == 1
+
+
+@pytest.mark.parametrize(
+    "example, mode, rank, fails",
+    [("mnist_exp", "train", 0, False), ("resnet_exp", "eval", 0, True), ("vit_tp_exp", "train", 1, False)],
+)
+def test_run_finishes_trackers_before_destroying_accelerator(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, example: str, mode: str, rank: int, fails: bool
+) -> None:
+    if example == "vit_tp_exp":
+        exp_class = pytest.importorskip("tinyexp.examples.vit_tp_exp").VitTpExp
+    else:
+        exp_class = EXPS[example]
+    exp = exp_class(output_root=str(tmp_path), mode=mode, resume_from="demo.ckpt")
+    accelerator = _Accelerator()
+    accelerator.device = SimpleNamespace(type="cpu")
+    accelerator.rank = rank
+    accelerator.is_main_process = rank == 0
+    _patch_runtime(monkeypatch, exp, accelerator)
+    events: list[str] = []
+    tracker = SimpleNamespace(finish=lambda: events.append("finish"))
+
+    def build_trackio(*, output_root, **kwargs):
+        assert output_root == exp.output_root
+        return tracker
+
+    monkeypatch.setattr(exp.trackio_cfg, "build_trackio", build_trackio)
+    monkeypatch.setattr(accelerator, "destroy", lambda: events.append("destroy"))
+
+    def workload(**kwargs):
+        assert kwargs["trackers"] == [tracker]
+        events.append("workload")
+        if fails:
+            raise RuntimeError("workload")
+
+    method = "_train" if mode == "train" else ("_run_eval" if example == "vit_tp_exp" else "_evaluate")
+    monkeypatch.setattr(exp, method, workload)
+
+    if fails:
+        with pytest.raises(RuntimeError, match="workload"):
+            exp.run()
+    else:
+        exp.run()
+
+    expected = ["workload", "finish", "destroy"] if rank == 0 else ["workload", "destroy"]
+    assert events == expected
