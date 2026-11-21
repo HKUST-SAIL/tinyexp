@@ -81,8 +81,8 @@ mkdir -p ~/.agents/skills/tinyexp
 cp SKILL.md ~/.agents/skills/tinyexp/SKILL.md
 ```
 
-Start a new Codex session after copying the file. Codex can then load the `tinyexp-experiments` skill automatically for
-experiment tasks, or you can invoke it explicitly with `$tinyexp-experiments`.
+Start a new Codex session after copying the file. Codex can then load the `tinyexp` skill automatically for
+experiment tasks, or you can invoke it explicitly with `$tinyexp`.
 
 ## Common Commands
 
@@ -137,7 +137,7 @@ RAY_ENABLE_UV_RUN_RUNTIME_ENV=0 uv run python -m tinyexp.examples.mnist_exp
 ```
 
 This behavior depends on the launch command, not on whether TinyExp was installed with `pip` or `uv`. A regular
-`pip install "tinyexp[pytorch]"` followed by `python your_exp.py` does not need this variable.
+`pip install "tinyexp[pytorch]"` followed by `python -m pkg.exp` does not need this variable.
 
 `torchrun` and `accelerate launch` create processes externally, so use `launcher=mp`:
 

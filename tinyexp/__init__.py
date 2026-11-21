@@ -38,9 +38,9 @@ Minimal experiment (see ``tinyexp/examples/mnist_exp.py`` for a full DDP/CPU rec
 Pairing ``launcher`` with the process owner:
 
 - ``python exp.py launcher=mp``: one process.
-- ``python exp.py launcher=ray``: the driver creates ``ray_cfg.ray_num_worker`` workers (``RayCfgMixin``).
+- ``python -m pkg.exp launcher=ray``: the driver creates ``ray_cfg.ray_num_worker`` workers (``RayCfgMixin``).
 - ``torchrun ... exp.py launcher=mp`` / ``accelerate launch ... launcher=mp``: the external tool owns processes.
-- ``tinyexp-run-with-ray-cluster ... -- python exp.py launcher=ray``: multi-node static Ray cluster.
+- ``tinyexp-run-with-ray-cluster ... -- python -m pkg.exp launcher=ray``: multi-node static Ray cluster.
 
 CLI overrides are checked by Hydra against the dataclasses: unknown keys are rejected
 (``Key 'x' not in 'DataloaderCfg'``) and values are type-checked, but not otherwise validated (``mode=help``

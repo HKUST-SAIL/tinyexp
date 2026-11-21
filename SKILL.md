@@ -1,5 +1,5 @@
 ---
-name: tinyexp-experiments
+name: tinyexp
 description: Write, configure and launch experiments with the TinyExp library (a dataclass Exp per file, CLI overrides, CPU/DDP/FSDP training, Ray workers, torchrun/accelerate). Use when the task involves tinyexp or a class derived from TinyExp.
 ---
 
@@ -7,8 +7,8 @@ description: Write, configure and launch experiments with the TinyExp library (a
 
 An experiment is one `@dataclass class Exp(TinyExp, <mixins>)` whose `run()` holds the logic; every config field is a
 CLI override (`key=value`). The installed package documents itself, so read docstrings instead of source:
-`python -c "import tinyexp; print(tinyexp.__doc__)"`, or for a class
-`python -c "from tinyexp.exp_mixins import RayCfgMixin as m; print(m.__doc__)"`.
+`python -c "import tinyexp; print(tinyexp.__doc__)"`, or for a (nested) class or method
+`python -c "from tinyexp.exp_mixins import RayCfgMixin as m; print(m.RayCfg.__doc__)"`.
 
 | Need | Print the `__doc__` of |
 | --- | --- |
@@ -29,13 +29,15 @@ Easy to miss:
 
 - Check a config change before running: `mode=help` prints the resolved config and the overridden values, then
   exits. It checks key names and types, not values.
+- Change behavior with overrides, a subclass of an example's `Exp` or a new file, not by editing the installed
+  package.
 - `torchrun` and `accelerate launch` need `launcher=mp`; plain `python` takes `mp` (one process) or `ray` (TinyExp
   starts Ray workers); `tinyexp-run-with-ray-cluster` (multi-node, see `--help`) needs `launcher=ray` and runs
   `ray stop --force` on each node, so do not use it where an existing Ray runtime must survive.
-- With `launcher=ray`, start with the environment's `python -m package.module`, not `uv run` (or set
-  `RAY_ENABLE_UV_RUN_RUNTIME_ENV=0`).
-- Install with `pip install "tinyexp[pytorch]"`; for a CUDA/ROCm-specific PyTorch, install `tinyexp` without the
-  extra, then `torch`, `torchvision` and `accelerate` from that backend.
+- With `launcher=ray`, start as `python -m pkg.exp`, not `python exp.py`, so workers import the class by path; use
+  the environment's `python`, not `uv run` (or set `RAY_ENABLE_UV_RUN_RUNTIME_ENV=0`).
+- Install with `pip install "tinyexp[pytorch]"` (`tinyexp[vit]` for `vit_tp_exp`); for a CUDA/ROCm-specific
+  PyTorch, install `tinyexp` without the extra, then `torch`, `torchvision` and `accelerate` from that backend.
 
 ```bash
 python -m tinyexp.examples.pi_exp mode=help pi_cfg.total_samples=100000

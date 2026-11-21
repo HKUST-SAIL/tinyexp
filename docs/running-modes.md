@@ -12,10 +12,10 @@ The command alone does not select all three. Check the experiment defaults with 
 
 | Run style | Typical command | Required TinyExp launcher | Process owner | Main use |
 | --- | --- | --- | --- | --- |
-| Plain Python | `python exp.py` | `mp` for one direct process, or `ray` for Ray workers | Current Python process or TinyExp's Ray driver | Local debug and local Ray runs |
+| Plain Python | `python -m pkg.exp` | `mp` for one direct process, or `ray` for Ray workers | Current Python process or TinyExp's Ray driver | Local debug and local Ray runs |
 | TorchRun | `torchrun ... exp.py launcher=mp` | `mp` | PyTorch `torchrun` | Explicit PyTorch distributed launch |
 | Accelerate launch | `accelerate launch ... exp.py launcher=mp` | `mp` | Hugging Face Accelerate CLI | External process launch using Accelerate configuration |
-| Static Ray cluster | `tinyexp-run-with-ray-cluster ... -- python exp.py launcher=ray` | `ray` | Ray head plus Ray workers | Multi-node Ray scheduling |
+| Static Ray cluster | `tinyexp-run-with-ray-cluster ... -- python -m pkg.exp launcher=ray` | `ray` | Ray head plus Ray workers | Multi-node Ray scheduling |
 
 `torchrun` and `accelerate launch` are not valid values for TinyExp's `launcher` field. They create processes externally, so each process must enter TinyExp with `launcher=mp`. Conversely, `launcher=ray` makes the driver call `ray.init()` and create Ray actors according to `ray_cfg`.
 
@@ -109,7 +109,7 @@ This is the smallest environment for debugging. The experiment's accelerator sti
 
 ### Local Ray workers
 
-With `launcher=ray`, the Python process becomes a Ray driver. TinyExp calls `ray.init()`, creates a placement group, and launches Ray actors:
+With `launcher=ray`, the Python process becomes a Ray driver. TinyExp calls `ray.init()`, creates a placement group, and launches Ray actors. Start the driver as `python -m pkg.exp`, not `python exp.py`, so the experiment class reaches the workers by import path (details in `RayCfgMixin`):
 
 ```bash
 python -m tinyexp.examples.pi_exp \
@@ -164,7 +164,7 @@ The MNIST example uses `seed=42` by default for repeatable model initialization 
 For configuration inspection without starting workers:
 
 ```bash
-python tinyexp/examples/mnist_exp.py \
+python -m tinyexp.examples.mnist_exp \
   mode=help \
   ray_cfg.ray_num_worker=1 \
   ray_cfg.ray_num_gpus_per_worker=0
