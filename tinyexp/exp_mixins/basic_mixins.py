@@ -8,6 +8,7 @@ Each mixin adds one config field whose nested dataclass holds both settings and 
 | `RayCfgMixin` | `ray_cfg` | `launcher=ray`: worker contract and minimal example in `RayCfgMixin`, count/resources in `RayCfg` |
 | `CheckpointCfgMixin` | `checkpoint_cfg` | `save_checkpoint` / `load_checkpoint` / RNG state helpers |
 | `WandbCfgMixin` | `wandb_cfg` | `build_wandb(accelerator, **wandb_init_kwargs)` if enabled, else `None` |
+| `TrackioCfgMixin` | `trackio_cfg` | `build_trackio(accelerator, output_root, **trackio_init_kwargs)` writes to `output_root/trackio` |
 | `RedisCfgMixin` | `redis_cfg` | Redis byte-cache settings consumed by datasets and launchers |
 
 Usage: ``class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, LoggerCfgMixin)``. To change defaults,
@@ -19,7 +20,7 @@ subclass the nested config and redeclare the field, e.g.::
 
     ray_cfg: RayCfg = field(default_factory=RayCfg)
 
-``torch`` and ``wandb`` are imported lazily inside methods so ``import tinyexp`` stays torch-free.
+``torch``, ``wandb`` and ``trackio`` are imported lazily inside methods so ``import tinyexp`` stays free of them.
 """
 
 import os
@@ -345,6 +346,51 @@ class WandbCfgMixin:
                 return wandb
 
     wandb_cfg: WandbCfg = field(default_factory=WandbCfg)
+
+
+@dataclass
+class TrackioCfgMixin:
+    @dataclass
+    class TrackioCfg:
+        """Optional local Trackio logging, enabled with ``trackio_cfg.enable_trackio=true`` (Python 3.10+).
+
+        ``build_trackio(accelerator=None, output_root="./output", **kwargs)`` returns ``None`` when disabled,
+        otherwise the ``trackio`` module; only rank 0 calls ``trackio.init(**kwargs)``. Log and finish there::
+
+            trackio = self.trackio_cfg.build_trackio(
+                accelerator=accelerator, output_root=self.output_root,
+                project="p", name=self.exp_name, config=cfg_dict,
+            )
+            if trackio is not None and accelerator.is_main_process:
+                try:
+                    trackio.log({"loss": loss}, step=global_step)
+                finally:
+                    trackio.finish()
+
+        Sets ``TRACKIO_DIR=<output_root>/trackio`` before importing Trackio. View runs with
+        ``TRACKIO_DIR=<output_root>/trackio trackio show --project p``. Trackio fixes its directory at import;
+        if already imported with another directory, use a fresh process. No account or network is required.
+        """
+
+        enable_trackio: bool = False
+
+        def build_trackio(self, accelerator=None, output_root: str = "./output", **kwargs):
+            if self.enable_trackio:
+                trackio_dir = (Path(output_root) / "trackio").resolve()
+                os.environ["TRACKIO_DIR"] = str(trackio_dir)
+                import trackio
+
+                if Path(trackio.TRACKIO_DIR).resolve() != trackio_dir:
+                    message = (
+                        f"Trackio was already imported with TRACKIO_DIR={trackio.TRACKIO_DIR}; "
+                        f"start a fresh process with TRACKIO_DIR={trackio_dir} before importing Trackio."
+                    )
+                    raise RuntimeError(message)
+                if accelerator is None or accelerator.rank == 0:
+                    trackio.init(**kwargs)
+                return trackio
+
+    trackio_cfg: TrackioCfg = field(default_factory=TrackioCfg)
 
 
 @dataclass

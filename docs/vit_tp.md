@@ -55,6 +55,11 @@ pass. Attention runs per-head locally with no communication inside, using PyTorc
 - **D8** — the train dataloader raises `ValueError` when it has no batch (per-rank samples
   < `train_batch_size_per_device` with `drop_last=True`). Upstream would silently train zero
   steps and then fail on an empty metric average; valid configurations are unaffected.
+- **D9** — optional W&B/Trackio logging publishes the existing epoch statistics and standalone
+  evaluation statistics from rank 0. Trackio writes to `<output_root>/trackio`; trackers are
+  explicitly finished before accelerator cleanup, including on exceptions. Logging is off by
+  default and does not change model, loss, optimizer, or TP computations. Training metrics
+  match the existing JSON log (covered by `test_train_and_eval_log_existing_statistics`).
 
 ## Usage
 
@@ -64,6 +69,18 @@ Full recipe (2 GPUs, TP=2, official defaults: 300 epochs, AdamW wd 0.05, cosine 
 ```bash
 python -m tinyexp.examples.vit_tp_exp
 ```
+
+View training and evaluation metrics locally with Trackio:
+
+```bash
+python -m tinyexp.examples.vit_tp_exp trackio_cfg.enable_trackio=true
+TRACKIO_DIR=./output/trackio trackio show --project TinyExp
+```
+
+With a custom `output_root`, set `TRACKIO_DIR` to `<output_root>/trackio` when opening the dashboard.
+Training records `train_loss`, `train_lr`, `test_loss`, `test_acc1`, `test_acc5`, `epoch`, and
+`n_parameters`; standalone eval records `test_loss`, `test_acc1`, and `test_acc5`. Accuracy is
+reported in percent. `mode=bench` runs without tracker initialization.
 
 Eval-only against the official checkpoint (accuracy cross-check, expects 79.8 ± 0.1):
 

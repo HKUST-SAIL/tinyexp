@@ -9,27 +9,29 @@ Run   :
     python -m tinyexp.examples.mnist_exp launcher=mp      # one process, no Ray
     torchrun --nproc-per-node=2 -m tinyexp.examples.mnist_exp launcher=mp accelerator_cfg.accelerator=ddp
     python -m tinyexp.examples.mnist_exp mode=eval resume_from=./output/mnist_exp/best.ckpt
+    python -m tinyexp.examples.mnist_exp trackio_cfg.enable_trackio=true    # local metrics in output_root/trackio
 Env   : none; global rank 0 downloads MNIST to dataloader_cfg.data_root (./data/) on first run while the other
         ranks wait, then read it; with several nodes, data_root must be shared or already populated
 Note  : always trains 3 epochs (not configurable); raise dataloader_cfg.train_batch_size_per_device for a faster run
 Needs : tinyexp[pytorch]; accelerator_cfg.accelerator=ddp needs CUDA
-Out   : <output_root>/mnist_exp/{log.txt,last.ckpt,best.ckpt}
+Out   : <output_root>/mnist_exp/{log.txt,last.ckpt,best.ckpt}; Trackio database in <output_root>/trackio/
 """
 
 import datetime
+from contextlib import ExitStack
 from dataclasses import dataclass, field
+from functools import partial
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-import wandb
 from torch.optim.lr_scheduler import StepLR
 from torchvision import datasets, transforms
 
 from tinyexp import TinyExp, store_and_run_exp
 from tinyexp.exceptions import UnknownAcceleratorTypeError, UnknownExperimentModeError
-from tinyexp.exp_mixins import CheckpointCfgMixin, LoggerCfgMixin, RayCfgMixin, WandbCfgMixin
+from tinyexp.exp_mixins import CheckpointCfgMixin, LoggerCfgMixin, RayCfgMixin, TrackioCfgMixin, WandbCfgMixin
 from tinyexp.tiny_engine.accelerator import AcceleratorProtocol
 
 
@@ -67,7 +69,7 @@ class Net(nn.Module):
 
 
 @dataclass(repr=False)
-class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixin):
+class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, TrackioCfgMixin, LoggerCfgMixin):
     @dataclass
     class RayCfg(RayCfgMixin.RayCfg):
         ray_num_worker: int = 2
@@ -188,25 +190,40 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
         logger = self.logger_cfg.build_logger(save_dir=run_dir, distributed_rank=accelerator.rank)
         cfg_dict = self.print_cfg(logger)
 
-        if self.mode == "train":
-            self._train(
-                accelerator=accelerator,
-                logger=logger,
-                cfg_dict=cfg_dict,
-                run_dir=run_dir,
-            )
-        elif self.mode == "eval":
-            if not self.resume_from:
-                raise ValueError("resume_from is required when mode='eval'")  # noqa: TRY003
-            self._evaluate(
-                accelerator=accelerator,
-                logger=logger,
-                module_or_module_path=self.resume_from,
-            )
-        else:
-            raise UnknownExperimentModeError(self.mode, allowed=("train", "eval", "help"))
+        with ExitStack() as tracker_cleanup:
+            trackers = []
+            for build in (
+                self.wandb_cfg.build_wandb,
+                partial(self.trackio_cfg.build_trackio, output_root=self.output_root),
+            ):
+                tracker = build(
+                    accelerator=accelerator, config=cfg_dict, project="Baselines", name=self.__class__.__name__
+                )
+                if tracker is not None:
+                    trackers.append(tracker)
+                    if accelerator.is_main_process:
+                        tracker_cleanup.callback(tracker.finish)
 
-    def _evaluate(self, accelerator, logger, module_or_module_path, val_dataloader=None) -> float:
+            if self.mode == "train":
+                self._train(
+                    accelerator=accelerator,
+                    logger=logger,
+                    run_dir=run_dir,
+                    trackers=trackers,
+                )
+            elif self.mode == "eval":
+                if not self.resume_from:
+                    raise ValueError("resume_from is required when mode='eval'")  # noqa: TRY003
+                self._evaluate(
+                    accelerator=accelerator,
+                    logger=logger,
+                    module_or_module_path=self.resume_from,
+                    trackers=trackers,
+                )
+            else:
+                raise UnknownExperimentModeError(self.mode, allowed=("train", "eval", "help"))
+
+    def _evaluate(self, accelerator, logger, module_or_module_path, val_dataloader=None, trackers=()) -> float:
         if isinstance(module_or_module_path, str):
             module = Net()
             self.checkpoint_cfg.load_checkpoint(
@@ -243,12 +260,13 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
         nowtime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         logger.info(f"{nowtime} --> eval_metric= {100 * eval_metric:.2f}%")
 
-        if self.wandb_cfg.enable_wandb and accelerator.is_main_process:
-            wandb.log({"val_metric": eval_metric})
+        if accelerator.is_main_process:
+            for tracker in trackers:
+                tracker.log({"val_metric": eval_metric})
 
         return eval_metric
 
-    def _train(self, accelerator, logger, cfg_dict, run_dir: str) -> None:  # noqa: C901
+    def _train(self, accelerator, logger, run_dir: str, trackers=()) -> None:  # noqa: C901
         torch.manual_seed(self.seed)
         train_dataloader = self.dataloader_cfg.build_train_dataloader(accelerator)
         val_dataloader = self.dataloader_cfg.build_val_dataloader(accelerator)
@@ -276,13 +294,6 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
             rng_state = (checkpoint.get("extra_state") or {}).get("rng_state")
             if rng_state is not None and getattr(accelerator, "world_size", 1) == 1:
                 self.checkpoint_cfg.restore_rng_state(rng_state)
-
-        if self.wandb_cfg.enable_wandb and accelerator.rank == 0:
-            self.wandb_cfg.build_wandb(
-                accelerator=accelerator,
-                project="Baselines",
-                config=cfg_dict,
-            )
 
         train_sampler = getattr(train_dataloader, "sampler", None)
         if train_sampler is not None and hasattr(train_sampler, "set_epoch"):
@@ -312,19 +323,21 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixi
                 global_step += 1
                 if (step + 1) % 20 == 0:
                     logger.info(f"epoch {epoch} loss: {loss.item(): .4f} lr: {optimizer.param_groups[0]['lr']: .4f}")
-                    if self.wandb_cfg.enable_wandb and accelerator.rank == 0:
-                        wandb.log(
-                            {
-                                "epoch": epoch,
-                                "loss": loss.item(),
-                                "lr": optimizer.param_groups[0]["lr"],
-                            }
-                        )
+                    if accelerator.is_main_process:
+                        for tracker in trackers:
+                            tracker.log(
+                                {
+                                    "epoch": epoch,
+                                    "loss": loss.item(),
+                                    "lr": optimizer.param_groups[0]["lr"],
+                                }
+                            )
             eval_metric = self._evaluate(
                 accelerator=accelerator,
                 logger=logger,
                 module_or_module_path=module,
                 val_dataloader=val_dataloader,
+                trackers=trackers,
             )
             lr_scheduler.step()
             is_best = best_metric is None or eval_metric > best_metric

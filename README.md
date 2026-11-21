@@ -166,7 +166,7 @@ tinyexp-run-with-ray-cluster \
 ```
 
 See [Running Modes and Environment Requirements](docs/running-modes.md) for the complete Python, PyTorch, CUDA/NCCL,
-Accelerate, Ray multi-node, network, data, Redis, and W&B requirements.
+Accelerate, Ray multi-node, network, data, Redis, W&B, and Trackio requirements.
 
 Ray worker resources are explicit. Set `ray_cfg.ray_num_cpus_per_worker` and `ray_cfg.ray_num_gpus_per_worker` to the
 resources required by one worker; both fields can be overridden from the command line.

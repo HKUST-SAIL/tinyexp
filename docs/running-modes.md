@@ -350,6 +350,13 @@ Redis and W&B requirements are independent of the four launch styles.
   cluster creation, and readiness deadline.
 - The ResNet example enables Redis cache by default. Set `redis_cfg.redis_cache_enabled=false` when Redis is not installed or desired.
 - Enabling W&B requires suitable credentials and network access, or an explicitly configured offline mode.
+- Enabling Trackio needs no account or network: MNIST, ResNet and ViT write runs below `<output_root>/trackio`
+  (default `./output/trackio`). View MNIST/ResNet runs with
+  `TRACKIO_DIR=./output/trackio trackio show --project Baselines` (ViT uses `--project TinyExp`),
+  replacing `./output` with your `output_root`. Custom experiments pass `output_root=self.output_root` to
+  `build_trackio`. The builder sets `TRACKIO_DIR` before importing Trackio; if you import Trackio yourself first,
+  set the same directory before that import. Trackers are initialized and finished on rank 0 for training and
+  standalone evaluation. Trackio requires Python 3.10+ and is excluded from TinyExp's Python 3.9 installations.
 
 ### Redis helper lifecycle in multi-node jobs
 

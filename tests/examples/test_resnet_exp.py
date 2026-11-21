@@ -51,7 +51,6 @@ def _train(monkeypatch: pytest.MonkeyPatch, exp: ResNetExp, train_dataloader, va
     exp._train(
         accelerator=_TrainAccelerator(),
         logger=SimpleNamespace(info=lambda *args, **kwargs: None),
-        cfg_dict={},
         run_dir=run_dir,
     )
 

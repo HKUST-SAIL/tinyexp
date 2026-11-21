@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import os
 import socket
 import types
@@ -26,7 +27,7 @@ from tinyexp.examples.vit_tp_exp import (
     convert_split_qkv_to_fused,
     deit_small_patch16_224,
 )
-from tinyexp.tiny_engine.accelerator import TPAccelerator
+from tinyexp.tiny_engine.accelerator import CPUAccelerator, TPAccelerator
 
 
 class FusedAttention(nn.Module):
@@ -174,6 +175,38 @@ def test_train_dataloader_rejects_empty_epoch() -> None:
 
     cfg.train_batch_size_per_device = 8
     assert len(cfg.build_train_dataloader(accelerator, replicate_data=True)) == cfg.fake_data_len // 8
+
+
+def test_train_and_eval_log_existing_statistics(tmp_path, monkeypatch) -> None:
+    experiment = VitTpExp(output_root=str(tmp_path), epochs=1)
+    experiment.accelerator_cfg.accelerator = "cpu"
+    experiment.dataloader_cfg.fake_data = True
+    experiment.dataloader_cfg.fake_data_len = 8
+    experiment.dataloader_cfg.input_size = 32
+    experiment.dataloader_cfg.train_batch_size_per_device = 8
+    experiment.dataloader_cfg.val_batch_size_per_device = 8
+    experiment.dataloader_cfg.train_num_workers = 0
+    experiment.dataloader_cfg.val_num_workers = 0
+    experiment.module_cfg.num_classes = 10
+    experiment.ema_cfg.model_ema = False
+    monkeypatch.setattr(experiment.module_cfg, "build_module", _tiny_vit)
+    logged = [[], []]
+    trackers = [types.SimpleNamespace(log=entries.append) for entries in logged]
+    logger = types.SimpleNamespace(info=lambda *args: None)
+    accelerator = CPUAccelerator()
+    try:
+        experiment._train(accelerator, logger, run_dir=str(tmp_path), trackers=trackers)
+        epoch_stats = json.loads((tmp_path / "log.txt").read_text())
+        assert logged[0] == logged[1] == [epoch_stats]
+        assert {"train_loss", "train_lr", "test_loss", "test_acc1", "test_acc5"} <= epoch_stats.keys()
+
+        experiment.resume_from = str(tmp_path / "last.ckpt")
+        evaluation_accuracy = experiment._run_eval(accelerator, logger, trackers=trackers)
+        assert logged[0] == logged[1]
+        assert set(logged[0][1]) == {"test_loss", "test_acc1", "test_acc5"}
+        assert logged[0][1]["test_acc1"] == evaluation_accuracy
+    finally:
+        accelerator.destroy()
 
 
 def _free_port() -> int:

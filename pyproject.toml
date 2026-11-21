@@ -39,6 +39,8 @@ dependencies = [
     "tqdm",
     "redis",
     "wandb",
+    # Trackio requires Python 3.10+.
+    "trackio; python_version >= '3.10'",
     "loguru",
 ]
 

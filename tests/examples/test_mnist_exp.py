@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import torch
 
 from tinyexp.examples.mnist_exp import Exp
+from tinyexp.tiny_engine.accelerator import CPUAccelerator
 
 _LOGGER = SimpleNamespace(info=lambda *args, **kwargs: None)
 
@@ -35,13 +36,14 @@ class _Loader(list):
         self.dataset = dataset
 
 
-def _evaluate(tmp_path: Path, module_or_module_path, accelerator, val_dataloader) -> float:  # type: ignore[no-untyped-def]
+def _evaluate(tmp_path: Path, module_or_module_path, accelerator, val_dataloader, trackers=()) -> float:  # type: ignore[no-untyped-def]
     exp = Exp(output_root=str(tmp_path), exp_name="mnist_test")
     return exp._evaluate(
         accelerator=accelerator,
         logger=_LOGGER,
         module_or_module_path=module_or_module_path,
         val_dataloader=val_dataloader,
+        trackers=trackers,
     )
 
 
@@ -120,9 +122,34 @@ def test_mnist_evaluate_reduces_correct_and_seen_counts_globally(tmp_path) -> No
     accelerator = UnevenDistributedAccelerator()
     val_dataloader = _Loader([(torch.zeros(2, 1), torch.tensor([0, 0]))], dataset=[0, 1])
 
-    assert _evaluate(tmp_path, FixedModule(), accelerator, val_dataloader) == 3 / 5
+    logged = []
+    tracker = SimpleNamespace(log=logged.append)
+    assert _evaluate(tmp_path, FixedModule(), accelerator, val_dataloader, trackers=[tracker]) == 3 / 5
+    assert logged == [{"val_metric": 3 / 5}]
     assert accelerator.reduce_calls == 2
 
 
 def test_mnist_evaluate_empty_dataset_returns_zero(tmp_path) -> None:
     assert _evaluate(tmp_path, torch.nn.Identity(), _EvalAccelerator(), _Loader([], dataset=[])) == 0.0
+
+
+def test_mnist_train_logs_metrics_to_all_trackers(tmp_path: Path, monkeypatch) -> None:
+    exp = Exp(output_root=str(tmp_path), launcher="mp")
+    loader = _Loader([(torch.ones(1, 2), torch.tensor([0]))] * 20, dataset=[0] * 20)
+    loader.batch_size = 1
+    monkeypatch.setattr(exp.dataloader_cfg, "build_train_dataloader", lambda accelerator: loader)
+    monkeypatch.setattr(exp.dataloader_cfg, "build_val_dataloader", lambda accelerator: loader)
+    monkeypatch.setattr(exp.module_cfg, "build_module", lambda: torch.nn.Linear(2, 2))
+    logged = [[], []]
+    trackers = [SimpleNamespace(log=entries.append) for entries in logged]
+    accelerator = CPUAccelerator()
+    try:
+        exp._train(accelerator=accelerator, logger=_LOGGER, run_dir=str(tmp_path), trackers=trackers)
+    finally:
+        accelerator.destroy()
+
+    assert logged[0] == logged[1]
+    assert len(logged[0]) == 6
+    assert [entry["epoch"] for entry in logged[0] if "loss" in entry] == [0, 1, 2]
+    assert all("lr" in entry for entry in logged[0] if "loss" in entry)
+    assert sum("val_metric" in entry for entry in logged[0]) == 3
