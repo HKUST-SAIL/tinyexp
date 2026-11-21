@@ -67,6 +67,7 @@ For example, a feature is often a better fit as:
 
 - `logger_cfg.build_logger(...)`
 - `wandb_cfg.build_wandb(...)`
+- `trackio_cfg.build_trackio(...)`
 - `checkpoint_cfg.save_checkpoint(...)`
 
 than as a large collection of flat framework methods.

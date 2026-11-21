@@ -17,7 +17,7 @@ CLI override (`key=value`). The installed package documents itself, so read docs
 | Training loop API; picking an accelerator | `tinyexp.tiny_engine.accelerator.base_accelerator`; `tinyexp.tiny_engine.accelerator` |
 | Code running on Ray workers (minimal example); worker count and resources | `tinyexp.exp_mixins.RayCfgMixin`; `tinyexp.exp_mixins.RayCfgMixin.RayCfg` |
 | Checkpoint save / load / resume / eval | `tinyexp.exp_mixins.CheckpointCfgMixin.CheckpointCfg` |
-| Logger, W&B, Redis cache mixins | `tinyexp.exp_mixins.basic_mixins` (table, then the nested `XXXCfg`) |
+| Logger, W&B, Trackio, Redis cache mixins | `tinyexp.exp_mixins.basic_mixins` (table, then the nested `XXXCfg`) |
 | Infinite sampler, fake dataloader, EMA; errors | `tinyexp.dataset`, `tinyexp.utils`; `tinyexp.exceptions` |
 | A bundled example: modes, commands, data, hardware | `tinyexp.examples.<name>` (run header) |
 

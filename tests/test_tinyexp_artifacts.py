@@ -10,7 +10,15 @@ import numpy as np
 import pytest
 import torch
 
-from tinyexp import CheckpointCfgMixin, LoggerCfgMixin, RayCfgMixin, RedisCfgMixin, TinyExp, WandbCfgMixin
+from tinyexp import (
+    CheckpointCfgMixin,
+    LoggerCfgMixin,
+    RayCfgMixin,
+    RedisCfgMixin,
+    TinyExp,
+    TrackioCfgMixin,
+    WandbCfgMixin,
+)
 from tinyexp.exceptions import UnsupportedCheckpointFormatError
 
 
@@ -19,20 +27,49 @@ class LoggerExp(TinyExp, LoggerCfgMixin):
     pass
 
 
+@dataclass
+class TrackioExp(TinyExp, TrackioCfgMixin):
+    pass
+
+
 def test_root_package_re_exports_mixins() -> None:
     assert CheckpointCfgMixin.__name__ == "CheckpointCfgMixin"
     assert LoggerCfgMixin.__name__ == "LoggerCfgMixin"
     assert RayCfgMixin.__name__ == "RayCfgMixin"
     assert RedisCfgMixin.__name__ == "RedisCfgMixin"
+    assert TrackioCfgMixin.__name__ == "TrackioCfgMixin"
     assert WandbCfgMixin.__name__ == "WandbCfgMixin"
 
 
+def test_trackio_cfg_builds_trackio(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Disabled: ``None``. Enabled: the module, with ``init`` on rank 0 only."""
+    exp = TrackioExp()
+    assert exp.trackio_cfg.enable_trackio is False
+    assert exp.trackio_cfg.build_trackio() is None
+
+    calls: list[dict] = []
+    fake = type(sys)("trackio")
+    fake.init = lambda **kwargs: calls.append(kwargs)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "trackio", fake)
+
+    exp.trackio_cfg.enable_trackio = True
+    assert exp.trackio_cfg.build_trackio(project="p") is fake
+    assert calls == [{"project": "p"}]
+
+    @dataclass
+    class _Accelerator:
+        rank: int
+
+    assert exp.trackio_cfg.build_trackio(accelerator=_Accelerator(rank=1), project="p") is fake
+    assert calls == [{"project": "p"}]
+
+
 def test_import_tinyexp_does_not_load_optional_heavy_packages() -> None:
-    """``import tinyexp`` must work without the ``[pytorch]`` extra; torch/wandb stay lazily imported.
+    """``import tinyexp`` must work without the ``[pytorch]`` extra; torch/wandb/trackio stay lazily imported.
 
     Runs in a subprocess because this pytest process has already imported torch.
     """
-    code = "import sys, tinyexp, tinyexp.tiny_engine; print(sorted({'torch', 'wandb'} & set(sys.modules)))"
+    code = "import sys, tinyexp, tinyexp.tiny_engine; print(sorted({'torch', 'wandb', 'trackio'} & set(sys.modules)))"
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)  # noqa: S603
 
     assert result.stdout.strip() == "[]"

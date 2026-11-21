@@ -7,6 +7,8 @@ Run   :
     torchrun --nproc-per-node=8 -m tinyexp.examples.resnet_exp launcher=mp redis_cfg.redis_cache_enabled=false
     torchrun --nproc-per-node=2 -m tinyexp.examples.resnet_exp launcher=mp accelerator_cfg.accelerator=fsdp redis_cfg.redis_cache_enabled=false
     python -m tinyexp.examples.resnet_exp mode=eval resume_from=./output/resnet_exp/best.ckpt
+    python -m tinyexp.examples.resnet_exp wandb_cfg.enable_wandb=true        # log val_metric to W&B
+    python -m tinyexp.examples.resnet_exp trackio_cfg.enable_trackio=true    # log val_metric to Trackio (local)
 Env   : IMAGENET_HOME (or dataloader_cfg.data_root) with ImageFolder train/ and val/ directories
 Needs : tinyexp[pytorch] and CUDA GPUs. The Redis cache (default on) needs redis-server: launcher=ray starts it,
         otherwise wrap the command with tinyexp-run-with-redis or set redis_cfg.redis_cache_enabled=false
@@ -22,7 +24,6 @@ from dataclasses import dataclass, field
 import torch
 import torch.nn as nn
 import torchvision.models as models
-import wandb
 from PIL import Image
 from torch.optim import SGD
 from torch.optim.lr_scheduler import StepLR
@@ -31,7 +32,14 @@ from torchvision import datasets, transforms
 from tinyexp import TinyExp, store_and_run_exp
 from tinyexp.dataset.sampler import InfiniteSampler
 from tinyexp.exceptions import UnknownAcceleratorTypeError, UnknownExperimentModeError
-from tinyexp.exp_mixins import CheckpointCfgMixin, LoggerCfgMixin, RayCfgMixin, RedisCfgMixin, WandbCfgMixin
+from tinyexp.exp_mixins import (
+    CheckpointCfgMixin,
+    LoggerCfgMixin,
+    RayCfgMixin,
+    RedisCfgMixin,
+    TrackioCfgMixin,
+    WandbCfgMixin,
+)
 from tinyexp.tiny_engine.accelerator import AcceleratorProtocol
 
 
@@ -187,7 +195,15 @@ class RedisCachedImageFolder:
 
 
 @dataclass(repr=False)
-class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfgMixin, LoggerCfgMixin):
+class ResNetExp(
+    TinyExp,
+    RayCfgMixin,
+    RedisCfgMixin,
+    CheckpointCfgMixin,
+    WandbCfgMixin,
+    TrackioCfgMixin,
+    LoggerCfgMixin,
+):
     mode: str = "train"
     launcher: str = "ray"
     max_train_epochs: int = 90
@@ -195,7 +211,7 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
 
     @dataclass
     class RayCfg(RayCfgMixin.RayCfg):
-        ray_num_cpus_per_worker: int = 12  # Main process plus train/validation dataloader workers.
+        ray_num_cpus_per_worker: int = 10  # Main process plus train/validation dataloader workers.
 
     ray_cfg: RayCfg = field(default_factory=RayCfg)
 
@@ -285,7 +301,7 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
     class DataloaderCfg:
         data_root: str = os.environ.get("IMAGENET_HOME", "./data/imagenet/")
         train_batch_size_per_device: int = 32
-        train_data_worker_per_gpu: int = 10
+        train_data_worker_per_gpu: int = 8
         val_batch_size_per_device: int = 50
         val_data_worker_per_gpu: int = 1
         seed: int = 42
@@ -345,13 +361,18 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
         run_dir = self.get_run_dir()
         logger = self.logger_cfg.build_logger(save_dir=run_dir, distributed_rank=accelerator.rank)
         cfg_dict = self.print_cfg(logger)
+        trackers = [
+            build(accelerator=accelerator, config=cfg_dict, project="Baselines", name=self.__class__.__name__)
+            for build in (self.wandb_cfg.build_wandb, self.trackio_cfg.build_trackio)
+        ]
+        trackers = [tracker for tracker in trackers if tracker is not None]
 
         if self.mode == "train":
             self._train(
                 accelerator=accelerator,
                 logger=logger,
-                cfg_dict=cfg_dict,
                 run_dir=run_dir,
+                trackers=trackers,
             )
         elif self.mode == "eval":
             if not self.resume_from:
@@ -360,11 +381,12 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
                 accelerator=accelerator,
                 logger=logger,
                 module_or_module_path=self.resume_from,
+                trackers=trackers,
             )
         else:
             raise UnknownExperimentModeError(self.mode, allowed=("train", "eval", "help"))
 
-    def _evaluate(self, accelerator, logger, module_or_module_path, val_dataloader=None) -> None:
+    def _evaluate(self, accelerator, logger, module_or_module_path, val_dataloader=None, trackers=()) -> None:
         if isinstance(module_or_module_path, str):
             module: nn.Module = self.module_cfg.build_module()
             self.checkpoint_cfg.load_checkpoint(
@@ -403,12 +425,13 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
         nowtime = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         logger.info(f"{nowtime} --> eval_metric= {100 * eval_metric:.2f}%")
 
-        if self.wandb_cfg.enable_wandb and accelerator.is_main_process:
-            wandb.log({"val_metric": eval_metric})
+        if accelerator.is_main_process:
+            for tracker in trackers:
+                tracker.log({"val_metric": eval_metric})
 
         return eval_metric
 
-    def _train(self, accelerator, logger, cfg_dict, run_dir: str) -> None:  # noqa: C901
+    def _train(self, accelerator, logger, run_dir: str, trackers=()) -> None:  # noqa: C901
         train_dataloader = self.dataloader_cfg.build_train_dataloader(accelerator, self.redis_cfg)
         val_dataloader = self.dataloader_cfg.build_val_dataloader(accelerator)
         ori_module = self.module_cfg.build_module()
@@ -440,14 +463,6 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
             rng_state = (checkpoint.get("extra_state") or {}).get("rng_state")
             if rng_state is not None and getattr(accelerator, "world_size", 1) == 1:
                 self.checkpoint_cfg.restore_rng_state(rng_state)
-
-        if self.wandb_cfg.enable_wandb and accelerator.rank == 0:
-            self.wandb_cfg.build_wandb(
-                accelerator=accelerator,
-                config=cfg_dict,
-                project="Baselines",
-                name=self.__class__.__name__,
-            )
 
         train_sampler = getattr(train_dataloader, "sampler", None)
         if train_sampler is not None and hasattr(train_sampler, "set_epoch"):
@@ -499,6 +514,7 @@ class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCf
                 logger=logger,
                 module_or_module_path=module,
                 val_dataloader=val_dataloader,
+                trackers=trackers,
             )
             is_best = best_metric is None or eval_metric > best_metric
             if is_best:

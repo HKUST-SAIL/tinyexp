@@ -96,7 +96,7 @@ def test_run_eval_mode_evaluates_resume_from(tmp_path: Path, monkeypatch: pytest
     _patch_runtime(monkeypatch, exp, accelerator)
     called: dict[str, object] = {}
 
-    def fake_evaluate(*, accelerator, logger, module_or_module_path, val_dataloader=None):  # type: ignore[no-untyped-def]
+    def fake_evaluate(*, accelerator, logger, module_or_module_path, val_dataloader=None, **_kwargs):  # type: ignore[no-untyped-def]
         called.update(
             accelerator=accelerator, module_or_module_path=module_or_module_path, val_dataloader=val_dataloader
         )

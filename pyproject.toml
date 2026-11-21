@@ -39,6 +39,8 @@ dependencies = [
     "tqdm",
     "redis",
     "wandb",
+    # Trackio (local W&B-like tracker) drops Python 3.9; the mixin stays usable only where it installs.
+    "trackio; python_version >= '3.10'",
     "loguru",
 ]
 
@@ -213,4 +215,4 @@ profile = "black"
 line_length = 120
 py_version = 310
 known_first_party = "tinyexp"
-known_third_party = "wandb"
+known_third_party = "wandb,trackio"

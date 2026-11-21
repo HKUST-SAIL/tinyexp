@@ -50,7 +50,8 @@ merged onto the experiment and recorded for ``mode=help``: ``TinyExp.set_cfg``. 
 ``python file.py``: ``RayCfgMixin``.
 
 Exports: ``TinyExp``, ``store_and_run_exp``, ``simple_launch_exp``, ``ConfigStore`` and the mixins
-``LoggerCfgMixin``, ``RayCfgMixin``, ``CheckpointCfgMixin``, ``WandbCfgMixin``, ``RedisCfgMixin``
+``LoggerCfgMixin``, ``RayCfgMixin``, ``CheckpointCfgMixin``, ``WandbCfgMixin``, ``TrackioCfgMixin``,
+``RedisCfgMixin``
 (see ``tinyexp.exp_mixins``).
 """
 
@@ -75,6 +76,7 @@ from .exp_mixins import (
     LoggerCfgMixin,
     RayCfgMixin,
     RedisCfgMixin,
+    TrackioCfgMixin,
     WandbCfgMixin,
 )
 
@@ -85,6 +87,7 @@ __all__ = [
     "RayCfgMixin",
     "RedisCfgMixin",
     "TinyExp",
+    "TrackioCfgMixin",
     "WandbCfgMixin",
     "simple_launch_exp",
     "store_and_run_exp",

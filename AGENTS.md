@@ -12,7 +12,7 @@ importable; print a module's with `python -c "import tinyexp; print(tinyexp.__do
 | Config fields, `launcher` pairing, errors; merge rules | `tinyexp`, `tinyexp.exceptions`; `tinyexp.TinyExp.set_cfg` |
 | Ray workers (contract, minimal example), multi-node cluster, torchrun, accelerate | `RayCfgMixin` and `RayCfgMixin.RayCfg` in `tinyexp.exp_mixins.basic_mixins`, then one section of `docs/running-modes.md` |
 | Checkpoint contents, save/load/resume/eval | `CheckpointCfgMixin.CheckpointCfg` in `tinyexp.exp_mixins.basic_mixins` |
-| Logging, W&B, Redis cache | `tinyexp.exp_mixins.basic_mixins` (table), then `LoggerCfgMixin.LoggerCfg`, `WandbCfgMixin.WandbCfg` or `RedisCfgMixin.RedisCfg`; Redis wrapper: "Optional Services" in `docs/running-modes.md` |
+| Logging, W&B, Trackio, Redis cache | `tinyexp.exp_mixins.basic_mixins` (table), then `LoggerCfgMixin.LoggerCfg`, `WandbCfgMixin.WandbCfg`, `TrackioCfgMixin.TrackioCfg` or `RedisCfgMixin.RedisCfg`; Redis wrapper: "Optional Services" in `docs/running-modes.md` |
 | Pick an accelerator; training-loop API | `tinyexp.tiny_engine.accelerator`, `tinyexp.tiny_engine.accelerator.base_accelerator` |
 | Infinite sampler, fake dataloader, EMA | `tinyexp.dataset`, `tinyexp.utils` |
 | Change one config value | nothing: `python -m <module> mode=help key=value` prints the resolved config and the overridden values, then exits |

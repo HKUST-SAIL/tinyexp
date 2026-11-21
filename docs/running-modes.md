@@ -350,6 +350,10 @@ Redis and W&B requirements are independent of the four launch styles.
   cluster creation, and readiness deadline.
 - The ResNet example enables Redis cache by default. Set `redis_cfg.redis_cache_enabled=false` when Redis is not installed or desired.
 - Enabling W&B requires suitable credentials and network access, or an explicitly configured offline mode.
+- Enabling Trackio needs no account or network: runs are written below `trackio.TRACKIO_DIR`
+  (`~/.cache/huggingface/trackio` by default) and inspected with `trackio show`. `trackio.log` raises unless a run
+  is initialized, so enable it through the mixin (`trackio_cfg.enable_trackio=true`), not by logging into nothing.
+  Trackio publishes no Python 3.9 wheel, so `enable_trackio=true` needs Python 3.10+.
 
 ### Redis helper lifecycle in multi-node jobs
 
