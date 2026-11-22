@@ -4,7 +4,8 @@
 - ``UnknownLauncherError`` (``.launcher``): ``launcher`` is not ``mp`` or ``ray``.
 - ``UnknownExperimentModeError(mode, allowed=(...))`` (``.mode``): raise from ``run()`` for an unsupported
   ``mode``; the message lists ``allowed``, e.g. ``raise UnknownExperimentModeError(self.mode, allowed=("train", "eval", "help"))``.
-- ``UnknownAcceleratorTypeError(accelerator)`` (``.accelerator``): raise from ``build_accelerator()`` for an unknown name.
+- ``UnknownAcceleratorTypeError(accelerator)`` (``.accelerator``): raise from the experiment's own accelerator factory
+  for an unknown name (e.g. the examples' ``AcceleratorCfg.build_accelerator()``; the library has none).
 - ``InvalidWorkerCountError`` (``.num_worker``): ``ray_num_worker`` is 0, below -1, or ``-1`` found no resources.
 - ``InsufficientCPUError``: the Ray cluster lacks the requested CPU/GPU resources.
 - ``CudaNotAvailableError``: a CUDA-only accelerator was built without CUDA.

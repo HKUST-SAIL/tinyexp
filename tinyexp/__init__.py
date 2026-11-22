@@ -191,6 +191,7 @@ class TinyExp:
         return f"Exp(rank={os.getenv('RANK', 'N/A')})"
 
     def get_run_dir(self) -> str:
+        """Return ``<output_root>/<exp_name>``, the directory for this run's logs and checkpoints (not created)."""
         return os.path.join(self.output_root, self.exp_name)
 
     def set_cfg(self, cfg_hydra, cfg_object=None):
@@ -248,6 +249,10 @@ class TinyExp:
         return cfg_object
 
     def print_cfg(self, logger, show_overrided: bool = True):  # type: ignore[no-untyped-def]
+        """Log the overridden values (unless ``show_overrided=False``) and the resolved config, as ``mode=help`` does.
+
+        ``logger`` is anything with ``info(str)``. Returns the resolved config as a plain dict.
+        """
         if show_overrided and self.overrided_cfg:
             override_lines = [
                 f"    {key}: {item['value']} <-- {item['original']}(original)"

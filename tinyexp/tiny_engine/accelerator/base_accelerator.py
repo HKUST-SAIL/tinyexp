@@ -157,6 +157,7 @@ class BaseAccelerator(abc.ABC):
 
     @abstractmethod
     def prepare(self, model, optimizer=None):  # type: ignore[no-untyped-def]
+        """Return the prepared ``model``, or ``(model, optimizer)``; build ``optimizer`` on the unprepared model."""
         pass
 
     @abstractmethod

@@ -114,11 +114,25 @@ class RayCfgMixin:
     so an accelerator built inside ``run()`` is one rank of a ready process group (``rank``, ``world_size``,
     ``reduce``). Worker stdout reaches the driver prefixed and interleaved; for one final line, return it from
     ``get_ray_run_result`` on rank 0 and the driver prints it after every worker has finished. The same file runs
-    unchanged with ``launcher=mp`` (one process, ``world_size == 1``), where that method is never called::
+    unchanged with ``launcher=mp`` (one process, ``world_size == 1``), where that method is never called. A complete
+    CPU example, run as ``python -m pkg.sum_exp`` (see below)::
+
+        from dataclasses import dataclass, field
+
+        import torch
+
+        from tinyexp import RayCfgMixin, TinyExp, store_and_run_exp
 
         @dataclass(repr=False)
         class Exp(TinyExp, RayCfgMixin):
             launcher: str = "ray"
+
+            @dataclass
+            class RayCfg(RayCfgMixin.RayCfg):
+                ray_num_worker: int = 2
+                ray_num_gpus_per_worker: float = 0.0  # the base RayCfg asks for 1 GPU
+
+            ray_cfg: RayCfg = field(default_factory=RayCfg)
 
             def run(self) -> None:
                 from tinyexp.tiny_engine.accelerator import CPUAccelerator
@@ -135,6 +149,9 @@ class RayCfgMixin:
 
             def get_ray_run_result(self):
                 return self._result
+
+        if __name__ == "__main__":
+            store_and_run_exp(Exp)
 
     Start it as ``python -m package.module`` rather than ``python path/to/file.py``: the class then reaches the
     workers by import path. From ``__main__`` it is pickled by value, which works locally but is fragile
@@ -154,11 +171,11 @@ class RayCfgMixin:
 
         - ``ray_num_worker``: total workers across the whole Ray cluster, not per node. Each worker is
           one rank (``RANK``/``WORLD_SIZE``/``LOCAL_RANK``/``MASTER_ADDR``/``MASTER_PORT`` are set).
-          ``-1`` fills the currently available resources.
+          ``-1`` (the default) fills the currently available resources.
         - ``ray_num_cpus_per_worker`` / ``ray_num_gpus_per_worker``: resources of one worker (one
-          placement-group bundle). Use ``ray_num_gpus_per_worker=0`` for CPU-only runs.
-        - ``ray_placement_strategy``: Ray placement-group strategy (``PACK``, ``SPREAD``, ...).
-        - ``ray_placement_timeout_s``: how long to wait for the placement group before failing.
+          placement-group bundle); defaults 1 CPU and 1 GPU. Use ``ray_num_gpus_per_worker=0`` for CPU-only runs.
+        - ``ray_placement_strategy``: Ray placement-group strategy (``PACK`` by default, ``SPREAD``, ...).
+        - ``ray_placement_timeout_s``: how long to wait for the placement group before failing (120 s).
 
         On a static multi-node cluster (``tinyexp-run-with-ray-cluster``) the same total is spread over
         the nodes by Ray; e.g. 2 nodes x 4 GPUs -> ``ray_cfg.ray_num_worker=8 ray_cfg.ray_num_gpus_per_worker=1``

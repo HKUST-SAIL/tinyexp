@@ -50,7 +50,7 @@ Invariants the docs rely on:
 
 Known gaps, deliberately left open:
 
-- `RayCfg`, `RedisCfg` and `CheckpointCfg` docstrings do not list every field default; `mode=help` prints them.
+- `RedisCfg` and `CheckpointCfg` docstrings do not list every field default; `mode=help` prints them.
 - `tinyexp-run-with-redis` takes its ports and memory limit from `redis_cfg.*` overrides on the command after `--`,
   and appends the resolved connection settings to that command.
 - With `launcher=ray` the driver starts and stops Redis by itself, so `tinyexp-run-with-redis` refuses such a
