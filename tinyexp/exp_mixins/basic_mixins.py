@@ -11,6 +11,10 @@ Each mixin adds one config field whose nested dataclass holds both settings and 
 | `TrackioCfgMixin` | `trackio_cfg` | `build_trackio(accelerator, output_root, **trackio_init_kwargs)` writes to `output_root/trackio` |
 | `RedisCfgMixin` | `redis_cfg` | Redis byte-cache settings consumed by datasets and launchers |
 
+Trackers: the examples call every enabled tracker on rank 0 only, as ``tracker.log(metrics, step=global_step)``
+and ``tracker.finish()``, with ``name=self.exp_name``; a new backend must provide that ``log``/``finish`` pair.
+``step`` is the training ``global_step`` (the checkpoint's in ``mode=eval``; ``None`` if unknown).
+
 Usage: ``class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, LoggerCfgMixin)``. To change defaults,
 subclass the nested config and redeclare the field, e.g.::
 
@@ -349,7 +353,7 @@ class WandbCfgMixin:
 
             wandb = self.wandb_cfg.build_wandb(accelerator=accelerator, project="p", name=self.exp_name, config=cfg_dict)
             if wandb is not None and accelerator.is_main_process:
-                wandb.log({"loss": loss})
+                wandb.log({"loss": loss}, step=global_step)
         """
 
         enable_wandb: bool = False

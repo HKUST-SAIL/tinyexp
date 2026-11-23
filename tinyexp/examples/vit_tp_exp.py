@@ -978,7 +978,7 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
                 self.wandb_cfg.build_wandb,
                 partial(self.trackio_cfg.build_trackio, output_root=self.output_root),
             ):
-                tracker = build(accelerator=accelerator, project="TinyExp", config=cfg_dict, name="vit_tp_exp")
+                tracker = build(accelerator=accelerator, project="TinyExp", config=cfg_dict, name=self.exp_name)
                 if tracker is not None:
                     trackers.append(tracker)
                     if accelerator.is_main_process:
@@ -1043,6 +1043,7 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
         model_proxy = _FusedQkvModelProxy(accelerator.unwrap_model(model), accelerator)
 
         start_epoch = 0
+        global_step = 0
         max_accuracy = 0.0
         if self.resume_from:
             checkpoint = self.checkpoint_cfg.load_checkpoint(
@@ -1054,6 +1055,7 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
                 map_location=accelerator.device,
             )
             start_epoch = int(checkpoint.get("epoch", -1)) + 1
+            global_step = int(checkpoint.get("global_step", 0))
             max_accuracy = float(checkpoint.get("best_metric") or 0.0)
             extra_state = checkpoint.get("extra_state") or {}
             if model_ema is not None and extra_state.get("model_ema_state_dict") is not None:
@@ -1062,7 +1064,6 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
 
         logger.info(f"Start training for {self.epochs} epochs")
         start_training_time = time.time()
-        global_step = 0
         for epoch in range(start_epoch, self.epochs):
             train_sampler = getattr(data_loader_train, "sampler", None)
             if train_sampler is not None and hasattr(train_sampler, "set_epoch"):
@@ -1132,7 +1133,7 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
                 with open(os.path.join(run_dir, "log.txt"), "a") as f:
                     f.write(json.dumps(log_stats) + "\n")
                 for tracker in trackers:
-                    tracker.log(log_stats)
+                    tracker.log(log_stats, step=global_step)
 
             if 0 < self.max_train_steps <= global_step:
                 break
@@ -1278,9 +1279,13 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
         if not source:
             raise ValueError("mode=eval requires resume_from (tinyexp ckpt) or module_cfg.pretrained_from")
         _, data_loader_val, _, _, model = self._prepare_for_train_or_eval(accelerator)
+        step = None
         if self.resume_from and not self.module_cfg.pretrained_from:
             proxy = _FusedQkvModelProxy(model, accelerator)
-            self.checkpoint_cfg.load_checkpoint(self.resume_from, model=proxy, map_location=accelerator.device)
+            checkpoint = self.checkpoint_cfg.load_checkpoint(
+                self.resume_from, model=proxy, map_location=accelerator.device
+            )
+            step = checkpoint.get("global_step")
         model = self._parallelize(accelerator, model)
         test_stats = self._evaluate(accelerator, logger, model, accelerator.device, data_loader_val)
         logger.info(
@@ -1288,7 +1293,7 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
         )
         if accelerator.is_main_process:
             for tracker in trackers:
-                tracker.log({f"test_{key}": value for key, value in test_stats.items()})
+                tracker.log({f"test_{key}": value for key, value in test_stats.items()}, step=step)
         self._run_result = f"eval acc@1={test_stats['acc1']:.2f}% acc@5={test_stats['acc5']:.2f}%"
         return test_stats["acc1"]
 

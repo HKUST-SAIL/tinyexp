@@ -369,9 +369,7 @@ class ResNetExp(
                 self.wandb_cfg.build_wandb,
                 partial(self.trackio_cfg.build_trackio, output_root=self.output_root),
             ):
-                tracker = build(
-                    accelerator=accelerator, config=cfg_dict, project="Baselines", name=self.__class__.__name__
-                )
+                tracker = build(accelerator=accelerator, config=cfg_dict, project="Baselines", name=self.exp_name)
                 if tracker is not None:
                     trackers.append(tracker)
                     if accelerator.is_main_process:
@@ -396,14 +394,17 @@ class ResNetExp(
             else:
                 raise UnknownExperimentModeError(self.mode, allowed=("train", "eval", "help"))
 
-    def _evaluate(self, accelerator, logger, module_or_module_path, val_dataloader=None, trackers=()) -> None:
+    def _evaluate(
+        self, accelerator, logger, module_or_module_path, val_dataloader=None, trackers=(), step=None
+    ) -> float:
         if isinstance(module_or_module_path, str):
             module: nn.Module = self.module_cfg.build_module()
-            self.checkpoint_cfg.load_checkpoint(
+            checkpoint = self.checkpoint_cfg.load_checkpoint(
                 module_or_module_path,
                 model=module,
                 map_location=accelerator.device,
             )
+            step = checkpoint.get("global_step")
             module = accelerator.prepare_model(module)
         else:
             module = module_or_module_path
@@ -437,7 +438,7 @@ class ResNetExp(
 
         if accelerator.is_main_process:
             for tracker in trackers:
-                tracker.log({"val_metric": eval_metric})
+                tracker.log({"val_metric": eval_metric}, step=step)
 
         return eval_metric
 
@@ -525,6 +526,7 @@ class ResNetExp(
                 module_or_module_path=module,
                 val_dataloader=val_dataloader,
                 trackers=trackers,
+                step=global_step,
             )
             is_best = best_metric is None or eval_metric > best_metric
             if is_best:

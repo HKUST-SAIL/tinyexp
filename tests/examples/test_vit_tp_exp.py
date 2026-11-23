@@ -191,20 +191,25 @@ def test_train_and_eval_log_existing_statistics(tmp_path, monkeypatch) -> None:
     experiment.ema_cfg.model_ema = False
     monkeypatch.setattr(experiment.module_cfg, "build_module", _tiny_vit)
     logged = [[], []]
-    trackers = [types.SimpleNamespace(log=entries.append) for entries in logged]
+    trackers = [
+        types.SimpleNamespace(log=lambda metrics, step, entries=entries: entries.append((metrics, step)))
+        for entries in logged
+    ]
     logger = types.SimpleNamespace(info=lambda *args: None)
     accelerator = CPUAccelerator()
     try:
         experiment._train(accelerator, logger, run_dir=str(tmp_path), trackers=trackers)
         epoch_stats = json.loads((tmp_path / "log.txt").read_text())
-        assert logged[0] == logged[1] == [epoch_stats]
+        assert logged[0] == logged[1] == [(epoch_stats, 1)]  # one 8-sample batch -> global_step 1
         assert {"train_loss", "train_lr", "test_loss", "test_acc1", "test_acc5"} <= epoch_stats.keys()
 
         experiment.resume_from = str(tmp_path / "last.ckpt")
         evaluation_accuracy = experiment._run_eval(accelerator, logger, trackers=trackers)
         assert logged[0] == logged[1]
-        assert set(logged[0][1]) == {"test_loss", "test_acc1", "test_acc5"}
-        assert logged[0][1]["test_acc1"] == evaluation_accuracy
+        eval_stats, eval_step = logged[0][1]
+        assert set(eval_stats) == {"test_loss", "test_acc1", "test_acc5"}
+        assert eval_stats["test_acc1"] == evaluation_accuracy
+        assert eval_step == 1  # global_step restored from last.ckpt
     finally:
         accelerator.destroy()
 
