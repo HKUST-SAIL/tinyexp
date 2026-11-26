@@ -5,6 +5,7 @@ import sqlite3
 import subprocess
 import sys
 from dataclasses import dataclass
+from importlib.util import find_spec
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -14,9 +15,11 @@ import torch
 
 from tinyexp import (
     CheckpointCfgMixin,
+    GeneralTrackCfgMixin,
     LoggerCfgMixin,
     RayCfgMixin,
     RedisCfgMixin,
+    SwanlabCfgMixin,
     TinyExp,
     TrackioCfgMixin,
     WandbCfgMixin,
@@ -31,9 +34,11 @@ class LoggerExp(TinyExp, LoggerCfgMixin):
 
 def test_root_package_re_exports_mixins() -> None:
     assert CheckpointCfgMixin.__name__ == "CheckpointCfgMixin"
+    assert GeneralTrackCfgMixin.__name__ == "GeneralTrackCfgMixin"
     assert LoggerCfgMixin.__name__ == "LoggerCfgMixin"
     assert RayCfgMixin.__name__ == "RayCfgMixin"
     assert RedisCfgMixin.__name__ == "RedisCfgMixin"
+    assert SwanlabCfgMixin.__name__ == "SwanlabCfgMixin"
     assert TrackioCfgMixin.__name__ == "TrackioCfgMixin"
     assert WandbCfgMixin.__name__ == "WandbCfgMixin"
 
@@ -82,12 +87,59 @@ tracker.finish()
     assert not (tmp_path / "old-cache").exists()
 
 
-def test_import_tinyexp_does_not_load_optional_heavy_packages() -> None:
-    """``import tinyexp`` must work without the ``[pytorch]`` extra; torch/wandb/trackio stay lazily imported.
+def test_swanlab_cfg_builds_run_on_rank_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = SwanlabCfgMixin.SwanlabCfg()
+    monkeypatch.setitem(sys.modules, "swanlab", None)
+    assert cfg.build_swanlab() is None
+    cfg.enable_swanlab = True
+    assert cfg.build_swanlab(accelerator=SimpleNamespace(rank=1)) is None
 
-    Runs in a subprocess because this pytest process has already imported torch.
-    """
-    code = "import sys, tinyexp, tinyexp.tiny_engine; print(sorted({'torch', 'wandb', 'trackio'} & set(sys.modules)))"
+    calls: list[dict] = []
+    run = object()
+
+    def init(**kwargs):
+        calls.append(kwargs)
+        return run
+
+    monkeypatch.setitem(sys.modules, "swanlab", SimpleNamespace(init=init))
+    kwargs = {"project": "p", "name": "exp", "config": {"lr": 0.01}}
+    assert cfg.build_swanlab(accelerator=SimpleNamespace(rank=0), output_root=str(tmp_path), **kwargs) is run
+    cfg.mode = "local"
+    assert cfg.build_swanlab(log_dir=str(tmp_path), **kwargs) is run
+    assert calls == [
+        dict(kwargs, mode="offline", log_dir=str(tmp_path / "swanlab" / "p")),
+        dict(kwargs, mode="local", log_dir=str(tmp_path)),
+    ]
+
+
+def test_swanlab_persists_metrics_under_output_root(tmp_path: Path) -> None:
+    if find_spec("swanlab") is None:
+        pytest.skip("SwanLab requires tinyexp[swanlab]")
+    code = """
+import sys
+from tinyexp import SwanlabCfgMixin
+tracker = SwanlabCfgMixin.SwanlabCfg(enable_swanlab=True).build_swanlab(
+    output_root=sys.argv[1], project="test", name="demo", config={"lr": 0.01},
+)
+try:
+    tracker.log({"val_metric": 0.5}, step=4)
+finally:
+    tracker.finish()
+"""
+    subprocess.run(  # noqa: S603
+        [sys.executable, "-c", code, str(tmp_path)], capture_output=True, text=True, check=True
+    )
+
+    (record,) = (tmp_path / "swanlab" / "test").glob("run-*/*.swanlab")
+    assert record.stat().st_size > 0
+
+
+def test_import_tinyexp_does_not_load_optional_heavy_packages() -> None:
+    """Keep torch and tracker imports lazy. Run in a subprocess because pytest has already imported torch."""
+    code = (
+        "import sys, tinyexp, tinyexp.tiny_engine; "
+        "print(sorted({'torch', 'wandb', 'trackio', 'swanlab'} & set(sys.modules)))"
+    )
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, check=True)  # noqa: S603
 
     assert result.stdout.strip() == "[]"

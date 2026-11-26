@@ -21,8 +21,15 @@ class _TrainAccelerator:
     def prepare(self, module, optimizer):
         return module, optimizer
 
+    def prepare_model(self, module):
+        return module
+
     def unwrap_model(self, module):
         return module
+
+    def reduce(self, value, reduction):
+        assert reduction == "sum"
+        return value
 
     def backward(self, loss):
         loss.backward()
@@ -38,7 +45,9 @@ def _batches() -> list[tuple[torch.Tensor, torch.Tensor]]:
     return [(torch.randn(2, 2), torch.tensor([0, 1]))]
 
 
-def _train(monkeypatch: pytest.MonkeyPatch, exp: ResNetExp, train_dataloader, val_dataloader, run_dir: str) -> None:  # type: ignore[no-untyped-def]
+def _train(
+    monkeypatch: pytest.MonkeyPatch, exp: ResNetExp, train_dataloader, val_dataloader, run_dir: str, trackers=()
+) -> None:  # type: ignore[no-untyped-def]
     """Run ``exp._train`` on a 2-class linear model with the given dataloaders."""
     monkeypatch.setattr(exp.dataloader_cfg, "build_train_dataloader", lambda accelerator, redis_cfg: train_dataloader)
     monkeypatch.setattr(exp.dataloader_cfg, "build_val_dataloader", lambda accelerator: val_dataloader)
@@ -52,6 +61,7 @@ def _train(monkeypatch: pytest.MonkeyPatch, exp: ResNetExp, train_dataloader, va
         accelerator=_TrainAccelerator(),
         logger=SimpleNamespace(info=lambda *args, **kwargs: None),
         run_dir=run_dir,
+        trackers=trackers,
     )
 
 
@@ -243,12 +253,61 @@ def test_resnet_train_positions_sampler_once_before_creating_iterator(
     assert events == [("set_epoch", 0), "iter"]
 
 
+@pytest.mark.parametrize("rank", [0, 1])
+def test_resnet_train_logs_metrics_at_global_step(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, rank: int) -> None:
+    exp = ResNetExp(output_root=str(tmp_path), max_train_epochs=1)
+    monkeypatch.setattr(_TrainAccelerator, "rank", rank)
+    monkeypatch.setattr(_TrainAccelerator, "is_main_process", rank == 0)
+    monkeypatch.setattr(exp.checkpoint_cfg, "save_checkpoint", lambda **kwargs: None)
+    calls = [[], []]
+    trackers = [
+        SimpleNamespace(log=lambda data, *, step, records=records: records.append((step, data))) for records in calls
+    ]
+
+    _train(monkeypatch, exp, _batches() * 21, _batches() * 2, str(tmp_path), trackers=trackers)
+
+    assert calls[0] == calls[1]
+    if rank == 0:
+        assert [step for step, _ in calls[0]] == [20, 21, 21]
+        for _, metrics in calls[0][:2]:
+            assert set(metrics) == {"epoch", "loss", "lr"}
+            assert metrics["epoch"] == 0
+            assert metrics["loss"] > 0
+            assert metrics["lr"] == 0.1
+        assert set(calls[0][-1][1]) == {"val_metric"}
+    else:
+        assert calls[0] == []
+
+
 def test_resnet_train_stops_at_max_train_steps(tmp_path: Path, monkeypatch) -> None:
     exp = ResNetExp(output_root=str(tmp_path), exp_name="resnet_train", max_train_steps=1)
     monkeypatch.setattr(exp, "_evaluate", lambda **kwargs: pytest.fail("eval should not run"))
     monkeypatch.setattr(exp.checkpoint_cfg, "save_checkpoint", lambda **kwargs: pytest.fail("should not save"))
+    steps = []
+    tracker = SimpleNamespace(log=lambda data, *, step: steps.append(step))
 
-    _train(monkeypatch, exp, _batches(), [], str(tmp_path / "resnet_train"))
+    _train(monkeypatch, exp, _batches() * 2, [], str(tmp_path / "resnet_train"), trackers=[tracker])
+
+    assert steps == [1]
+
+
+@pytest.mark.parametrize("checkpoint", [{"global_step": 37}, {}])
+def test_resnet_eval_logs_at_checkpoint_step(monkeypatch: pytest.MonkeyPatch, checkpoint: dict) -> None:
+    exp = ResNetExp()
+    monkeypatch.setattr(exp.module_cfg, "build_module", lambda: nn.Linear(2, 2))
+    monkeypatch.setattr(exp.checkpoint_cfg, "load_checkpoint", lambda *args, **kwargs: checkpoint)
+    calls = []
+    tracker = SimpleNamespace(log=lambda data, *, step: calls.append((step, data)))
+
+    metric = exp._evaluate(
+        accelerator=_TrainAccelerator(),
+        logger=SimpleNamespace(info=lambda *args: None),
+        module_or_module_path="resume.ckpt",
+        val_dataloader=_batches() * 2,
+        trackers=[tracker],
+    )
+
+    assert calls == [(checkpoint.get("global_step"), {"val_metric": metric})]
 
 
 def test_resnet_train_resume_loads_checkpoint_state(tmp_path: Path, monkeypatch) -> None:

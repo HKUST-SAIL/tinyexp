@@ -7,8 +7,8 @@ Run   :
     torchrun --nproc-per-node=8 -m tinyexp.examples.resnet_exp launcher=mp redis_cfg.redis_cache_enabled=false
     torchrun --nproc-per-node=2 -m tinyexp.examples.resnet_exp launcher=mp accelerator_cfg.accelerator=fsdp redis_cfg.redis_cache_enabled=false
     python -m tinyexp.examples.resnet_exp mode=eval resume_from=./output/resnet_exp/best.ckpt
-    python -m tinyexp.examples.resnet_exp wandb_cfg.enable_wandb=true        # log val_metric to W&B
-    python -m tinyexp.examples.resnet_exp trackio_cfg.enable_trackio=true    # log val_metric to Trackio (local)
+    python -m tinyexp.examples.resnet_exp wandb_cfg.enable_wandb=true        # log training and validation to W&B
+    python -m tinyexp.examples.resnet_exp trackio_cfg.enable_trackio=true    # log training and validation locally
 Env   : IMAGENET_HOME (or dataloader_cfg.data_root) with ImageFolder train/ and val/ directories
 Needs : tinyexp[pytorch] and CUDA GPUs. The Redis cache (default on) needs redis-server: launcher=ray starts it,
         otherwise wrap the command with tinyexp-run-with-redis or set redis_cfg.redis_cache_enabled=false
@@ -34,14 +34,7 @@ from torchvision import datasets, transforms
 from tinyexp import TinyExp, store_and_run_exp
 from tinyexp.dataset.sampler import InfiniteSampler
 from tinyexp.exceptions import UnknownAcceleratorTypeError, UnknownExperimentModeError
-from tinyexp.exp_mixins import (
-    CheckpointCfgMixin,
-    LoggerCfgMixin,
-    RayCfgMixin,
-    RedisCfgMixin,
-    TrackioCfgMixin,
-    WandbCfgMixin,
-)
+from tinyexp.exp_mixins import CheckpointCfgMixin, GeneralTrackCfgMixin, LoggerCfgMixin, RayCfgMixin, RedisCfgMixin
 from tinyexp.tiny_engine.accelerator import AcceleratorProtocol
 
 
@@ -197,15 +190,7 @@ class RedisCachedImageFolder:
 
 
 @dataclass(repr=False)
-class ResNetExp(
-    TinyExp,
-    RayCfgMixin,
-    RedisCfgMixin,
-    CheckpointCfgMixin,
-    WandbCfgMixin,
-    TrackioCfgMixin,
-    LoggerCfgMixin,
-):
+class ResNetExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, GeneralTrackCfgMixin, LoggerCfgMixin):
     mode: str = "train"
     launcher: str = "ray"
     max_train_epochs: int = 90
@@ -368,6 +353,7 @@ class ResNetExp(
             for build in (
                 self.wandb_cfg.build_wandb,
                 partial(self.trackio_cfg.build_trackio, output_root=self.output_root),
+                partial(self.swanlab_cfg.build_swanlab, output_root=self.output_root),
             ):
                 tracker = build(accelerator=accelerator, config=cfg_dict, project="Baselines", name=self.exp_name)
                 if tracker is not None:
@@ -419,15 +405,15 @@ class ResNetExp(
         accurate = torch.tensor(0, dtype=torch.long, device=accelerator.device)
         seen = torch.tensor(0, dtype=torch.long, device=accelerator.device)
 
-        for step, batch in enumerate(val_dataloader):
+        for batch_idx, batch in enumerate(val_dataloader):
             images, labels = (item.to(accelerator.device) for item in batch)
             with torch.no_grad():
                 preds = module(images)
             predictions = preds.argmax(dim=-1)
             accurate += (predictions == labels).sum()
             seen += labels.numel()
-            if step % 20 == 0:
-                logger.info(f"Eval step {step}, accurate: {accurate.item()}")
+            if batch_idx % 20 == 0:
+                logger.info(f"Eval step {batch_idx}, accurate: {accurate.item()}")
 
         global_accurate = accelerator.reduce(accurate, reduction="sum")
         global_seen = accelerator.reduce(seen, reduction="sum")
@@ -503,21 +489,27 @@ class ResNetExp(
                 accelerator.optimizer_step(optimizer)
                 global_step += 1
 
-                if 0 < self.max_train_steps <= global_step:
-                    return
-
-                if global_step % 20 == 0:
+                reached_step_limit = 0 < self.max_train_steps <= global_step
+                if global_step % 20 == 0 or step_in_epoch + 1 == steps_per_epoch or reached_step_limit:
                     epoch_elapsed_time = time.time() - epoch_start_time
                     epoch_elapsed_str = f"{int(epoch_elapsed_time / 60):02d}:{int(epoch_elapsed_time % 60):02d}"
 
                     epoch_total_seconds = epoch_elapsed_time / ((step_in_epoch + 1) / steps_per_epoch)
                     epoch_total_str = f"{int(epoch_total_seconds / 60):02d}:{int(epoch_total_seconds % 60):02d}"
 
+                    loss_value = loss.item()
+                    lr = optimizer.param_groups[0]["lr"]
                     logger.info(
                         f"e:{global_epoch},{step_in_epoch + 1}/{steps_per_epoch}, "
-                        f"loss:{loss.item():.4f}, lr:{optimizer.param_groups[0]['lr']:.4f}, "
+                        f"loss:{loss_value:.4f}, lr:{lr:.4f}, "
                         f"elapsed:{epoch_elapsed_str}, total:{epoch_total_str}"
                     )
+                    if accelerator.is_main_process:
+                        for tracker in trackers:
+                            tracker.log({"epoch": global_epoch, "loss": loss_value, "lr": lr}, step=global_step)
+
+                if reached_step_limit:
+                    return
 
             lr_scheduler.step()
             eval_metric = self._evaluate(

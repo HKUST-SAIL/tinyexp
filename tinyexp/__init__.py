@@ -50,9 +50,8 @@ merged onto the experiment and recorded for ``mode=help``: ``TinyExp.set_cfg``. 
 ``python file.py``: ``RayCfgMixin``.
 
 Exports: ``TinyExp``, ``store_and_run_exp``, ``simple_launch_exp``, ``ConfigStore`` and the mixins
-``LoggerCfgMixin``, ``RayCfgMixin``, ``CheckpointCfgMixin``, ``WandbCfgMixin``, ``TrackioCfgMixin``,
-``RedisCfgMixin``
-(see ``tinyexp.exp_mixins``).
+``LoggerCfgMixin``, ``RayCfgMixin``, ``CheckpointCfgMixin``, ``GeneralTrackCfgMixin``, ``WandbCfgMixin``,
+``TrackioCfgMixin``, ``SwanlabCfgMixin``, ``RedisCfgMixin`` (see ``tinyexp.exp_mixins``).
 """
 
 __author__ = "LI Zeming"
@@ -73,9 +72,11 @@ from omegaconf import DictConfig, OmegaConf
 from .exceptions import UnknownConfigurationKeyError, UnknownLauncherError
 from .exp_mixins import (
     CheckpointCfgMixin,
+    GeneralTrackCfgMixin,
     LoggerCfgMixin,
     RayCfgMixin,
     RedisCfgMixin,
+    SwanlabCfgMixin,
     TrackioCfgMixin,
     WandbCfgMixin,
 )
@@ -83,9 +84,11 @@ from .exp_mixins import (
 __all__ = [
     "CheckpointCfgMixin",
     "ConfigStore",
+    "GeneralTrackCfgMixin",
     "LoggerCfgMixin",
     "RayCfgMixin",
     "RedisCfgMixin",
+    "SwanlabCfgMixin",
     "TinyExp",
     "TrackioCfgMixin",
     "WandbCfgMixin",

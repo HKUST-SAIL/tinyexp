@@ -37,12 +37,12 @@ Their commands are checked by `tests/examples/test_examples_help_smoke.py`: ever
 every command in the run headers, `README.md`, `SKILL.md` and `docs/*.md` must be legal for the config it targets,
 and every `Modes` value in a run header must be handled in `run()`. The check is static (key names and types only),
 so it catches stale option names, not stale advice. `tests/test_tinyexp_artifacts.py` asserts in a subprocess that
-`import tinyexp` loads neither torch, wandb nor trackio, and that every public module has a docstring.
+`import tinyexp` loads none of torch, wandb, trackio or swanlab, and that every public module has a docstring.
 
 Invariants the docs rely on:
 
 - keep the `import torch` in `CheckpointCfg` and the `import wandb` in `WandbCfg` lazy (inside methods);
-- keep the `import trackio` in `TrackioCfg` lazy too (same reason, and trackio stays optional at import time);
+- keep the tracker imports in `TrackioCfg` and `SwanlabCfg` lazy too; SwanLab is an optional extra;
 - keep `from tinyexp.exp_mixins.basic_mixins import *Mixin` importable (released path);
 - do not move `tinyexp/__init__.py` and do not add a yaml at the package root (Hydra's `pkg://tinyexp` needs the
   ConfigStore entry `cfg`);

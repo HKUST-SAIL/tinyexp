@@ -45,6 +45,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+swanlab = ["swanlab>=0.10.6"]
 pytorch = [
     "accelerate",
     # Python 3.14 requires releases that publish cp314 wheels. The CPU/CUDA/

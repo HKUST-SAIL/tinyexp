@@ -128,17 +128,26 @@ def test_run_finishes_trackers_before_destroying_accelerator(
     accelerator.is_main_process = rank == 0
     _patch_runtime(monkeypatch, exp, accelerator)
     events: list[str] = []
-    tracker = SimpleNamespace(finish=lambda: events.append("finish"))
+    trackio = SimpleNamespace(finish=lambda: events.append("finish_trackio"))
+    swanlab = SimpleNamespace(finish=lambda: events.append("finish_swanlab"))
 
     def build_trackio(*, output_root, **kwargs):
         assert output_root == exp.output_root
-        return tracker
+        return trackio
+
+    def build_swanlab(*, accelerator, output_root, project, name, config):
+        assert output_root == exp.output_root
+        assert name == exp.exp_name
+        assert project == ("TinyExp" if example == "vit_tp_exp" else "Baselines")
+        assert isinstance(config, dict)
+        return swanlab if accelerator.rank == 0 else None
 
     monkeypatch.setattr(exp.trackio_cfg, "build_trackio", build_trackio)
+    monkeypatch.setattr(exp.swanlab_cfg, "build_swanlab", build_swanlab)
     monkeypatch.setattr(accelerator, "destroy", lambda: events.append("destroy"))
 
     def workload(**kwargs):
-        assert kwargs["trackers"] == [tracker]
+        assert kwargs["trackers"] == ([trackio, swanlab] if rank == 0 else [trackio])
         events.append("workload")
         if fails:
             raise RuntimeError("workload")
@@ -152,5 +161,5 @@ def test_run_finishes_trackers_before_destroying_accelerator(
     else:
         exp.run()
 
-    expected = ["workload", "finish", "destroy"] if rank == 0 else ["workload", "destroy"]
+    expected = ["workload", "finish_swanlab", "finish_trackio", "destroy"] if rank == 0 else ["workload", "destroy"]
     assert events == expected

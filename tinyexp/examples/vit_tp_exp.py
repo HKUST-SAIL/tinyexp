@@ -93,14 +93,7 @@ from torchvision import datasets, transforms
 
 from tinyexp import TinyExp, store_and_run_exp
 from tinyexp.exceptions import UnknownAcceleratorTypeError, UnknownExperimentModeError
-from tinyexp.exp_mixins import (
-    CheckpointCfgMixin,
-    LoggerCfgMixin,
-    RayCfgMixin,
-    RedisCfgMixin,
-    TrackioCfgMixin,
-    WandbCfgMixin,
-)
+from tinyexp.exp_mixins import CheckpointCfgMixin, GeneralTrackCfgMixin, LoggerCfgMixin, RayCfgMixin, RedisCfgMixin
 from tinyexp.tiny_engine.accelerator import AcceleratorProtocol, TPAccelerator
 
 # Official DeiT-S checkpoint (facebookresearch/deit models.py).
@@ -602,7 +595,7 @@ def _set_cudnn_benchmark(value: bool = True) -> None:
 
 
 @dataclass(repr=False)
-class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfgMixin, TrackioCfgMixin, LoggerCfgMixin):
+class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, GeneralTrackCfgMixin, LoggerCfgMixin):
     mode: str = "train"  # train / eval / bench
     launcher: str = "ray"
     epochs: int = 300  # official --epochs
@@ -977,6 +970,7 @@ class VitTpExp(TinyExp, RayCfgMixin, RedisCfgMixin, CheckpointCfgMixin, WandbCfg
             for build in (
                 self.wandb_cfg.build_wandb,
                 partial(self.trackio_cfg.build_trackio, output_root=self.output_root),
+                partial(self.swanlab_cfg.build_swanlab, output_root=self.output_root),
             ):
                 tracker = build(accelerator=accelerator, project="TinyExp", config=cfg_dict, name=self.exp_name)
                 if tracker is not None:

@@ -10,6 +10,7 @@ Run   :
     torchrun --nproc-per-node=2 -m tinyexp.examples.mnist_exp launcher=mp accelerator_cfg.accelerator=ddp
     python -m tinyexp.examples.mnist_exp mode=eval resume_from=./output/mnist_exp/best.ckpt
     python -m tinyexp.examples.mnist_exp trackio_cfg.enable_trackio=true    # local metrics in output_root/trackio
+    python -m tinyexp.examples.mnist_exp launcher=mp swanlab_cfg.enable_swanlab=true    # needs tinyexp[swanlab]
 Env   : none; global rank 0 downloads MNIST to dataloader_cfg.data_root (./data/) on first run while the other
         ranks wait, then read it; with several nodes, data_root must be shared or already populated
 Note  : always trains 3 epochs (not configurable); raise dataloader_cfg.train_batch_size_per_device for a faster run
@@ -31,7 +32,7 @@ from torchvision import datasets, transforms
 
 from tinyexp import TinyExp, store_and_run_exp
 from tinyexp.exceptions import UnknownAcceleratorTypeError, UnknownExperimentModeError
-from tinyexp.exp_mixins import CheckpointCfgMixin, LoggerCfgMixin, RayCfgMixin, TrackioCfgMixin, WandbCfgMixin
+from tinyexp.exp_mixins import CheckpointCfgMixin, GeneralTrackCfgMixin, LoggerCfgMixin, RayCfgMixin
 from tinyexp.tiny_engine.accelerator import AcceleratorProtocol
 
 
@@ -69,7 +70,7 @@ class Net(nn.Module):
 
 
 @dataclass(repr=False)
-class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, TrackioCfgMixin, LoggerCfgMixin):
+class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, GeneralTrackCfgMixin, LoggerCfgMixin):
     @dataclass
     class RayCfg(RayCfgMixin.RayCfg):
         ray_num_worker: int = 2
@@ -195,6 +196,7 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, TrackioCfgMix
             for build in (
                 self.wandb_cfg.build_wandb,
                 partial(self.trackio_cfg.build_trackio, output_root=self.output_root),
+                partial(self.swanlab_cfg.build_swanlab, output_root=self.output_root),
             ):
                 tracker = build(accelerator=accelerator, config=cfg_dict, project="Baselines", name=self.exp_name)
                 if tracker is not None:
@@ -306,7 +308,8 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, TrackioCfgMix
                 train_sampler.set_epoch(epoch)
             module.train()
 
-            for step in range(len(train_dataloader)):
+            steps_per_epoch = len(train_dataloader)
+            for step_in_epoch in range(steps_per_epoch):
                 try:
                     batch = next(train_iter)
                 except StopIteration:
@@ -322,18 +325,13 @@ class Exp(TinyExp, RayCfgMixin, CheckpointCfgMixin, WandbCfgMixin, TrackioCfgMix
                 accelerator.backward(loss)
                 accelerator.optimizer_step(optimizer)
                 global_step += 1
-                if (step + 1) % 20 == 0:
-                    logger.info(f"epoch {epoch} loss: {loss.item(): .4f} lr: {optimizer.param_groups[0]['lr']: .4f}")
+                if global_step % 20 == 0 or step_in_epoch + 1 == steps_per_epoch:
+                    loss_value = loss.item()
+                    lr = optimizer.param_groups[0]["lr"]
+                    logger.info(f"epoch {epoch} loss: {loss_value: .4f} lr: {lr: .4f}")
                     if accelerator.is_main_process:
                         for tracker in trackers:
-                            tracker.log(
-                                {
-                                    "epoch": epoch,
-                                    "loss": loss.item(),
-                                    "lr": optimizer.param_groups[0]["lr"],
-                                },
-                                step=global_step,
-                            )
+                            tracker.log({"epoch": epoch, "loss": loss_value, "lr": lr}, step=global_step)
             eval_metric = self._evaluate(
                 accelerator=accelerator,
                 logger=logger,

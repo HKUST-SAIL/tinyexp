@@ -200,6 +200,9 @@ def test_help_applies_overrides_and_writes_only_under_output_root(tmp_path: Path
         f"output_root={tmp_path / 'out'}",
         "dataloader_cfg.train_batch_size_per_device=16",
         "ray_cfg.ray_num_worker=1",
+        "wandb_cfg.enable_wandb=true",
+        "trackio_cfg.enable_trackio=true",
+        "swanlab_cfg.enable_swanlab=true",
     )
 
     assert result.returncode == 0, result.stderr
@@ -207,6 +210,8 @@ def test_help_applies_overrides_and_writes_only_under_output_root(tmp_path: Path
     output = f"{result.stdout}\n{result.stderr}"
     assert re.search(r"train_batch_size_per_device:\s*16\b", output)
     assert re.search(r"ray_num_worker:\s*1\b", output)
+    for tracker in ("wandb", "trackio", "swanlab"):
+        assert re.search(rf"enable_{tracker}:\s*true\b", output)
 
 
 def test_cli_tools_are_project_scripts() -> None:

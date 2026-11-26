@@ -1,14 +1,16 @@
 """Opt-in ``XXXCfgMixin`` components; mix only the ones an experiment needs into ``TinyExp``.
 
-Each mixin adds one config field whose nested dataclass holds both settings and a ``build_*`` helper:
+Individual mixins add one config field whose nested dataclass holds both settings and a ``build_*`` helper:
 
 | mixin | field | use |
 | --- | --- | --- |
 | `LoggerCfgMixin` | `logger_cfg` | `build_logger(save_dir, distributed_rank)` -> loguru logger |
 | `RayCfgMixin` | `ray_cfg` | `launcher=ray`: worker contract and minimal example in `RayCfgMixin`, count/resources in `RayCfg` |
 | `CheckpointCfgMixin` | `checkpoint_cfg` | `save_checkpoint` / `load_checkpoint` / RNG state helpers |
+| `GeneralTrackCfgMixin` | `wandb_cfg`, `trackio_cfg`, `swanlab_cfg` | include all three tracker configs in one base class |
 | `WandbCfgMixin` | `wandb_cfg` | `build_wandb(accelerator, **wandb_init_kwargs)` if enabled, else `None` |
 | `TrackioCfgMixin` | `trackio_cfg` | `build_trackio(accelerator, output_root, **trackio_init_kwargs)` writes to `output_root/trackio` |
+| `SwanlabCfgMixin` | `swanlab_cfg` | `build_swanlab(accelerator, output_root, **swanlab_init_kwargs)` returns a run on rank 0 |
 | `RedisCfgMixin` | `redis_cfg` | Redis byte-cache settings consumed by datasets and launchers |
 
 Trackers: the examples call every enabled tracker on rank 0 only, as ``tracker.log(metrics, step=global_step)``
@@ -24,7 +26,7 @@ subclass the nested config and redeclare the field, e.g.::
 
     ray_cfg: RayCfg = field(default_factory=RayCfg)
 
-``torch``, ``wandb`` and ``trackio`` are imported lazily inside methods so ``import tinyexp`` stays free of them.
+``torch``, ``wandb``, ``trackio`` and ``swanlab`` are imported lazily inside methods.
 """
 
 import os
@@ -412,6 +414,41 @@ class TrackioCfgMixin:
                 return trackio
 
     trackio_cfg: TrackioCfg = field(default_factory=TrackioCfg)
+
+
+@dataclass
+class SwanlabCfgMixin:
+    @dataclass
+    class SwanlabCfg:
+        """Optional SwanLab logging (``tinyexp[swanlab]``), enabled with ``swanlab_cfg.enable_swanlab=true``.
+
+        ``build_swanlab(accelerator=None, output_root="./output", **kwargs)`` returns the run on rank 0
+        when enabled, otherwise ``None``. Pass ``project``, ``name`` and ``config`` as with other trackers.
+        The default mode is ``offline`` and the default log directory is ``<output_root>/swanlab/<project>``.
+        Set ``swanlab_cfg.mode=local`` with ``swanlab[dashboard]`` to view logs using ``swanlab watch <log_dir>``.
+        The run supports ``run.log(metrics, step=global_step)`` and ``run.finish()``.
+        """
+
+        enable_swanlab: bool = False
+        mode: str = "offline"
+
+        def build_swanlab(self, accelerator=None, output_root: str = "./output", **kwargs):
+            if not self.enable_swanlab or (accelerator is not None and accelerator.rank != 0):
+                return None
+
+            import swanlab
+
+            project = kwargs.get("project") or Path.cwd().name
+            kwargs.setdefault("log_dir", str(Path(output_root) / "swanlab" / project))
+            kwargs.setdefault("mode", self.mode)
+            return swanlab.init(**kwargs)
+
+    swanlab_cfg: SwanlabCfg = field(default_factory=SwanlabCfg)
+
+
+@dataclass
+class GeneralTrackCfgMixin(WandbCfgMixin, TrackioCfgMixin, SwanlabCfgMixin):
+    """Include the W&B, Trackio and SwanLab config fields. Enable each tracker independently."""
 
 
 @dataclass

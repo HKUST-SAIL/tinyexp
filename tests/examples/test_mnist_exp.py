@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from tinyexp.examples.mnist_exp import Exp
@@ -137,9 +138,16 @@ def test_mnist_evaluate_empty_dataset_returns_zero(tmp_path) -> None:
     assert _evaluate(tmp_path, torch.nn.Identity(), _EvalAccelerator(), _Loader([], dataset=[])) == 0.0
 
 
-def test_mnist_train_logs_metrics_to_all_trackers(tmp_path: Path, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "batches_per_epoch, train_steps",
+    [(2, [2, 4, 6]), (20, [20, 40, 60]), (21, [20, 21, 40, 42, 60, 63])],
+)
+def test_mnist_train_logs_metrics_to_all_trackers(tmp_path: Path, monkeypatch, batches_per_epoch, train_steps) -> None:
     exp = Exp(output_root=str(tmp_path), launcher="mp")
-    loader = _Loader([(torch.ones(1, 2), torch.tensor([0]))] * 20, dataset=[0] * 20)
+    loader = _Loader(
+        [(torch.ones(1, 2), torch.tensor([0]))] * batches_per_epoch,
+        dataset=[0] * batches_per_epoch,
+    )
     loader.batch_size = 1
     monkeypatch.setattr(exp.dataloader_cfg, "build_train_dataloader", lambda accelerator: loader)
     monkeypatch.setattr(exp.dataloader_cfg, "build_val_dataloader", lambda accelerator: loader)
@@ -156,8 +164,10 @@ def test_mnist_train_logs_metrics_to_all_trackers(tmp_path: Path, monkeypatch) -
         accelerator.destroy()
 
     assert logged[0] == logged[1]
-    assert len(logged[0]) == 6
-    assert [entry["epoch"] for entry in logged[0] if "loss" in entry] == [0, 1, 2]
-    assert all("lr" in entry for entry in logged[0] if "loss" in entry)
-    assert sum("val_metric" in entry for entry in logged[0]) == 3
-    assert [entry["step"] for entry in logged[0]] == [20, 20, 40, 40, 60, 60]  # train log, then eval, per epoch
+    train_entries = [entry for entry in logged[0] if "loss" in entry]
+    assert [entry["step"] for entry in train_entries] == train_steps
+    assert all({"epoch", "loss", "lr", "step"} == entry.keys() for entry in train_entries)
+    assert [entry["epoch"] for entry in train_entries] == [(step - 1) // batches_per_epoch for step in train_steps]
+    assert [entry["step"] for entry in logged[0] if "val_metric" in entry] == [
+        batches_per_epoch * epoch for epoch in (1, 2, 3)
+    ]

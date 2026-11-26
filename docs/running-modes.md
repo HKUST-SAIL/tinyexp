@@ -337,7 +337,8 @@ python -c "import tinyexp, torch, ray; print(tinyexp.__file__); print(torch.__ve
 
 ## Optional Services
 
-Redis and W&B requirements are independent of the four launch styles.
+Redis and experiment tracking requirements are independent of the four launch styles. Add `GeneralTrackCfgMixin`
+when an experiment needs the W&B, Trackio and SwanLab configs. Each tracker can be enabled independently.
 
 - Enabling Redis cache requires a reachable Redis service. Its owner depends on the launcher: `launcher=ray` starts
   and stops Redis itself; launches without Ray (`launcher=mp` under `python`, `torchrun` or `accelerate launch`)
@@ -349,6 +350,9 @@ Redis and W&B requirements are independent of the four launch styles.
   default). The `tinyexp-run-with-redis` wrapper uses its `--wait-timeout` option for the multi-node registration,
   cluster creation, and readiness deadline.
 - The ResNet example enables Redis cache by default. Set `redis_cfg.redis_cache_enabled=false` when Redis is not installed or desired.
+- MNIST and ResNet trackers log `loss`, `lr`, and `epoch` from rank 0 every 20 training steps and at the end of each
+  epoch. ResNet also logs the last step when a run reaches `max_train_steps`. Validation logs `val_metric` at the
+  training or checkpoint step.
 - Enabling W&B requires suitable credentials and network access, or an explicitly configured offline mode.
 - Enabling Trackio needs no account or network: MNIST, ResNet and ViT write runs below `<output_root>/trackio`
   (default `./output/trackio`). View MNIST/ResNet runs with
@@ -357,6 +361,13 @@ Redis and W&B requirements are independent of the four launch styles.
   `build_trackio`. The builder sets `TRACKIO_DIR` before importing Trackio; if you import Trackio yourself first,
   set the same directory before that import. Trackers are initialized and finished on rank 0 for training and
   standalone evaluation. Trackio requires Python 3.10+ and is excluded from TinyExp's Python 3.9 installations.
+- Install `tinyexp[swanlab]` and set `swanlab_cfg.enable_swanlab=true` in MNIST, ResNet or ViT. Rank 0 writes
+  offline logs to `<output_root>/swanlab/<project>` (`Baselines` for MNIST and ResNet, `TinyExp` for ViT).
+  Use `swanlab sync <run_dir>` to upload an offline run later. For a local dashboard, install
+  `swanlab[dashboard]` (`uv pip install --prerelease allow 'swanlab[dashboard]'`), set `swanlab_cfg.mode=local`,
+  and run `swanlab watch <output_root>/swanlab/<project>`. Set `swanlab_cfg.mode=online` to upload during training
+  with SwanLab credentials. Custom experiments can add `SwanlabCfgMixin` and pass `output_root=self.output_root`
+  to `build_swanlab`.
 
 ### Redis helper lifecycle in multi-node jobs
 
