@@ -102,13 +102,14 @@ def test_swanlab_cfg_builds_run_on_rank_zero(tmp_path: Path, monkeypatch: pytest
         return run
 
     monkeypatch.setitem(sys.modules, "swanlab", SimpleNamespace(init=init))
-    kwargs = {"project": "p", "name": "exp", "config": {"lr": 0.01}}
+    kwargs = {"project": "p", "name": "exp", "config": {"lr": 0.01, "a_cfg": {"b": {"c": 1}}, "empty_cfg": {}}}
     assert cfg.build_swanlab(accelerator=SimpleNamespace(rank=0), output_root=str(tmp_path), **kwargs) is run
     cfg.mode = "local"
     assert cfg.build_swanlab(log_dir=str(tmp_path), **kwargs) is run
+    flat = dict(kwargs, config={"lr": 0.01, "a_cfg.b.c": 1})
     assert calls == [
-        dict(kwargs, mode="offline", log_dir=str(tmp_path / "swanlab" / "p")),
-        dict(kwargs, mode="local", log_dir=str(tmp_path)),
+        dict(flat, mode="offline", log_dir=str(tmp_path / "swanlab" / "p")),
+        dict(flat, mode="local", log_dir=str(tmp_path)),
     ]
 
 

@@ -426,6 +426,8 @@ class SwanlabCfgMixin:
         when enabled, otherwise ``None``. Pass ``project``, ``name`` and ``config`` as with other trackers.
         The default mode is ``offline`` and the default log directory is ``<output_root>/swanlab/<project>``.
         Set ``swanlab_cfg.mode=local`` with ``swanlab[dashboard]`` to view logs using ``swanlab watch <log_dir>``.
+        A nested ``config`` dict is flattened to dotted keys (``{"a": {"b": 1}}`` -> ``{"a.b": 1}``), since the
+        local dashboard shows nested values as ``[object Object]``; empty sub-dicts are dropped.
         The run supports ``run.log(metrics, step=global_step)`` and ``run.finish()``.
         """
 
@@ -437,6 +439,16 @@ class SwanlabCfgMixin:
                 return None
 
             import swanlab
+
+            def flatten(d: dict, prefix: str = ""):
+                for k, v in d.items():
+                    if isinstance(v, dict):
+                        yield from flatten(v, f"{prefix}{k}.")
+                    else:
+                        yield f"{prefix}{k}", v
+
+            if isinstance(kwargs.get("config"), dict):
+                kwargs["config"] = dict(flatten(kwargs["config"]))
 
             project = kwargs.get("project") or Path.cwd().name
             kwargs.setdefault("log_dir", str(Path(output_root) / "swanlab" / project))
